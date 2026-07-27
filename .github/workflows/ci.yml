@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements.txt pytest ruff
+      # The imported production kit has heterogeneous historical formatting.
+      # Keep the initial public gate focused on executable Python defects.
+      - run: ruff check --select E9,F63,F7,F82 .
+      - run: python -m unittest discover -s tests -v
+      - run: python -m pytest -q detail unity production-kit-france
+      - run: dotnet build unity/dotnet-bridge-probe/FireViewer.TileProbe.csproj

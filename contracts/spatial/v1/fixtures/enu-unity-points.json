@@ -1,0 +1,104 @@
+{
+  "schema_version": "1.0",
+  "kind": "enu_unity_points",
+  "zone": {
+    "zone_id": "FV-FR-CONTINENTAL-RURAL-DEMO-001",
+    "zone_revision": 2
+  },
+  "tolerance": {
+    "round_trip_m": 0.001,
+    "round_trip_unity_units": 0.1
+  },
+  "points": [
+    {
+      "name": "origin",
+      "enu_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "gltf_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unity_units": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "east_one_metre",
+      "enu_m": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "gltf_m": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "unity_units": [
+        100.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "north_one_metre",
+      "enu_m": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "gltf_m": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "unity_units": [
+        0.0,
+        0.0,
+        100.0
+      ]
+    },
+    {
+      "name": "up_one_metre",
+      "enu_m": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "gltf_m": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "unity_units": [
+        0.0,
+        100.0,
+        0.0
+      ]
+    },
+    {
+      "name": "mixed_vector",
+      "enu_m": [
+        12.5,
+        -3.25,
+        2.0
+      ],
+      "gltf_m": [
+        12.5,
+        2.0,
+        3.25
+      ],
+      "unity_units": [
+        1250.0,
+        200.0,
+        -325.0
+      ]
+    }
+  ]
+}

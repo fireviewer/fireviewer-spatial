@@ -1,0 +1,39 @@
+{
+  "schema": "fireviewer.france-map-production.v1",
+  "quality_profile": "profiles/unity-v1-accepted.json",
+  "zone": {
+    "zone_id": "ZONE-FR-EXEMPLE",
+    "revision": 1,
+    "package_id": "fireviewer-zone-fr-exemple-r1-v1",
+    "artifact_slug": "zone-fr-exemple-r1",
+    "label": "Zone francaise a produire",
+    "origin_l93_m": [700000.0, 6600000.0, 200.0]
+  },
+  "inputs": {
+    "aoi_l93": "examples/zone-template/sources/aoi.l93.geojson",
+    "production_envelope_l93": "examples/zone-template/sources/production-envelope.l93.geojson",
+    "buildings_l93": "examples/zone-template/sources/buildings.l93.geojson",
+    "vegetation_l93": "examples/zone-template/sources/vegetation.l93.geojson",
+    "roads_l93": ["examples/zone-template/sources/roads.l93.geojson"],
+    "water_courses_l93": ["examples/zone-template/sources/water-courses.l93.geojson"],
+    "water_segments_l93": [],
+    "water_surfaces_l93": ["examples/zone-template/sources/water-surfaces.l93.geojson"]
+  },
+  "attention_zones": [
+    {
+      "id": "priorite-01",
+      "label": "Premiere zone chargee par l'exporteur",
+      "bounds_l93_m": [699500.0, 6599500.0, 700500.0, 6600500.0]
+    }
+  ],
+  "execution": {
+    "artifact_root": "../../../.artifacts/spatial-lidar-surface/zone-fr-exemple-r1",
+    "python_executable": "python",
+    "blender_executable": "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe",
+    "build_blender_scene": true,
+    "near_lod_enabled": true,
+    "expected_source_tile_count": null,
+    "unity_validation_receipt": "../../../.artifacts/spatial-lidar-surface/zone-fr-exemple-r1/unity-validation-receipt.json",
+    "unity_preview_png": "../../../.artifacts/spatial-lidar-surface/zone-fr-exemple-r1/unity-validation-preview.png"
+  }
+}

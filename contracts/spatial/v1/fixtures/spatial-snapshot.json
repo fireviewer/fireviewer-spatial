@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "kind": "spatial_snapshot",
+  "snapshot_id": "SPS-FR-CONTINENTAL-DEMO-0001",
+  "manifest_revision": {
+    "fire_id": "FR-83-00042",
+    "episode_id": "E03",
+    "revision": 2
+  },
+  "asset_ref": {
+    "asset_id": "asset-spatial-fixture-0001",
+    "asset_version": 1,
+    "fixture_only": true
+  },
+  "zone": {
+    "zone_id": "FV-FR-CONTINENTAL-RURAL-DEMO-001",
+    "zone_revision": 2
+  },
+  "local_frame": {
+    "origin_epsg4979": {
+      "longitude_deg": 2.0001,
+      "latitude_deg": 46.0001,
+      "ellipsoidal_height_m": 454.403767465688
+    },
+    "origin_wgs84": [
+      2.0001,
+      46.0001,
+      454.403767465688
+    ],
+    "frame_crs": "EPSG:4979",
+    "frame_type": "ENU",
+    "gltf_axes": [
+      "east",
+      "up",
+      "negative_north"
+    ],
+    "gltf_meters_per_unit": 1.0,
+    "unity_axes": [
+      "east",
+      "up",
+      "north"
+    ],
+    "unity_units_per_meter": 100.0,
+    "viewer_manifest_meters_per_unit": 0.01
+  },
+  "vertical_conversion": {
+    "source_vertical_datum": "NGF-IGN69",
+    "geoid_model": "RAF20",
+    "raf20_grid": {
+      "distribution": "bundled_proj_data",
+      "source_uri": "https://cdn.proj.org/fr_ign_RAF20.tif",
+      "sha256": "dc0cc2a38f0ea1029fe72cca3b5b7ed6dfe7e1db2a8d8482b7326ce3d6f25605",
+      "network_permitted": false
+    },
+    "source_orthometric_height_m": 405.2,
+    "geoid_undulation_m": 49.203767465688,
+    "result_epsg4979": {
+      "longitude_deg": 2.0001,
+      "latitude_deg": 46.0001,
+      "ellipsoidal_height_m": 454.403767465688
+    }
+  },
+  "archive_png": {
+    "archive_uri": "archive://incident/FR-83-00042/E03/manifest-r2/spatial-preview.png",
+    "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "content_type": "image/png",
+    "pixel_width": 1024,
+    "pixel_height": 1024,
+    "generated_at": "2026-07-12T20:01:00Z"
+  },
+  "created_at": "2026-07-12T20:01:00Z"
+}

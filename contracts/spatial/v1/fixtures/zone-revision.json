@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0",
+  "kind": "zone_revision",
+  "zone": {
+    "zone_id": "FV-FR-CONTINENTAL-RURAL-DEMO-001",
+    "zone_revision": 2,
+    "territory_scope": "France continentale",
+    "usage_scope": "rural_local",
+    "vertical_conversion": {
+      "source_vertical_datum": "NGF-IGN69",
+      "geoid_model": "RAF20",
+      "raf20_grid": {
+        "distribution": "bundled_proj_data",
+        "source_uri": "https://cdn.proj.org/fr_ign_RAF20.tif",
+        "sha256": "dc0cc2a38f0ea1029fe72cca3b5b7ed6dfe7e1db2a8d8482b7326ce3d6f25605",
+        "network_permitted": false
+      },
+      "source_orthometric_height_m": 405.2,
+      "geoid_undulation_m": 49.203767465688,
+      "result_epsg4979": {
+        "longitude_deg": 2.0001,
+        "latitude_deg": 46.0001,
+        "ellipsoidal_height_m": 454.403767465688
+      }
+    },
+    "local_frame": {
+      "origin_epsg4979": {
+        "longitude_deg": 2.0001,
+        "latitude_deg": 46.0001,
+        "ellipsoidal_height_m": 454.403767465688
+      },
+      "origin_wgs84": [
+        2.0001,
+        46.0001,
+        454.403767465688
+      ],
+      "frame_crs": "EPSG:4979",
+      "frame_type": "ENU",
+      "gltf_axes": [
+        "east",
+        "up",
+        "negative_north"
+      ],
+      "gltf_meters_per_unit": 1.0,
+      "unity_axes": [
+        "east",
+        "up",
+        "north"
+      ],
+      "unity_units_per_meter": 100.0,
+      "viewer_manifest_meters_per_unit": 0.01
+    },
+    "declared_extent": {
+      "min_enu_m": [
+        -2500.0,
+        -2500.0,
+        -500.0
+      ],
+      "max_enu_m": [
+        2500.0,
+        2500.0,
+        500.0
+      ],
+      "reuse_tolerance_m": 0.001
+    }
+  },
+  "supersedes_zone_revision": 1,
+  "effective_at": "2026-07-12T20:00:00Z",
+  "change_reason": "Re-anchoring fictif de la zone de démonstration ; aucune donnée d'incident réelle."
+}

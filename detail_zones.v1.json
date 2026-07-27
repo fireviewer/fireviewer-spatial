@@ -1,0 +1,108 @@
+{
+  "schema_version": "1.0",
+  "parent_package_id": "synthetic-zone-fire-2026-v1",
+  "horizontal_crs": "EPSG:2154",
+  "vertical_reference": "NGF-IGN69",
+  "detail_resolution_metres": 0.5,
+  "extent_policy": {
+    "shape": "1000_metre_square",
+    "grid_alignment_metres": 0.5,
+    "purpose": "controlled first-pass LiDAR detail window",
+    "all_windows_inside_parent_aoi": true
+  },
+  "required_source_layers": [
+    "IGN LiDAR-HD MNT 0.5 m",
+    "IGN LiDAR-HD MNS 0.5 m",
+    "IGN LiDAR-HD classified COPC/LAZ",
+    "BD TOPO buildings",
+    "BD TOPO hedges"
+  ],
+  "required_outputs": [
+    "terrain_surface",
+    "individual_buildings",
+    "individual_hedges",
+    "individual_tree_instances",
+    "source_and_quality_manifest",
+    "web_glb_with_lods"
+  ],
+  "zones": [
+    {
+      "id": "montmaur",
+      "label": "Montmaur-en-Diois",
+      "official_reference": "commune INSEE 26205 / IGN Géoplateforme BAN, 5 Rue de la Mairie",
+      "center_l93_metres": [
+        888576.5,
+        6400287.5
+      ],
+      "center_wgs84_degrees": [
+        5.37972581,
+        44.67612181
+      ],
+      "bounds_l93_metres": [
+        888076.5,
+        6399787.5,
+        889076.5,
+        6400787.5
+      ],
+      "ign_lidar_hd_kilometre_tiles": [
+        "0888_6400",
+        "0888_6401",
+        "0889_6400",
+        "0889_6401"
+      ],
+      "relation_to_effis_fire": "inside_1500_metre_attention_buffer"
+    },
+    {
+      "id": "barsac",
+      "label": "Barsac",
+      "official_reference": "commune INSEE 26027 / IGN toponym",
+      "center_l93_metres": [
+        881380.5,
+        6406209.5
+      ],
+      "center_wgs84_degrees": [
+        5.29113365,
+        44.73133094
+      ],
+      "bounds_l93_metres": [
+        880880.5,
+        6405709.5,
+        881880.5,
+        6406709.5
+      ],
+      "ign_lidar_hd_kilometre_tiles": [
+        "0880_6406",
+        "0880_6407",
+        "0881_6406",
+        "0881_6407"
+      ],
+      "relation_to_effis_fire": "inside_1500_metre_attention_buffer"
+    },
+    {
+      "id": "ausson",
+      "label": "Ausson",
+      "official_reference": "BD TOPO lieu-dit PAIHABIT0000000006796439",
+      "center_l93_metres": [
+        889056.0,
+        6405524.0
+      ],
+      "center_wgs84_degrees": [
+        5.38777087,
+        44.72311536
+      ],
+      "bounds_l93_metres": [
+        888556.0,
+        6405024.0,
+        889556.0,
+        6406024.0
+      ],
+      "ign_lidar_hd_kilometre_tiles": [
+        "0888_6406",
+        "0888_6407",
+        "0889_6406",
+        "0889_6407"
+      ],
+      "relation_to_effis_fire": "inside_1500_metre_attention_buffer"
+    }
+  ]
+}

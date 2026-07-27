@@ -1,0 +1,542 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/charli-dev420/fireviewer/contracts/spatial/v1/spatial-contract.schema.json",
+  "title": "Fire Viewer local spatial contract v1",
+  "description": "Versioned local ENU, glTF, and Unity spatial artifacts for rural continental France.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/enuUnityPoints"
+    },
+    {
+      "$ref": "#/$defs/zoneRegistry"
+    },
+    {
+      "$ref": "#/$defs/zoneRevision"
+    },
+    {
+      "$ref": "#/$defs/spatialSnapshot"
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "vector3": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "zoneRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zone_id",
+        "zone_revision"
+      ],
+      "properties": {
+        "zone_id": {
+          "type": "string",
+          "pattern": "^FV-[A-Z0-9-]+$"
+        },
+        "zone_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "epsg4979Coordinate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latitude_deg",
+        "longitude_deg",
+        "ellipsoidal_height_m"
+      ],
+      "properties": {
+        "latitude_deg": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "longitude_deg": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "ellipsoidal_height_m": {
+          "type": "number"
+        }
+      }
+    },
+    "originWgs84Array": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "raf20Grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "distribution",
+        "source_uri",
+        "sha256",
+        "network_permitted"
+      ],
+      "properties": {
+        "distribution": {
+          "const": "bundled_proj_data"
+        },
+        "source_uri": {
+          "const": "https://cdn.proj.org/fr_ign_RAF20.tif"
+        },
+        "sha256": {
+          "const": "dc0cc2a38f0ea1029fe72cca3b5b7ed6dfe7e1db2a8d8482b7326ce3d6f25605"
+        },
+        "network_permitted": {
+          "const": false
+        }
+      }
+    },
+    "verticalConversion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_vertical_datum",
+        "geoid_model",
+        "raf20_grid",
+        "source_orthometric_height_m",
+        "geoid_undulation_m",
+        "result_epsg4979"
+      ],
+      "properties": {
+        "source_vertical_datum": {
+          "const": "NGF-IGN69"
+        },
+        "geoid_model": {
+          "const": "RAF20"
+        },
+        "raf20_grid": {
+          "$ref": "#/$defs/raf20Grid"
+        },
+        "source_orthometric_height_m": {
+          "type": "number"
+        },
+        "geoid_undulation_m": {
+          "type": "number"
+        },
+        "result_epsg4979": {
+          "$ref": "#/$defs/epsg4979Coordinate"
+        }
+      }
+    },
+    "localFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin_epsg4979",
+        "origin_wgs84",
+        "frame_crs",
+        "frame_type",
+        "gltf_axes",
+        "gltf_meters_per_unit",
+        "unity_axes",
+        "unity_units_per_meter",
+        "viewer_manifest_meters_per_unit"
+      ],
+      "properties": {
+        "origin_epsg4979": {
+          "$ref": "#/$defs/epsg4979Coordinate"
+        },
+        "origin_wgs84": {
+          "$ref": "#/$defs/originWgs84Array",
+          "description": "[longitude_deg, latitude_deg, ellipsoidal_height_m] in EPSG:4979."
+        },
+        "frame_crs": {
+          "const": "EPSG:4979"
+        },
+        "frame_type": {
+          "const": "ENU"
+        },
+        "gltf_axes": {
+          "const": [
+            "east",
+            "up",
+            "negative_north"
+          ]
+        },
+        "gltf_meters_per_unit": {
+          "const": 1
+        },
+        "unity_axes": {
+          "const": [
+            "east",
+            "up",
+            "north"
+          ]
+        },
+        "unity_units_per_meter": {
+          "const": 100
+        },
+        "viewer_manifest_meters_per_unit": {
+          "const": 0.01
+        }
+      }
+    },
+    "declaredExtent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "min_enu_m",
+        "max_enu_m",
+        "reuse_tolerance_m"
+      ],
+      "properties": {
+        "min_enu_m": {
+          "$ref": "#/$defs/vector3"
+        },
+        "max_enu_m": {
+          "$ref": "#/$defs/vector3"
+        },
+        "reuse_tolerance_m": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "archivePng": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "archive_uri",
+        "sha256",
+        "content_type",
+        "pixel_width",
+        "pixel_height",
+        "generated_at"
+      ],
+      "properties": {
+        "archive_uri": {
+          "type": "string",
+          "pattern": "^archive://.+\\.png$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "content_type": {
+          "const": "image/png"
+        },
+        "pixel_width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pixel_height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "zone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zone_id",
+        "zone_revision",
+        "territory_scope",
+        "usage_scope",
+        "vertical_conversion",
+        "local_frame",
+        "declared_extent"
+      ],
+      "properties": {
+        "zone_id": {
+          "type": "string",
+          "pattern": "^FV-[A-Z0-9-]+$"
+        },
+        "zone_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "territory_scope": {
+          "const": "France continentale"
+        },
+        "usage_scope": {
+          "const": "rural_local"
+        },
+        "vertical_conversion": {
+          "$ref": "#/$defs/verticalConversion"
+        },
+        "local_frame": {
+          "$ref": "#/$defs/localFrame"
+        },
+        "declared_extent": {
+          "$ref": "#/$defs/declaredExtent"
+        }
+      }
+    },
+    "enuUnityPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "enu_m",
+        "gltf_m",
+        "unity_units"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "enu_m": {
+          "$ref": "#/$defs/vector3"
+        },
+        "gltf_m": {
+          "$ref": "#/$defs/vector3"
+        },
+        "unity_units": {
+          "$ref": "#/$defs/vector3"
+        }
+      }
+    },
+    "enuUnityPoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "zone",
+        "tolerance",
+        "points"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "kind": {
+          "const": "enu_unity_points"
+        },
+        "zone": {
+          "$ref": "#/$defs/zoneRef"
+        },
+        "tolerance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "round_trip_m",
+            "round_trip_unity_units"
+          ],
+          "properties": {
+            "round_trip_m": {
+              "type": "number",
+              "maximum": 0.001,
+              "exclusiveMinimum": 0
+            },
+            "round_trip_unity_units": {
+              "type": "number",
+              "maximum": 0.1,
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "points": {
+          "type": "array",
+          "minItems": 4,
+          "items": {
+            "$ref": "#/$defs/enuUnityPoint"
+          }
+        }
+      }
+    },
+    "zoneRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "coverage",
+        "zones"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "kind": {
+          "const": "zone_registry"
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "in_scope",
+            "out_of_scope"
+          ],
+          "properties": {
+            "in_scope": {
+              "const": "France continentale rurale locale"
+            },
+            "out_of_scope": {
+              "const": [
+                "Corse",
+                "outre-mer"
+              ]
+            }
+          }
+        },
+        "zones": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/zone"
+          }
+        }
+      }
+    },
+    "zoneRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "zone",
+        "supersedes_zone_revision",
+        "effective_at",
+        "change_reason"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "kind": {
+          "const": "zone_revision"
+        },
+        "zone": {
+          "$ref": "#/$defs/zone"
+        },
+        "supersedes_zone_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "effective_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "change_reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "spatialSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "snapshot_id",
+        "manifest_revision",
+        "asset_ref",
+        "zone",
+        "local_frame",
+        "vertical_conversion",
+        "archive_png",
+        "created_at"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "kind": {
+          "const": "spatial_snapshot"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^SPS-[A-Z0-9-]+$"
+        },
+        "manifest_revision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fire_id",
+            "episode_id",
+            "revision"
+          ],
+          "properties": {
+            "fire_id": {
+              "type": "string",
+              "pattern": "^FR-[0-9A-Z]{2,3}-[0-9]{5}$"
+            },
+            "episode_id": {
+              "type": "string",
+              "pattern": "^E[0-9]{2}$"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "asset_ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "asset_id",
+            "asset_version",
+            "fixture_only"
+          ],
+          "properties": {
+            "asset_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "asset_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "fixture_only": {
+              "const": true
+            }
+          }
+        },
+        "zone": {
+          "$ref": "#/$defs/zoneRef"
+        },
+        "local_frame": {
+          "$ref": "#/$defs/localFrame"
+        },
+        "vertical_conversion": {
+          "$ref": "#/$defs/verticalConversion"
+        },
+        "archive_png": {
+          "$ref": "#/$defs/archivePng"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}
