@@ -8,8 +8,10 @@ __pycache__/
 .env.*
 !.env.example
 archives/
+.artifacts/
 downloads/
 outputs/
+production-work/
 productions/
 site-upload/
 Library/
