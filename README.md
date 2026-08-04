@@ -9,6 +9,27 @@ production, dossier d’upload, modèle 3D, atlas, arbre source ou donnée
 d’incident. Les packages validés sont publiés séparément dans GitHub Releases
 ou un stockage Blob.
 
+## Position dans l’architecture événementielle v2
+
+Ce dépôt fournit les référentiels et contrats géométriques utilisés pour
+localiser des phénomènes actifs à partir de contributions documentées. Il ne
+déduit pas une localisation depuis un texte et ne publie aucune géométrie.
+
+Une branche spatiale admissible relie explicitement :
+
+- le point de prise de vue privé et son incertitude ;
+- le modèle de caméra, l’orientation et le profil de vue ;
+- l’ancrage visuel rattaché à une preuve ;
+- la révision immuable du terrain et de la banque de rendus ;
+- la pose, le raycast ou la triangulation ;
+- le résultat géométrique, son incertitude et ses contrôles.
+
+En l’absence d’orientation, de pose, d’intersection terrain ou de précision
+suffisante, le résultat reste un secteur ou une abstention. Le point de prise
+de vue n’est jamais assimilé au point actif. Les matchers cross-view restent en
+benchmark ou en shadow tant qu’un benchmark événementiel indépendant ne
+justifie pas leur promotion.
+
 ## Contenu
 
 - `production-kit-france/` : préparation reproductible d’une zone générique ;
@@ -27,6 +48,20 @@ licences, tailles et SHA-256.
 
 La validation automatisée ne remplace pas la revue Unity. Une publication exige
 un reçu de validation Unity manuel conforme au schéma du kit.
+
+Les packages et banques de rendus sont versionnés par zone et par révision. Les
+sorties de localisation conservent les CRS horizontaux, datums verticaux,
+transformations, résolutions et empreintes exactes nécessaires au replay.
+
+## Documentation de référence
+
+- `docs/CAMERA_AND_CRS_CONTRACT.md` : repères, caméra, pose et contrôles ;
+- `docs/PACKAGE_VERSIONING.md` : immutabilité et dépendances des révisions ;
+- `docs/RENDER_BANK_SPEC.md` : contenu et portée des banques de rendus ;
+- `docs/UAV_REGISTRATION_BENCHMARK.md` : protocole de comparaison des matchers.
+
+La doctrine produit, les contrats transverses et la matrice d’acceptation sont
+maintenus dans le dépôt canonique `fireviewer/Fireviewer_doc`.
 
 ## Contrôles
 

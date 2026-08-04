@@ -6,4 +6,4 @@ Sauf mention contraire, la documentation, la roadmap, les diagrammes et les autr
 
 Vous pouvez partager et adapter ces contenus, y compris commercialement, à condition de fournir une attribution appropriée, un lien vers la licence et une indication des modifications éventuelles.
 
-Les textes de licences, les marques de tiers, les dépendances et les données externes restent soumis à leurs propres conditions. Les exceptions et les preuves de provenance des fichiers visuels sont consignées dans [ASSET_PROVENANCE.md](ASSET_PROVENANCE.md). Un asset marqué `NON VÉRIFIÉ` dans ce registre n'est pas couvert par la présente concession CC BY 4.0.
+Les textes de licences, les marques de tiers, les dépendances et les données externes restent soumis à leurs propres conditions. Les exceptions et les preuves de provenance des fichiers visuels sont consignées dans [PROVENANCE.md](PROVENANCE.md). Un asset marqué `NON VÉRIFIÉ` dans ce registre n'est pas couvert par la présente concession CC BY 4.0.

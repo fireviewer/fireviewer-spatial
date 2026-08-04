@@ -1,6 +1,6 @@
 # Contrat spatial local v1
 
-Ces artefacts décrivent un profil spatial **fictif**, local et versionné pour Fire Viewer.
+Ces artefacts décrivent un profil spatial **fictif**, local et versionné pour FireViewer.
 Ils ne contiennent aucun terrain, incident, asset GLB ou aperçu PNG réel.
 
 | Artefact | Rôle |
@@ -26,5 +26,6 @@ Ils ne contiennent aucun terrain, incident, asset GLB ou aperçu PNG réel.
   zones actives. Il est identifié par URI, hash, dimensions et date de production.
 - Aucun globe, jeu de tuiles ou runtime Cesium ne fait partie de ce profil.
 
-L'[ADR-002](../../../docs/adr/ADR-002-spatial-local-unity-contract.md) est la décision
-normative ; les fixtures sont des valeurs de contrôle, pas une source de géodonnées.
+Le [contrat caméra et CRS](../../../docs/CAMERA_AND_CRS_CONTRACT.md) constitue la référence
+normative actuelle. Ce profil v1 reste une fixture de compatibilité : ses valeurs de contrôle ne
+constituent pas une source de géodonnées ni une tentative de localisation événementielle.

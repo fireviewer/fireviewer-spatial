@@ -6,7 +6,8 @@ Avant G2, les contributions utilisent exclusivement des données fictives ou des
 
 ## Premier périmètre de contribution
 
-Le backlog initial est dans [docs/PLAN_DE_SUITE.md](docs/PLAN_DE_SUITE.md). Les contributions prioritaires portent sur :
+Les priorités inter-dépôts sont maintenues dans le dépôt documentaire FireViewer. Dans ce dépôt,
+une contribution doit correspondre à une issue spatiale actuelle et porter sur :
 
 1. le test de contrat entre le manifeste backend et l'UI ;
 2. le contrat WGS84 / ENU / Unity et les tests métriques ;
@@ -25,7 +26,7 @@ Tout code soumis à ce dépôt est proposé sous **AGPL-3.0-or-later**. Toute do
 - Vérifiez que `git status` ne contient pas de `.env`, base locale, build, cache ou archive ZIP reçue.
 - Exécutez un détecteur de secrets sur le diff et l'historique avant une publication publique.
 - Utilisez une adresse Git de type `noreply` si votre adresse personnelle ne doit pas apparaître dans l'historique public.
-- Inscrivez chaque image, document binaire ou média dans [ASSET_PROVENANCE.md](ASSET_PROVENANCE.md) avec sa licence et sa preuve d'origine.
+- Inscrivez chaque image, document binaire ou média dans [PROVENANCE.md](PROVENANCE.md) avec sa licence et sa preuve d'origine.
 
 ## Convention de sécurité
 
