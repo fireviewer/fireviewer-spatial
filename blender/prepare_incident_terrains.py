@@ -107,9 +107,7 @@ CASES: tuple[IncidentTerrainCase, ...] = (
 
 def validate_case(case: IncidentTerrainCase) -> None:
     west, south, east, north = case.square_bounds_epsg2154_m
-    source_west, source_south, source_east, source_north = (
-        case.source_bounds_epsg2154_m
-    )
+    source_west, source_south, source_east, source_north = case.source_bounds_epsg2154_m
     if not case.fire_id.startswith("FR-") or not case.canonical_name.strip():
         raise ValueError("Incident identity is invalid")
     if case.incident_geometry_count <= 0:
@@ -179,9 +177,13 @@ def load_ground_surface_catalog(path: Path) -> dict[str, Any]:
             f"Ground surface atlas must pack {GROUND_MICRO_SOURCE_COUNT} micro sources"
         )
     if payload.get("profile_count") != GROUND_PROFILE_COUNT:
-        raise ValueError(f"Ground surface catalog must contain {GROUND_PROFILE_COUNT} profiles")
+        raise ValueError(
+            f"Ground surface catalog must contain {GROUND_PROFILE_COUNT} profiles"
+        )
     if payload.get("runtime_texture_count") != GROUND_RUNTIME_TEXTURE_COUNT:
-        raise ValueError("Ground surface runtime must import exactly four atlas textures")
+        raise ValueError(
+            "Ground surface runtime must import exactly four atlas textures"
+        )
     if payload.get("micro_source_runtime_import") != "forbidden":
         raise ValueError("Direct ImageGen micro source imports must be forbidden")
     if payload.get("orthophoto_dependency") != "forbidden":
@@ -217,8 +219,19 @@ def load_ground_runtime_contract(path: Path) -> dict[str, Any]:
     if scale.get("direct_source_image_import") != "forbidden":
         raise ValueError("Ground surface runtime must pack offline sources")
     composition = payload.get("composition", {})
-    if composition.get("ground_blend", {}).get("maximum_profiles_per_tile") != 4:
-        raise ValueError("Ground blend must contain four or fewer profiles")
+    ground_blend = composition.get("ground_blend", {})
+    if ground_blend.get("grid_cell_size_m") != 5.0:
+        raise ValueError("Ground blend composition cells must measure 5 m")
+    if ground_blend.get("grid_size_px_per_500m_tile") != [100, 100]:
+        raise ValueError("Ground blend maps must be 100x100 pixels per 500 m tile")
+    if ground_blend.get("maximum_profiles_per_cell") != 4:
+        raise ValueError("Ground blend must contain four or fewer profiles per cell")
+    if ground_blend.get("profile_id_map") != "ground-profile-ids.png":
+        raise ValueError("Ground blend profile id map name is invalid")
+    if ground_blend.get("profile_weight_map") != "ground-profile-weights.png":
+        raise ValueError("Ground blend profile weight map name is invalid")
+    if ground_blend.get("profile_weight_encoding") != "rgba8_sum_exactly_255":
+        raise ValueError("Ground blend weights must sum exactly to 255")
     if composition.get("rail_geometry", {}).get("steel_rails") != (
         "required_separate_future_3d_geometry"
     ):
@@ -262,19 +275,30 @@ def load_ground_context_catalog(path: Path) -> dict[str, Any]:
         manifest_path = root / case["manifest_path"]
         if not package.is_file() or sha256_file(package) != case["package_sha256"]:
             raise ValueError(f"Ground context package mismatch: {case['fire_id']}")
-        if not manifest_path.is_file() or sha256_file(manifest_path) != case["manifest_sha256"]:
+        if (
+            not manifest_path.is_file()
+            or sha256_file(manifest_path) != case["manifest_sha256"]
+        ):
             raise ValueError(f"Ground context manifest mismatch: {case['fire_id']}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest.get("fire_id") != case["fire_id"]:
-            raise ValueError(f"Ground context manifest incident mismatch: {case['fire_id']}")
+            raise ValueError(
+                f"Ground context manifest incident mismatch: {case['fire_id']}"
+            )
         if manifest.get("package", {}).get("sha256") != case["package_sha256"]:
-            raise ValueError(f"Ground context manifest package mismatch: {case['fire_id']}")
+            raise ValueError(
+                f"Ground context manifest package mismatch: {case['fire_id']}"
+            )
         if manifest.get("profile_binding_count") != GROUND_PROFILE_COUNT:
-            raise ValueError(f"Ground context profile binding mismatch: {case['fire_id']}")
+            raise ValueError(
+                f"Ground context profile binding mismatch: {case['fire_id']}"
+            )
         if manifest.get("source_cleanup", {}).get("status") != (
             "completed_after_package_validation"
         ):
-            raise ValueError(f"Ground context source cleanup is incomplete: {case['fire_id']}")
+            raise ValueError(
+                f"Ground context source cleanup is incomplete: {case['fire_id']}"
+            )
     return payload
 
 
@@ -339,8 +363,12 @@ def write_case_plan(
         for entry in ground_context_catalog["cases"]
         if entry["fire_id"] == case.fire_id
     )
-    context_package_path = ground_context_catalog_path.parent / context_case["package_path"]
-    context_manifest_path = ground_context_catalog_path.parent / context_case["manifest_path"]
+    context_package_path = (
+        ground_context_catalog_path.parent / context_case["package_path"]
+    )
+    context_manifest_path = (
+        ground_context_catalog_path.parent / context_case["manifest_path"]
+    )
     candidate_profile_ids_by_mode = {
         mode: sorted(
             profile["id"]
@@ -482,9 +510,9 @@ def write_catalog(
                     ground_surface_catalog_path.resolve(), output_root.resolve()
                 )
             ).as_posix(),
-            "catalog_sha256": load_ground_surface_catalog(
-                ground_surface_catalog_path
-            )["catalog_sha256"],
+            "catalog_sha256": load_ground_surface_catalog(ground_surface_catalog_path)[
+                "catalog_sha256"
+            ],
             "micro_source_count": GROUND_MICRO_SOURCE_COUNT,
             "runtime_texture_count": GROUND_RUNTIME_TEXTURE_COUNT,
             "profile_count": GROUND_PROFILE_COUNT,

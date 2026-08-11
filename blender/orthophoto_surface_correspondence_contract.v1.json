@@ -1,0 +1,101 @@
+{
+  "schema": "fireviewer.orthophoto-surface-correspondence-contract.v1",
+  "status": "locked",
+  "crs": "EPSG:2154",
+  "input": {
+    "pixel_type": "RGB8",
+    "resolution_m": 1,
+    "north_up": true,
+    "global_grid_alignment_m": 1,
+    "processing_halo_m": 10,
+    "orthophoto_retention": "temporary_source_deleted_after_validation"
+  },
+  "classification": {
+    "implementation": "deterministic_integer_multiscale_correspondence",
+    "feature_window_sizes_m": [
+      1,
+      5,
+      17
+    ],
+    "rgb_l1_weights": [
+      8,
+      4,
+      2
+    ],
+    "texture_l1_weights": [
+      1,
+      2,
+      4
+    ],
+    "semantic_restriction": "highest_priority_context_then_approved_correction",
+    "maximum_profiles_per_pixel": 4,
+    "weight_quantization": "rgba8_sum_exactly_255",
+    "coordinate_precision_m": 0.001
+  },
+  "model": {
+    "schema": "fireviewer.orthophoto-surface-model.v1",
+    "required_status": "locked",
+    "profile_count": 72,
+    "stable_profile_binding": "exact_contract_v4_ids_in_stable_index_order",
+    "profile_features": [
+      "class_id",
+      "rgb_u8_by_scale",
+      "texture_u8_by_scale",
+      "orientation_mode",
+      "default_orientation_deg"
+    ]
+  },
+  "pbr_library": {
+    "schema": "fireviewer.clean-pbr-texture-library.v1",
+    "texture_contract_schema": "fireviewer.ground-surface-texture-contract.v4",
+    "required_status": "accepted_clean_pbr_library",
+    "profile_count": 72,
+    "required_assets": [
+      "basecolor",
+      "normal",
+      "height",
+      "orm"
+    ],
+    "required_tileable": true,
+    "allowed_projections": [
+      "world_xy",
+      "world_triplanar"
+    ],
+    "profile_index": "stable_index_0_to_71_from_texture_contract_v4",
+    "procedural_materials": "forbidden"
+  },
+  "tile": {
+    "size_m": 500,
+    "grid_size_px": [
+      500,
+      500
+    ],
+    "outputs": {
+      "ground-profile-ids.png": "RGBA8_zero_based_library_indices",
+      "ground-profile-weights.png": "RGBA8_sum_exactly_255",
+      "ground-confidence.png": "L8_category_margin",
+      "ground-orientation.png": "L8_undirected_axis_0_to_pi_with_0_and_255_equivalent",
+      "surface-correspondence.json": "canonical_compact_hash_locked_manifest"
+    }
+  },
+  "runtime": {
+    "orthophoto_dependency": "forbidden",
+    "orthophoto_pixels_in_outputs": false,
+    "texture_projection": "world_or_triplanar_from_profile_library",
+    "texture_variation": "deterministic_from_profile_weights_orientation_and_world_coordinates",
+    "shader_noise": "forbidden"
+  },
+  "provenance": {
+    "required_sha256": [
+      "orthophoto_source",
+      "orthophoto_tile_input",
+      "pbr_library",
+      "correspondence_model",
+      "algorithm",
+      "contract",
+      "context_priors",
+      "approved_corrections"
+    ],
+    "orthophoto_path_in_manifest": "forbidden"
+  }
+}

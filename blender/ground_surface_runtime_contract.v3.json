@@ -265,10 +265,15 @@
   ],
   "composition": {
     "ground_blend": {
-      "maximum_profiles_per_tile": 4,
-      "weight_map": "ground-material-map.png",
+      "grid_cell_size_m": 5.0,
+      "grid_size_px_per_500m_tile": [100, 100],
+      "maximum_profiles_per_cell": 4,
+      "profile_id_map": "ground-profile-ids.png",
+      "profile_id_encoding": "zero_based_profile_table_index_rgba8",
+      "profile_weight_map": "ground-profile-weights.png",
+      "profile_weight_encoding": "rgba8_sum_exactly_255",
       "weight_channels": ["r", "g", "b", "a"],
-      "weight_normalization": "sum_to_one_per_pixel"
+      "weight_normalization": "sum_to_255_per_pixel"
     },
     "directional_area": {
       "geometry_source": "approved_land_parcels",
@@ -313,7 +318,21 @@
     "MNS_minus_MNT_object_reservation"
   ],
   "determinism": {
-    "seed_inputs": ["fire_id", "feature_id", "tile_id", "catalog_sha256", "contract_sha256"],
+    "seed_inputs": [
+      "algorithm_schema",
+      "global_feature_id",
+      "global_curvilinear_segment_index",
+      "atlas_catalog_sha256",
+      "ground_context_snapshot_sha256",
+      "contract_sha256"
+    ],
+    "forbidden_seed_inputs": [
+      "fire_id",
+      "tile_id",
+      "local_path",
+      "clock",
+      "worker_order"
+    ],
     "silent_fallback": "forbidden"
   },
   "fail_closed_conditions": [

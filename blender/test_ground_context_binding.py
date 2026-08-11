@@ -32,6 +32,9 @@ def test_contract_binds_all_72_runtime_profiles() -> None:
         "road:asphalt",
         "road:fine",
     ]
+    assert "tile_id" in runtime["determinism"]["forbidden_seed_inputs"]
+    assert "fire_id" in runtime["determinism"]["forbidden_seed_inputs"]
+    assert "global_feature_id" in runtime["determinism"]["seed_inputs"]
 
 
 def test_official_attributes_are_classified_without_image_inference() -> None:

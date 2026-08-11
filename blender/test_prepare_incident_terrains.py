@@ -63,10 +63,15 @@ def _write_test_ground_contracts(
         "runtime_atlas": {"runtime_texture_count": 4},
         "scale_contract": {"direct_source_image_import": "forbidden"},
         "composition": {
-            "ground_blend": {"maximum_profiles_per_tile": 4},
-            "rail_geometry": {
-                "steel_rails": "required_separate_future_3d_geometry"
+            "ground_blend": {
+                "grid_cell_size_m": 5.0,
+                "grid_size_px_per_500m_tile": [100, 100],
+                "maximum_profiles_per_cell": 4,
+                "profile_id_map": "ground-profile-ids.png",
+                "profile_weight_map": "ground-profile-weights.png",
+                "profile_weight_encoding": "rgba8_sum_exactly_255",
             },
+            "rail_geometry": {"steel_rails": "required_separate_future_3d_geometry"},
         },
         "determinism": {"silent_fallback": "forbidden"},
         "profile_families": families,
@@ -85,9 +90,7 @@ def _write_test_ground_contracts(
             "fire_id": case.fire_id,
             "profile_binding_count": len(modes),
             "package": {"sha256": package_hash},
-            "source_cleanup": {
-                "status": "completed_after_package_validation"
-            },
+            "source_cleanup": {"status": "completed_after_package_validation"},
         }
         manifest_path = case_root / "ground-context-manifest.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -164,7 +167,9 @@ def test_die_is_replanned_without_legacy_terrain_or_placements(
     }
     assert manifest["summary"]["orthophoto_request_count"] == 0
     assert manifest["worker_contract"]["source_products"] == ["mnt", "mns"]
-    assert manifest["worker_contract"]["ground_2d"]["orthophoto_dependency"] == "forbidden"
+    assert (
+        manifest["worker_contract"]["ground_2d"]["orthophoto_dependency"] == "forbidden"
+    )
     assert manifest["worker_contract"]["terrain_tile_contract"].startswith("bare-mnt")
     assert "mid_package_terrain_contract" not in manifest["worker_contract"]
     assert "orthophoto_resolution_m" not in manifest["tiling"]

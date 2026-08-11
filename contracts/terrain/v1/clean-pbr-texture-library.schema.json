@@ -1,0 +1,276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireviewer.fr/contracts/terrain/v1/clean-pbr-texture-library.schema.json",
+  "title": "FireViewer clean PBR ground texture library",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "texture_contract_sha256",
+    "orthophoto_dependency",
+    "lineage",
+    "runtime_atlases",
+    "profiles",
+    "visual_acceptance"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fireviewer.clean-pbr-texture-library.v1"
+    },
+    "status": {
+      "enum": [
+        "generated_pending_visual_review",
+        "accepted_clean_pbr_library"
+      ]
+    },
+    "texture_contract_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "orthophoto_dependency": {
+      "const": "forbidden"
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "legacy_atlas_dependencies"
+      ],
+      "properties": {
+        "source": {
+          "const": "fresh_clean_pbr_v4"
+        },
+        "legacy_atlas_dependencies": {
+          "const": []
+        }
+      }
+    },
+    "runtime_atlases": {
+      "$ref": "#/$defs/fourRoleArtifacts"
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 72,
+      "maxItems": 72,
+      "items": {
+        "$ref": "#/$defs/profile"
+      }
+    },
+    "visual_acceptance": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "receipt"
+          ],
+          "properties": {
+            "status": {
+              "const": "pending_human_visual_review"
+            },
+            "receipt": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "receipt"
+          ],
+          "properties": {
+            "status": {
+              "const": "accepted_human_visual"
+            },
+            "receipt": {
+              "$ref": "#/$defs/artifact"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "generated_pending_visual_review"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "visual_acceptance": {
+            "properties": {
+              "status": {
+                "const": "pending_human_visual_review"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "accepted_clean_pbr_library"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "visual_acceptance": {
+            "properties": {
+              "status": {
+                "const": "accepted_human_visual"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "byte_count",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$"
+        },
+        "byte_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "fourRoleArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basecolor",
+        "normal",
+        "height",
+        "orm"
+      ],
+      "properties": {
+        "basecolor": {
+          "$ref": "#/$defs/artifact"
+        },
+        "normal": {
+          "$ref": "#/$defs/artifact"
+        },
+        "height": {
+          "$ref": "#/$defs/artifact"
+        },
+        "orm": {
+          "$ref": "#/$defs/artifact"
+        }
+      }
+    },
+    "atlasUv": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offset",
+        "scale"
+      ],
+      "properties": {
+        "offset": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "number",
+            "minimum": 0,
+            "exclusiveMaximum": 1
+          }
+        },
+        "scale": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stable_index",
+        "id",
+        "surface_basis",
+        "atlas_slot",
+        "atlas_uv",
+        "physical_scale_m",
+        "projection",
+        "source_kind",
+        "textures"
+      ],
+      "properties": {
+        "stable_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 71
+        },
+        "id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "surface_basis": {
+          "const": "atlas_pbr"
+        },
+        "atlas_slot": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 71
+        },
+        "atlas_uv": {
+          "$ref": "#/$defs/atlasUv"
+        },
+        "physical_scale_m": {
+          "type": "number",
+          "minimum": 1.5,
+          "maximum": 8.0
+        },
+        "projection": {
+          "enum": [
+            "world_xy",
+            "world_triplanar"
+          ]
+        },
+        "source_kind": {
+          "const": "clean_pbr_profile_texture"
+        },
+        "textures": {
+          "$ref": "#/$defs/fourRoleArtifacts"
+        }
+      }
+    }
+  }
+}
