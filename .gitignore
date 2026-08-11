@@ -20,6 +20,7 @@ Temp/
 UserSettings/
 Obj/
 Build/
+bin/
 *.blend
 *.cog
 *.fbx

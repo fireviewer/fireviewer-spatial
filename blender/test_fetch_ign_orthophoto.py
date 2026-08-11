@@ -192,6 +192,41 @@ def test_execute_plan_assembles_validated_rgb_and_provenance(tmp_path: Path) -> 
     assert str(tmp_path) not in source_path.read_text(encoding="utf-8")
 
 
+def test_execute_plan_records_a_blank_wms_tile_without_inventing_imagery(
+    tmp_path: Path,
+) -> None:
+    plan = build_plan((879000, 6400000, 879256, 6400256), 1.0, 256)
+    output = tmp_path / "blank.tif"
+
+    def blank_fetcher(url: str, destination: Path, _timeout_s: float) -> None:
+        query = parse_qs(urlparse(url).query)
+        width = int(query["WIDTH"][0])
+        height = int(query["HEIGHT"][0])
+        bounds = tuple(float(value) for value in query["BBOX"][0].split(","))
+        with rasterio.open(
+            destination,
+            "w",
+            driver="GTiff",
+            width=width,
+            height=height,
+            count=3,
+            dtype="uint8",
+            crs="EPSG:2154",
+            transform=rasterio.transform.from_bounds(*bounds, width, height),
+        ) as dataset:
+            dataset.write(np.zeros((3, height, width), dtype=np.uint8))
+            dataset.write_mask(np.zeros((height, width), dtype=np.uint8))
+
+    record = execute_plan(plan, output, fetcher=blank_fetcher)
+
+    assert record["coverage"] == {
+        "measured_tile_count": 0,
+        "no_data_tile_count": 1,
+        "no_data_policy": "unmeasured imagery remains absent; FAR terrain masks the corresponding no-data terrain cells",
+    }
+    assert record["tiles"][0]["validation"]["coverage_state"] == "no_data"
+
+
 def test_jpeg_correction_changes_only_jpeg_and_is_traced(tmp_path: Path) -> None:
     plan = build_plan((879000, 6400000, 879256, 6400256), 1.0, 256)
     output = tmp_path / "ortho-raw.tif"

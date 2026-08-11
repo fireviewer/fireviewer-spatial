@@ -350,8 +350,6 @@ def validate_wms_tile(path: Path, tile: OrthophotoTile) -> dict[str, object]:
             )
         valid_mask = dataset.dataset_mask()
         valid_pixels = int(np.count_nonzero(valid_mask))
-        if valid_pixels == 0:
-            raise RuntimeError("IGN WMS tile contains no valid pixel")
         return {
             "driver": dataset.driver,
             "crs": OUTPUT_CRS,
@@ -364,6 +362,7 @@ def validate_wms_tile(path: Path, tile: OrthophotoTile) -> dict[str, object]:
             "bounds_l93_m": list(actual_bounds),
             "valid_pixel_count": valid_pixels,
             "valid_pixel_ratio": valid_pixels / (dataset.width * dataset.height),
+            "coverage_state": "measured" if valid_pixels else "no_data",
         }
 
 
@@ -544,7 +543,11 @@ def execute_plan(
         jpeg_output.parent.mkdir(parents=True, exist_ok=True)
 
     tile_records: list[dict[str, object]] = []
-    with tempfile.TemporaryDirectory(prefix="fireviewer-ign-ortho-") as temporary:
+    # Keep temporary WMS responses alongside the requested artifact.  Large
+    # production AOIs must not silently consume the system drive.
+    with tempfile.TemporaryDirectory(
+        prefix="fireviewer-ign-ortho-", dir=output.parent
+    ) as temporary:
         temporary_dir = Path(temporary)
         with rasterio.open(
             output, "w", **_output_profile(plan, jpeg_quality)
@@ -554,8 +557,9 @@ def execute_plan(
                 tile_path = temporary_dir / f"tile-{tile.row:02d}-{tile.column:02d}.tif"
                 fetcher(tile.url, tile_path, timeout_s)
                 validation = validate_wms_tile(tile_path, tile)
-                with rasterio.open(tile_path) as source:
-                    mosaic.write(source.read((1, 2, 3)), window=tile.window)
+                if validation["coverage_state"] == "measured":
+                    with rasterio.open(tile_path) as source:
+                        mosaic.write(source.read((1, 2, 3)), window=tile.window)
                 tile_records.append(
                     {
                         "index": index,
@@ -643,6 +647,17 @@ def execute_plan(
         "request": plan_to_dict(plan),
         "jpeg_display_transform": display_transform.metadata(),
         "tiles": tile_records,
+        "coverage": {
+            "measured_tile_count": sum(
+                tile["validation"]["coverage_state"] == "measured"
+                for tile in tile_records
+            ),
+            "no_data_tile_count": sum(
+                tile["validation"]["coverage_state"] == "no_data"
+                for tile in tile_records
+            ),
+            "no_data_policy": "unmeasured imagery remains absent; FAR terrain masks the corresponding no-data terrain cells",
+        },
         "outputs": outputs,
     }
     source_record.write_text(

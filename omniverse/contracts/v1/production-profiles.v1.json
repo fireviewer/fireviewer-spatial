@@ -1,0 +1,83 @@
+{
+  "schema": "fireviewer.omniverse-production-profiles.v1",
+  "contract_status": "candidate_pending_die_visual_acceptance",
+  "activation_gate": {
+    "required_scene": "fireviewer-die-pontaix-r1-v4-die-retrospective-v1",
+    "required_decision": "accepted",
+    "required_receipt_sha256": null,
+    "automatic_activation": false
+  },
+  "map_upload": {
+    "schema": "fireviewer.omniverse-map-upload-contract.v1",
+    "simulation_enabled": false,
+    "perimeter_embedded": false,
+    "camera_rig_embedded": false,
+    "horizontal_crs": "EPSG:2154",
+    "vertical_datum": "NGF-IGN69",
+    "maximum_mnt_resolution_m": 0.5,
+    "maximum_mns_resolution_m": 0.5,
+    "vegetation_placement": "co_located_mns_minus_mnt",
+    "vegetation_lod_policy": "none_all_detected_instances_resident"
+  },
+  "progressive_perimeter_layer": {
+    "schema": "fireviewer.omniverse-progressive-perimeter-layer-contract.v1",
+    "separate_from_map_upload": true,
+    "production_mode": "progressive_separate_layer_revisions",
+    "geometry_role": "cumulative_fire_perimeter",
+    "layer_crs": "EPSG:2154",
+    "seconds_per_day": 60.0,
+    "trace_required": true,
+    "fill_required": true,
+    "simulation_enabled": false
+  },
+  "camera_rig": {
+    "minimum_human_cameras": 55,
+    "minimum_aerial_cameras": 7,
+    "thermal_required_for_all_aerial_cameras": true,
+    "included_in": ["simulated_cases", "historical_reproductions"],
+    "included_in_map_upload": false
+  },
+  "simulated_case": {
+    "schema": "fireviewer.omniverse-simulated-case-production-contract.v1",
+    "seconds_per_day": 60.0,
+    "views_per_state": 20,
+    "positive_views_per_in_scene_state": 16,
+    "negative_views_per_in_scene_state": 4,
+    "zooms_per_view": 5,
+    "retarget_positive_camera_to": "nearest_visible_flame_point_to_camera",
+    "profiles": {
+      "retrospective_daily_replay_v1": {
+        "states_per_day": 1,
+        "incident_days_source_driven": true,
+        "out_of_scene_state_policy": "all_views_negative_without_fabricated_fire"
+      },
+      "synthetic_training_18d_v1": {
+        "incident_days": 18,
+        "states_per_day": 10,
+        "capture_state_count": 180,
+        "expected_viewpoint_plans": 3600,
+        "expected_capture_cases": 18000,
+        "expected_positive_cases": 14400,
+        "expected_negative_cases": 3600
+      }
+    }
+  },
+  "reproducible_download": {
+    "schema": "fireviewer.omniverse-reproducible-download-bundle-contract.v1",
+    "applies_to": ["simulated_cases", "historical_reproductions"],
+    "map_upload_included": false,
+    "self_contained": true,
+    "relative_paths_only": true,
+    "isolated_kit_reopen_required": true,
+    "backend_implementation_in_scope": false
+  },
+  "release_boundaries": {
+    "map_upload_requires_human_acceptance": true,
+    "perimeter_attachment_requires_human_acceptance": true,
+    "simulation_capture_requires_human_acceptance": true,
+    "download_release_requires_human_acceptance": true,
+    "dataset_release_is_separate": true,
+    "training_admission_is_separate": true,
+    "automatic_site_publication": false
+  }
+}

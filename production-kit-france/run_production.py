@@ -25,6 +25,7 @@ BLENDER_DIRECTORY = REPO_ROOT / "blender"
 UNITY_DIRECTORY = REPO_ROOT / "unity"
 KIT_DIRECTORY = Path(__file__).resolve().parent
 STAGE_NAMES = (
+    "global_mnt",
     "plan_05m",
     "produce_05m",
     "source_lidar",
@@ -80,6 +81,25 @@ def sha256_file(path: Path) -> str:
 
 
 def validate_accepted_profile(profile: Mapping[str, Any]) -> None:
+    delivery = profile.get("delivery", {})
+    if delivery not in ({}, None) and not isinstance(delivery, Mapping):
+        raise ProductionError("profile.delivery doit etre un objet")
+    mode = delivery.get("mode", "standard") if isinstance(delivery, Mapping) else "standard"
+    if mode == "global_mnt_only":
+        terrain = profile.get("terrain", {})
+        if profile.get("profile_id") != "unity-v1-global-mnt-5m":
+            raise ProductionError("le profil global_mnt_only doit avoir son identifiant verrouille")
+        expected_mnt = {
+            "global_mnt_resolution_m": 5.0,
+            "far_resolution_m": 5.0,
+            "source": "IGN LiDAR HD MNT WMS resample a 5 m",
+        }
+        for field, required in expected_mnt.items():
+            if terrain.get(field) != required:
+                raise ProductionError(f"le profil global_mnt_only est invalide: terrain.{field}")
+        if profile.get("imagery", {}).get("far_resolution_m") != 2.0:
+            raise ProductionError("le profil global_mnt_only doit conserver l'orthophoto FAR a 2 m")
+        return
     expected = {
         "profile_id": "unity-v1-accepted",
         "terrain.detail_resolution_m": 0.5,
@@ -105,9 +125,6 @@ def validate_accepted_profile(profile: Mapping[str, Any]) -> None:
             raise ProductionError(
                 f"le profil n'est plus identique a la V1 acceptee: {dotted}={value!r}"
             )
-    delivery = profile.get("delivery", {})
-    if delivery not in ({}, None) and not isinstance(delivery, Mapping):
-        raise ProductionError("profile.delivery doit etre un objet")
     if (
         isinstance(delivery, Mapping)
         and delivery.get("mode", "standard") == "global_only"
@@ -256,11 +273,17 @@ def load_contract(config_path: Path) -> dict[str, Any]:
     inputs = _require_mapping(config.get("inputs"), "inputs")
     execution = _require_mapping(config.get("execution"), "execution")
     delivery_mode = execution.get("delivery_mode", "standard")
-    if delivery_mode not in {"standard", "global_only"}:
+    if delivery_mode not in {"standard", "global_only", "global_mnt_only"}:
         raise ProductionError(
-            "execution.delivery_mode doit etre standard ou global_only"
+            "execution.delivery_mode doit etre standard, global_only ou global_mnt_only"
         )
-    global_only = delivery_mode == "global_only"
+    global_only = delivery_mode in {"global_only", "global_mnt_only"}
+    direct_global_mnt = delivery_mode == "global_mnt_only"
+    profile_mode = profile.get("delivery", {}).get("mode", "standard")
+    if profile_mode != delivery_mode and not (
+        profile_mode == "standard" and delivery_mode == "standard"
+    ):
+        raise ProductionError("le mode d'execution doit correspondre au profil qualite")
     for field, pattern in (
         ("zone_id", r"^[A-Z0-9][A-Z0-9_-]{2,63}$"),
         ("package_id", r"^[a-z0-9][a-z0-9-]{2,95}$"),
@@ -459,8 +482,10 @@ def load_contract(config_path: Path) -> dict[str, Any]:
         delivery_policy.update(
             {
                 "mode": delivery_mode,
-                "required_native_lidar_resolution_m": profile.get("terrain", {}).get(
-                    "required_native_lidar_resolution_m"
+                **(
+                    {"required_native_lidar_resolution_m": profile.get("terrain", {}).get("required_native_lidar_resolution_m")}
+                    if not direct_global_mnt
+                    else {"terrain_surface": "mnt_wms_resampled", "resolution_m": 5.0}
                 ),
             }
         )
@@ -494,6 +519,7 @@ def load_contract(config_path: Path) -> dict[str, Any]:
         "near_lod_enabled": near_lod_enabled,
         "delivery_mode": delivery_mode,
         "global_only": global_only,
+        "direct_global_mnt": direct_global_mnt,
         "expected_source_tile_count": expected_count,
         **validation_paths,
     }
@@ -556,9 +582,9 @@ def build_stages(contract: Mapping[str, Any]) -> list[dict[str, Any]]:
         "--origin",
         *origin,
         "--output-tile-size-m",
-        str(terrain["tile_size_m"]),
+        str(terrain.get("tile_size_m", 500)),
         "--halo-m",
-        str(terrain["processing_halo_m"]),
+        str(terrain.get("processing_halo_m", 10.0)),
     ]
     expected = contract["expected_source_tile_count"]
     if expected is not None:
@@ -636,6 +662,79 @@ def build_stages(contract: Mapping[str, Any]) -> list[dict[str, Any]]:
         "--allow-large-download",
         "--execute",
     ]
+    if contract["direct_global_mnt"]:
+        global_mnt_command = [
+            python,
+            "-B",
+            str(BLENDER_DIRECTORY / "fetch_ign_global_mnt.py"),
+            "--bounds",
+            *[str(value) for value in contract["aoi_bounds_l93_m"]],
+            "--resolution-m",
+            str(terrain["global_mnt_resolution_m"]),
+            "--output",
+            str(terrain_root / "mnt-global.cog.tif"),
+            "--aoi",
+            str(inputs["aoi_l93"]),
+            "--origin",
+            *origin,
+            "--production-manifest",
+            str(production_manifest),
+            "--allow-large-download",
+            "--execute",
+        ]
+        unity_command = [
+            python,
+            "-B",
+            str(UNITY_DIRECTORY / "export_remote_catalog.py"),
+            "--artifact-root",
+            str(root),
+            "--output-root",
+            str(unity_root),
+            "--production-manifest",
+            str(production_manifest),
+            "--far-terrain",
+            str(terrain_root / "mnt-global.cog.tif"),
+            "--far-imagery",
+            str(orthophoto_jpg),
+            "--far-imagery-resolution-m",
+            str(imagery["far_resolution_m"]),
+            "--global-only",
+        ]
+        validate_command = [
+            python,
+            "-B",
+            str(UNITY_DIRECTORY / "validate_remote_catalog.py"),
+            "--artifact-root",
+            str(root),
+            "--output-root",
+            str(unity_root),
+        ]
+        upload_command = [
+            python,
+            "-B",
+            str(UNITY_DIRECTORY / "export_site_upload_package.py"),
+            "--source-root",
+            str(unity_root),
+            "--output-root",
+            str(site_root),
+            "--package-id",
+            str(contract["zone"]["package_id"]),
+            "--zone-id",
+            str(contract["zone"]["zone_id"]),
+            "--revision",
+            str(contract["zone"]["revision"]),
+            "--unity-validation-receipt",
+            str(contract["unity_validation_receipt"]),
+            "--unity-preview-png",
+            str(contract["unity_preview_png"]),
+        ]
+        return [
+            {"name": "global_mnt", "command": global_mnt_command, "requires": []},
+            {"name": "far_imagery", "command": imagery_command, "requires": []},
+            {"name": "unity_catalog", "command": unity_command, "requires": ["global_mnt", "far_imagery"]},
+            {"name": "validate_catalog", "command": validate_command, "requires": ["unity_catalog"]},
+            {"name": "site_upload", "command": upload_command, "requires": ["validate_catalog"]},
+        ]
     if contract["global_only"]:
         source_command = [
             *base_tile_command,
@@ -936,6 +1035,24 @@ def stage_artifact_complete(name: str, contract: Mapping[str, Any]) -> bool:
     root: Path = contract["artifact_root"]
     slug = contract["zone"]["artifact_slug"]
     manifest_path = root / "global-05m/production-manifest.json"
+    if name == "global_mnt":
+        terrain_path = root / "terrain/mnt-global.cog.tif"
+        source_path = terrain_path.with_suffix(".source.json")
+        if not terrain_path.is_file() or not source_path.is_file() or not manifest_path.is_file():
+            return False
+        source = read_json(source_path)
+        manifest = read_json(manifest_path)
+        return (
+            contract["direct_global_mnt"]
+            and source.get("schema") == "fireviewer.ign-global-mnt-source.v1"
+            and source.get("status") == "downloaded_and_validated"
+            and source.get("terrain_surface") == "mnt_wms_resampled"
+            and source.get("request", {}).get("nominal_resolution_m") == 5.0
+            and source.get("output", {}).get("sha256") == sha256_file(terrain_path)
+            and manifest.get("status") == "ready"
+            and manifest.get("tiling", {}).get("mode") == "global_mnt_only"
+            and manifest.get("aoi", {}).get("sha256") == sha256_file(contract["inputs"]["aoi_l93"])
+        )
     if name == "plan_05m":
         if not manifest_path.is_file():
             return False

@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://firewarning.fr/schemas/omniverse/map-upload-contract.v1.json",
+  "title": "FireViewer Omniverse map upload contract V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contract_version",
+    "contract_status",
+    "package",
+    "spatial_reference",
+    "source_locks",
+    "scene",
+    "simulation",
+    "quality_gates",
+    "release"
+  ],
+  "properties": {
+    "schema": {"const": "fireviewer.omniverse-map-upload-contract.v1"},
+    "contract_version": {"const": 1},
+    "contract_status": {"$ref": "#/$defs/contractStatus"},
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package_id",
+        "revision",
+        "entry_stage",
+        "entry_stage_sha256",
+        "manifest_sha256"
+      ],
+      "properties": {
+        "package_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,95}$"},
+        "revision": {"type": "integer", "minimum": 1},
+        "entry_stage": {"$ref": "#/$defs/relativePath"},
+        "entry_stage_sha256": {"$ref": "#/$defs/nullableSha256"},
+        "manifest_sha256": {"$ref": "#/$defs/nullableSha256"}
+      }
+    },
+    "spatial_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "horizontal_crs",
+        "vertical_datum",
+        "local_origin_l93_m",
+        "meters_per_unit",
+        "up_axis",
+        "bounds_l93_m"
+      ],
+      "properties": {
+        "horizontal_crs": {"const": "EPSG:2154"},
+        "vertical_datum": {"const": "NGF-IGN69"},
+        "local_origin_l93_m": {"$ref": "#/$defs/vector3"},
+        "meters_per_unit": {"const": 1.0},
+        "up_axis": {"const": "Z"},
+        "bounds_l93_m": {"$ref": "#/$defs/bounds4"}
+      }
+    },
+    "source_locks": {
+      "type": "array",
+      "minItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "source_id", "path", "sha256", "verified"],
+        "properties": {
+          "kind": {
+            "enum": [
+              "mnt",
+              "mns",
+              "orthophoto",
+              "vegetation",
+              "buildings",
+              "roads",
+              "water",
+              "environment"
+            ]
+          },
+          "source_id": {"type": "string", "minLength": 3},
+          "path": {"$ref": "#/$defs/relativePath"},
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "verified": {"const": true}
+        }
+      }
+    },
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["terrain", "vegetation", "buildings", "roads"],
+      "properties": {
+        "terrain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mnt_resolution_m",
+            "mns_resolution_m",
+            "mnt_mns_colocated",
+            "mesh_visible",
+            "orthophoto_projected_on_mesh",
+            "orthophoto_nominal_resolution_m",
+            "coverage_ratio"
+          ],
+          "properties": {
+            "mnt_resolution_m": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.5},
+            "mns_resolution_m": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.5},
+            "mnt_mns_colocated": {"const": true},
+            "mesh_visible": {"const": true},
+            "orthophoto_projected_on_mesh": {"const": true},
+            "orthophoto_nominal_resolution_m": {"type": "number", "exclusiveMinimum": 0, "maximum": 2.0},
+            "coverage_ratio": {"type": "number", "minimum": 0.999, "maximum": 1.0}
+          }
+        },
+        "vegetation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "placement_method",
+            "tree_instance_count",
+            "prototype_asset_count",
+            "all_detected_trees_included",
+            "dense_forest_supported",
+            "lod_policy"
+          ],
+          "properties": {
+            "placement_method": {"const": "co_located_mns_minus_mnt"},
+            "tree_instance_count": {"type": "integer", "minimum": 1},
+            "prototype_asset_count": {"type": "integer", "minimum": 1},
+            "all_detected_trees_included": {"const": true},
+            "dense_forest_supported": {"const": true},
+            "lod_policy": {"const": "none_all_detected_instances_resident"}
+          }
+        },
+        "buildings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["building_count", "source_footprints_preserved", "roof_geometry", "grounded_on_mnt", "maximum_ground_gap_m"],
+          "properties": {
+            "building_count": {"type": "integer", "minimum": 1},
+            "source_footprints_preserved": {"const": true},
+            "roof_geometry": {"const": true},
+            "grounded_on_mnt": {"const": true},
+            "maximum_ground_gap_m": {"type": "number", "minimum": 0, "maximum": 0.05}
+          }
+        },
+        "roads": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["representation", "flat_surfaces", "draped_on_mnt", "topology_preserved"],
+          "properties": {
+            "representation": {"const": "source_flat_surface_meshes"},
+            "flat_surfaces": {"const": true},
+            "draped_on_mnt": {"const": true},
+            "topology_preserved": {"const": true}
+          }
+        }
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "timeline_present", "perimeter_layer_embedded", "camera_rig_embedded", "fire_truth_present", "fire_visual_present", "flow_active", "capture_enabled"],
+      "properties": {
+        "enabled": {"const": false},
+        "timeline_present": {"const": false},
+        "perimeter_layer_embedded": {"const": false},
+        "camera_rig_embedded": {"const": false},
+        "fire_truth_present": {"const": false},
+        "fire_visual_present": {"const": false},
+        "flow_active": {"const": false},
+        "capture_enabled": {"const": false}
+      }
+    },
+    "quality_gates": {"$ref": "#/$defs/mapQualityGates"},
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "human_visual_decision",
+        "acceptance_receipt_sha256",
+        "upload_allowed",
+        "automatic_publication",
+        "site_publication_triggered"
+      ],
+      "properties": {
+        "human_visual_decision": {"enum": ["pending", "accepted", "rejected"]},
+        "acceptance_receipt_sha256": {"$ref": "#/$defs/nullableSha256"},
+        "upload_allowed": {"type": "boolean"},
+        "automatic_publication": {"const": false},
+        "site_publication_triggered": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "contractStatus": {"enum": ["candidate_pending_die_visual_acceptance", "active", "deprecated"]},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nullableSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$))[^\\r\\n]+$"
+    },
+    "vector3": {
+      "type": "array",
+      "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}],
+      "items": false
+    },
+    "bounds4": {
+      "type": "array",
+      "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}, {"type": "number"}],
+      "items": false
+    },
+    "gate": {"enum": ["not_run", "pending", "passed", "failed"]},
+    "mapQualityGates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_integrity",
+        "spatial_reference",
+        "simulation_free_stage",
+        "usd_validation",
+        "terrain_projection",
+        "vegetation_completeness",
+        "building_grounding",
+        "road_draping",
+        "upload_content_boundary",
+        "kit_runtime_open",
+        "human_visual_review"
+      ],
+      "properties": {
+        "source_integrity": {"$ref": "#/$defs/gate"},
+        "spatial_reference": {"$ref": "#/$defs/gate"},
+        "simulation_free_stage": {"$ref": "#/$defs/gate"},
+        "usd_validation": {"$ref": "#/$defs/gate"},
+        "terrain_projection": {"$ref": "#/$defs/gate"},
+        "vegetation_completeness": {"$ref": "#/$defs/gate"},
+        "building_grounding": {"$ref": "#/$defs/gate"},
+        "road_draping": {"$ref": "#/$defs/gate"},
+        "upload_content_boundary": {"$ref": "#/$defs/gate"},
+        "kit_runtime_open": {"$ref": "#/$defs/gate"},
+        "human_visual_review": {"$ref": "#/$defs/gate"}
+      }
+    }
+  }
+}

@@ -1,0 +1,200 @@
+{
+  "schema": "fireviewer.omniverse-simulated-case-production-contract.v1",
+  "contract_version": 1,
+  "contract_status": "candidate_pending_die_visual_acceptance",
+  "case": {
+    "case_id": "die-2026-retrospective-replay-v1",
+    "package_id": "fireviewer-die-pontaix-map-r5-die-retrospective-v2",
+    "incident_id": "FR-26-00001/E01",
+    "scenario_id": "e77606f8b4982b6644a5047f",
+    "seed": 20260703,
+    "production_profile": "retrospective_daily_replay_v1",
+    "entry_stage": "dataset.usda",
+    "entry_stage_sha256": null
+  },
+  "base_map": {
+    "contract_schema": "fireviewer.omniverse-map-upload-contract.v1",
+    "contract_record": "examples/die-map-upload.candidate.json",
+    "contract_record_sha256": "37cc0e9e47e9535892579525fa2cd6384ce09cc735acc6e6863bea1213a39a45",
+    "package_id": "fireviewer-die-pontaix-map-r5",
+    "revision": 5,
+    "artifact_manifest_sha256": null,
+    "required_status": "active",
+    "acceptance_receipt_sha256": null
+  },
+  "perimeter_layers": {
+    "contract_schema": "fireviewer.omniverse-progressive-perimeter-layer-contract.v1",
+    "contract_record": "examples/die-progressive-perimeters.candidate.json",
+    "contract_record_sha256": "cc07691e6c4dc167579aabac87ed6f8d991848f9b945b9ff66a1ae16ada978d9",
+    "layer_package_id": "die-2026-progressive-perimeters-r1",
+    "revision": 1,
+    "required_status": "active",
+    "acceptance_receipt_sha256": null,
+    "composition_mode": "separate_sublayer_reference"
+  },
+  "truth_scope": {
+    "kind": "retrospective_replay",
+    "source_record": "source/die-2026-v1.json",
+    "source_sha256": "9a1743f84aae2283d251d689b842ed34363e56b2da6c0807e3aec750e5cc9e7d",
+    "geometry_origin": "mixed_satellite_product_and_agent_derived_daily_activity",
+    "notice": "Reconstitution post-incident ; les géométries et observations n'étaient pas nécessairement disponibles en temps réel à la date représentée."
+  },
+  "timeline": {
+    "incident_days": 21,
+    "source_key_state_count": 21,
+    "states_per_day": 1,
+    "capture_state_count": 21,
+    "out_of_scene_state_count": 1,
+    "first_local_date": "2026-07-03",
+    "last_local_date": "2026-07-23",
+    "seconds_per_day": 60.0,
+    "state_transition": "stepped_daily_hold",
+    "active_outside_scene_policy": "negative_state_without_fabricated_in_scene_fire"
+  },
+  "fire_behavior": {
+    "truth_visual_separation": true,
+    "flow_required": true,
+    "flame_visual_profile": "volumetric_turbulent_multiscale_non_primitive",
+    "smoke_visual_profile": "buoyant_rising_plume_non_primitive",
+    "smoke_minimum_vertical_lift_m": 1.6,
+    "tree_destruction": "hide_exact_base_instancer_ids_inside_monotonic_burned_perimeter",
+    "burned_ground_replacement": true,
+    "burned_area_monotonic": true,
+    "burned_tree_count_monotonic": true,
+    "active_front_changes_between_states": true
+  },
+  "view_plan": {
+    "camera_pool": {
+      "total_count": 62,
+      "human_count": 55,
+      "aerial_count": 7,
+      "thermal_aerial_count": 7
+    },
+    "selection": {
+      "method": "deterministic_seeded_random",
+      "seeded": true,
+      "without_replacement_per_state": true,
+      "framing_mix": ["smartphone_context", "professional_standard", "aerial_rgb_thermal"],
+      "negative_views_required": true
+    },
+    "retargeting": {
+      "positive_target": "nearest_visible_flame_point_to_camera",
+      "line_of_sight_required": true,
+      "per_capture": true,
+      "negative_policy": "preserve_negative_context_without_fire_retarget"
+    },
+    "capture": {
+      "views_per_state": 20,
+      "positive_views_per_state": 16,
+      "negative_views_per_state": 4,
+      "zooms_per_view": 5,
+      "aerial_thermal_required": true,
+      "aerial_maximum_target_distance_m": 1000.0
+    }
+  },
+  "observation_contract": {
+    "modalities": [
+      "rgb",
+      "aerial_thermal_16bit",
+      "depth_distance_to_camera",
+      "semantic_segmentation",
+      "instance_segmentation",
+      "flame_mask",
+      "smoke_mask",
+      "burned_area_mask",
+      "active_front_geometry",
+      "visible_flame_points",
+      "smoke_source_points",
+      "pointcloud",
+      "geolocation",
+      "abstention"
+    ],
+    "metadata_fields": [
+      "observation_id",
+      "case_id",
+      "map_package_id",
+      "incident_id",
+      "scenario_id",
+      "simulation_id",
+      "state_id",
+      "incident_day_index",
+      "state_in_day",
+      "valid_at",
+      "timezone",
+      "camera_id",
+      "camera_role",
+      "capture_device_profile",
+      "framing_style",
+      "zoom_index",
+      "focal_length_mm",
+      "focal_length_35mm_equivalent_mm",
+      "horizontal_aperture_mm",
+      "vertical_aperture_mm",
+      "resolution_px",
+      "camera_position_local_m",
+      "camera_position_l93_ngf_ign69_m",
+      "camera_orientation_quat_wxyz",
+      "camera_intrinsics",
+      "nearest_visible_flame_point_local_m",
+      "nearest_visible_flame_distance_m",
+      "visible_flame_points_local_m",
+      "smoke_source_points_local_m",
+      "active_front_local_m",
+      "ignition_point_local_m",
+      "burned_area_m2",
+      "burned_tree_count",
+      "expected_fire_in_frame",
+      "line_of_sight_receipt",
+      "negative_reason",
+      "weather_state_id",
+      "modality_sha256",
+      "dependency_sha256"
+    ],
+    "canonical_key_fields": [
+      "case_id",
+      "scenario_id",
+      "state_id",
+      "camera_id",
+      "zoom_index",
+      "modality"
+    ],
+    "atomic_write": true,
+    "sha256_inventory": true
+  },
+  "dataset": {
+    "expected_viewpoint_plans": 420,
+    "expected_capture_cases": 2100,
+    "expected_positive_cases": 1600,
+    "expected_negative_cases": 500,
+    "split_group_keys": ["base_map_package_id", "incident_id", "scenario_id"],
+    "keep_all_zooms_together": true,
+    "keep_incident_states_together": true,
+    "invalid_observation_policy": "quarantine_not_training"
+  },
+  "quality_gates": {
+    "base_map_active": "pending",
+    "perimeter_layer_active": "pending",
+    "source_integrity": "passed",
+    "timeline_validation": "passed",
+    "usd_validation": "passed",
+    "tree_destruction": "passed",
+    "flow_runtime_no_capture": "passed",
+    "camera_retargeting": "passed",
+    "metadata_completeness": "pending",
+    "split_leakage": "pending",
+    "human_visual_review": "pending",
+    "capture_validation": "not_run",
+    "training_readiness": "not_run"
+  },
+  "release": {
+    "human_visual_decision": "pending",
+    "acceptance_receipt_sha256": null,
+    "simulation_use_allowed": false,
+    "pilot_capture_allowed": false,
+    "full_dataset_capture_allowed": false,
+    "dataset_release_allowed": false,
+    "training_use_allowed": false,
+    "automatic_publication": false,
+    "site_publication_triggered": false
+  }
+}

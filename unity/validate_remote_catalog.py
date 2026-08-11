@@ -179,7 +179,12 @@ def validate(artifact_root: Path, output_root: Path) -> dict[str, Any]:
         combined_bytes.append(payload_size + imagery_size)
 
     far = catalog.get("lod_policy", {}).get("far", {})
-    if far.get("terrain", {}).get("resolution_m") != [5.0, 5.0]:
+    terrain_resolution = far.get("terrain", {}).get("resolution_m")
+    if (
+        not isinstance(terrain_resolution, Sequence)
+        or len(terrain_resolution) != 2
+        or any(abs(float(value) - 5.0) > 0.01 for value in terrain_resolution)
+    ):
         raise FWTileError("catalog FAR terrain resolution is not 5 m")
     if far.get("imagery", {}).get("resolution_m") != 2.0:
         raise FWTileError("catalog FAR imagery resolution is not 2 m")

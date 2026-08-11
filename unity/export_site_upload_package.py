@@ -277,8 +277,9 @@ def build_site_package(
     package_id: str,
     zone_id: str,
     revision: int,
-    unity_validation_receipt: Path,
-    unity_preview_png: Path,
+    unity_validation_receipt: Path | None = None,
+    unity_preview_png: Path | None = None,
+    unreviewed_unity: bool = False,
 ) -> dict[str, Any]:
     if not PACKAGE_ID_RE.fullmatch(package_id):
         raise ValueError("package_id does not match the site upload contract")
@@ -288,20 +289,30 @@ def build_site_package(
     source_catalog = read_json(source_catalog_path)
     if source_catalog.get("schema") != "fireviewer.remote-tile-catalog.v1":
         raise ValueError("source is not a FireViewer Unity remote tile catalog")
-    manual_validation = normalize_unity_validation_receipt(
-        receipt_path=unity_validation_receipt,
-        preview_path=unity_preview_png,
-        source_catalog_path=source_catalog_path,
-        package_id=package_id,
-        zone_id=zone_id,
-        revision=revision,
-    )
+    if unreviewed_unity:
+        if unity_validation_receipt is not None or unity_preview_png is not None:
+            raise ValueError("unreviewed Unity export must not include a receipt or preview")
+        unity_review: dict[str, Any] | None = None
+    else:
+        if unity_validation_receipt is None or unity_preview_png is None:
+            raise ValueError("Unity receipt and preview are required unless --unreviewed-unity is selected")
+        unity_review = normalize_unity_validation_receipt(
+            receipt_path=unity_validation_receipt,
+            preview_path=unity_preview_png,
+            source_catalog_path=source_catalog_path,
+            package_id=package_id,
+            zone_id=zone_id,
+            revision=revision,
+        )
     if output_root.exists():
         report = validate_site_package(output_root)
         manifest = read_json(output_root / "package-manifest.json")
-        if manifest.get("manual_unity_validation") != manual_validation:
+        if unreviewed_unity:
+            if "unity_review" in manifest or "manual_unity_validation" in manifest:
+                raise ValueError("existing site package contains a Unity review record")
+        elif manifest.get("unity_review", manifest.get("manual_unity_validation")) != unity_review:
             raise ValueError(
-                "existing site package has a different Unity validation receipt"
+                "existing site package has a different Unity review record"
             )
         return report
 
@@ -348,26 +359,29 @@ def build_site_package(
             record["path"] = target_relative.as_posix()
             record["url"] = target_relative.as_posix()
 
-        preview_relative = PurePosixPath("assets/validation/unity-preview.png")
-        preview_target = temporary.joinpath(*preview_relative.parts)
-        preview_target.parent.mkdir(parents=True, exist_ok=True)
-        os.link(unity_preview_png, preview_target)
-        linked += 1
-        preview_record = {
-            "path": preview_relative.as_posix(),
-            "url": preview_relative.as_posix(),
-            "sha256": manual_validation["preview_sha256"],
-            "byte_count": unity_preview_png.stat().st_size,
-            "media_type": "image/png",
-            "role": "manual-unity-validation-preview",
-        }
+        preview_record: dict[str, Any] | None = None
+        if not unreviewed_unity:
+            assert unity_preview_png is not None
+            preview_relative = PurePosixPath("assets/validation/unity-preview.png")
+            preview_target = temporary.joinpath(*preview_relative.parts)
+            preview_target.parent.mkdir(parents=True, exist_ok=True)
+            os.link(unity_preview_png, preview_target)
+            linked += 1
+            preview_record = {
+                "path": preview_relative.as_posix(),
+                "url": preview_relative.as_posix(),
+                "sha256": unity_review["preview_sha256"],
+                "byte_count": unity_preview_png.stat().st_size,
+                "media_type": "image/png",
+                "role": "manual-unity-validation-preview",
+            }
 
         catalog["package_id"] = package_id
         catalog["zones"] = [{"zone_id": zone_id, "revision_id": f"R{revision}"}]
-        catalog["validation"] = {
-            "schema": UNITY_VALIDATION_SCHEMA,
-            "unity_preview": preview_record,
-        }
+        if unity_review is not None:
+            catalog["validation"] = {"schema": UNITY_VALIDATION_SCHEMA, "unity_review": unity_review}
+            if preview_record is not None:
+                catalog["validation"]["unity_preview"] = preview_record
         catalog["upload_profile"] = {
             "delivery": "private object storage",
             "inventory": "catalog-exact",
@@ -396,16 +410,18 @@ def build_site_package(
                 "origin_l93_m": catalog.get("origin_l93_m"),
             },
             "inventory": {
-                "asset_count": len(records) + 1,
+                "asset_count": len(records) + (1 if preview_record is not None else 0),
                 "asset_bytes": sum(int(record["byte_count"]) for record in records)
-                + int(preview_record["byte_count"]),
+                + (int(preview_record["byte_count"]) if preview_record is not None else 0),
             },
-            "manual_unity_validation": manual_validation,
             "provenance": {
                 "source_catalog_sha256": sha256_file(source_catalog_path),
                 "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             },
         }
+        if unity_review is not None:
+            manifest["unity_review"] = unity_review
+            manifest["manual_unity_validation"] = unity_review
         (temporary / "package-manifest.json").write_bytes(json_bytes(manifest))
         report = validate_site_package(temporary)
         temporary.replace(output_root)
@@ -428,8 +444,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--package-id", required=True)
     parser.add_argument("--zone-id", required=True)
     parser.add_argument("--revision", type=int, required=True)
-    parser.add_argument("--unity-validation-receipt", type=Path, required=True)
-    parser.add_argument("--unity-preview-png", type=Path, required=True)
+    parser.add_argument("--unity-validation-receipt", type=Path)
+    parser.add_argument("--unity-preview-png", type=Path)
+    parser.add_argument("--unreviewed-unity", action="store_true")
     return parser.parse_args()
 
 
@@ -441,8 +458,9 @@ def main() -> int:
         package_id=args.package_id,
         zone_id=args.zone_id,
         revision=args.revision,
-        unity_validation_receipt=args.unity_validation_receipt.resolve(),
-        unity_preview_png=args.unity_preview_png.resolve(),
+        unity_validation_receipt=(args.unity_validation_receipt.resolve() if args.unity_validation_receipt else None),
+        unity_preview_png=(args.unity_preview_png.resolve() if args.unity_preview_png else None),
+        unreviewed_unity=args.unreviewed_unity,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     return 0

@@ -1,0 +1,20 @@
+{
+  "asset_id": "farm_field_puresky",
+  "authors": [
+    "Dimitrios Savva",
+    "Jarod Guest"
+  ],
+  "byte_count": 18996174,
+  "download_url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/farm_field_puresky_4k.hdr",
+  "file": "farm_field_puresky_4k.hdr",
+  "format": "Radiance HDR",
+  "license": "CC0 1.0 Universal",
+  "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "md5": "f07abd431e00742b9d2f4ba5fbb0613d",
+  "provider": "Poly Haven",
+  "resolution": "4k",
+  "retrieved_at_utc": "2026-08-04T00:00:00Z",
+  "role": "daylight_dome_environment",
+  "sha256": "7090661f06ed7f6b8a66b75879712164b42d819e2ce2088f69c5a643e4e503cc",
+  "source_page": "https://polyhaven.com/a/farm_field_puresky"
+}

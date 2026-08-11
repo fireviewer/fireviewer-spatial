@@ -907,7 +907,12 @@ def validate_catalog(catalog: Mapping[str, Any]) -> None:
             raise FWTileError("global-only catalog must not publish detail tiles")
     urls: set[str] = set()
     far = catalog.get("lod_policy", {}).get("far", {})
-    if far.get("terrain", {}).get("resolution_m") != [5.0, 5.0]:
+    terrain_resolution = far.get("terrain", {}).get("resolution_m")
+    if (
+        not isinstance(terrain_resolution, Sequence)
+        or len(terrain_resolution) != 2
+        or any(abs(float(value) - 5.0) > 0.01 for value in terrain_resolution)
+    ):
         raise FWTileError("catalog must preserve the accepted 5 m FAR terrain")
     if far.get("imagery", {}).get("resolution_m") != 2.0:
         raise FWTileError("catalog must preserve the accepted 2 m FAR imagery")

@@ -21,7 +21,7 @@ from typing import Any, Sequence
 import numpy as np
 from rasterio.features import geometry_mask
 from rasterio.merge import merge as merge_rasters
-from scipy.ndimage import gaussian_filter, label, maximum_filter
+from scipy.ndimage import find_objects, gaussian_filter, label, maximum_filter
 from shapely.geometry import box, mapping, shape
 from shapely.ops import unary_union
 from skimage.segmentation import watershed
@@ -103,8 +103,19 @@ def _plateau_peaks(
         candidates, structure=np.ones((3, 3), dtype=bool)
     )
     peaks: list[tuple[int, int]] = []
-    for component_id in range(1, component_count + 1):
-        rows, columns = np.nonzero(components == component_id)
+    # ``components == component_id`` over the complete 0.5 m raster made the
+    # former loop O(pixel_count * peak_count), which is prohibitive in dense
+    # forest.  ``find_objects`` supplies the tight bounding slice for every
+    # component while preserving the exact deterministic selection below.
+    for component_id, component_slice in enumerate(
+        find_objects(components, max_label=component_count), start=1
+    ):
+        if component_slice is None:
+            continue
+        local = components[component_slice]
+        local_rows, local_columns = np.nonzero(local == component_id)
+        rows = local_rows + int(component_slice[0].start or 0)
+        columns = local_columns + int(component_slice[1].start or 0)
         if not len(rows):
             continue
         heights = canopy_height[rows, columns]

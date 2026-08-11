@@ -1,15 +1,3 @@
----
-pretty_name: FireViewer Die 2026 Omniverse Reproduction Pack
-license: other
-tags:
-  - fireviewer
-  - omniverse
-  - openusd
-  - wildfire
-  - simulation
-  - geospatial
----
-
 # FireViewer Die 2026 Omniverse Reproduction Pack
 
 Pack autonome et reproductible de simulation historique FireViewer pour Die et
@@ -18,7 +6,19 @@ bâtiments, les routes, la végétation, les périmètres temporels, les caméra
 scénario, la configuration Flow et les contrats d’exécution nécessaires à une
 réouverture dans le runtime Omniverse/Kit verrouillé par le pack.
 
-## Archive publiée
+## Distribution privée
+
+Cette simulation complète n'est pas publiée sur Hugging Face et ne doit pas
+être exposée par une URL de stockage publique. Elle est distribuée uniquement
+depuis la page Ressources de FireViewer, après authentification d'un compte
+vérifié. Le backend FireViewer contrôle le JWT puis diffuse l'objet depuis le
+stockage Blob privé.
+
+La carte affichée par le viewer public est un package Omniverse distinct. Elle
+n'embarque ni le scénario, ni Flow, ni la simulation complète. Les périmètres
+validés restent eux aussi une couche temporelle séparée.
+
+## Archive privée
 
 - fichier : `fireviewer-die-2026-reproduction-download-r1.zip`
 - taille : `217296677` octets (`207.23 MiB`)
@@ -48,4 +48,5 @@ de l’archive.
 Get-FileHash -Algorithm SHA256 .\fireviewer-die-2026-reproduction-download-r1.zip
 ```
 
-La valeur obtenue doit correspondre exactement au SHA-256 publié ci-dessus.
+La valeur obtenue doit correspondre exactement au SHA-256 affiché sur la page
+Ressources FireViewer.

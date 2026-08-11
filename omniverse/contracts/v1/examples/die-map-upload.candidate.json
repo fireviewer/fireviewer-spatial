@@ -1,0 +1,133 @@
+{
+  "schema": "fireviewer.omniverse-map-upload-contract.v1",
+  "contract_version": 1,
+  "contract_status": "candidate_pending_die_visual_acceptance",
+  "package": {
+    "package_id": "fireviewer-die-pontaix-map-r5",
+    "revision": 5,
+    "entry_stage": "map.usda",
+    "entry_stage_sha256": null,
+    "manifest_sha256": null
+  },
+  "spatial_reference": {
+    "horizontal_crs": "EPSG:2154",
+    "vertical_datum": "NGF-IGN69",
+    "local_origin_l93_m": [884000.0, 6408000.0, 0.0],
+    "meters_per_unit": 1.0,
+    "up_axis": "Z",
+    "bounds_l93_m": [876000.0, 6403000.0, 892000.0, 6413000.0]
+  },
+  "source_locks": [
+    {
+      "kind": "mnt",
+      "source_id": "ign-lidar-hd-mnt-0m50-die",
+      "path": "source/ign_sources.v1.json",
+      "sha256": "cff6e9ffa71ce38397defe490bf54f6ba361cc9e5ed8621f22719e5e86d20fe5",
+      "verified": true
+    },
+    {
+      "kind": "mns",
+      "source_id": "ign-lidar-hd-mns-0m50-die",
+      "path": "source/ign_sources.v1.json",
+      "sha256": "cff6e9ffa71ce38397defe490bf54f6ba361cc9e5ed8621f22719e5e86d20fe5",
+      "verified": true
+    },
+    {
+      "kind": "orthophoto",
+      "source_id": "ign-bd-ortho-die-real-ground",
+      "path": "textures/ign-bd-ortho-real-ground.jpg",
+      "sha256": "011234b497fb172f3ec60dc56f347e9d3ec69469887f77ea2da84308cff3a446",
+      "verified": true
+    },
+    {
+      "kind": "vegetation",
+      "source_id": "die-mnt-mns-vegetation-index",
+      "path": "site/vegetation-placement.json",
+      "sha256": "4f8d87e83cafa997430172bca268c0fef1a4e3bcc65abc17b336cc5bc187c860",
+      "verified": true
+    },
+    {
+      "kind": "buildings",
+      "source_id": "published-site-map-buildings-die",
+      "path": "source/published-site-map-catalog.json",
+      "sha256": "63a07bc703f54c90ba0101b2e32f4ade2c860c1ea646fc983d67871d84b871fe",
+      "verified": true
+    },
+    {
+      "kind": "roads",
+      "source_id": "published-site-map-roads-die",
+      "path": "source/published-site-map-package-manifest.json",
+      "sha256": "1040f24bfacd1b38a8b45ae0079154728da9955f82b273eca590614454606193",
+      "verified": true
+    },
+    {
+      "kind": "environment",
+      "source_id": "farm-field-puresky-4k",
+      "path": "assets/environments/farm_field_puresky_4k.hdr",
+      "sha256": "7090661f06ed7f6b8a66b75879712164b42d819e2ce2088f69c5a643e4e503cc",
+      "verified": true
+    }
+  ],
+  "scene": {
+    "terrain": {
+      "mnt_resolution_m": 0.5,
+      "mns_resolution_m": 0.5,
+      "mnt_mns_colocated": true,
+      "mesh_visible": true,
+      "orthophoto_projected_on_mesh": true,
+      "orthophoto_nominal_resolution_m": 2.0,
+      "coverage_ratio": 1.0
+    },
+    "vegetation": {
+      "placement_method": "co_located_mns_minus_mnt",
+      "tree_instance_count": 2466924,
+      "prototype_asset_count": 6,
+      "all_detected_trees_included": true,
+      "dense_forest_supported": true,
+      "lod_policy": "none_all_detected_instances_resident"
+    },
+    "buildings": {
+      "building_count": 6914,
+      "source_footprints_preserved": true,
+      "roof_geometry": true,
+      "grounded_on_mnt": true,
+      "maximum_ground_gap_m": 0.05
+    },
+    "roads": {
+      "representation": "source_flat_surface_meshes",
+      "flat_surfaces": true,
+      "draped_on_mnt": true,
+      "topology_preserved": true
+    }
+  },
+  "simulation": {
+    "enabled": false,
+    "timeline_present": false,
+    "perimeter_layer_embedded": false,
+    "camera_rig_embedded": false,
+    "fire_truth_present": false,
+    "fire_visual_present": false,
+    "flow_active": false,
+    "capture_enabled": false
+  },
+  "quality_gates": {
+    "source_integrity": "passed",
+    "spatial_reference": "passed",
+    "simulation_free_stage": "pending",
+    "usd_validation": "pending",
+    "terrain_projection": "passed",
+    "vegetation_completeness": "passed",
+    "building_grounding": "passed",
+    "road_draping": "passed",
+    "upload_content_boundary": "pending",
+    "kit_runtime_open": "pending",
+    "human_visual_review": "pending"
+  },
+  "release": {
+    "human_visual_decision": "pending",
+    "acceptance_receipt_sha256": null,
+    "upload_allowed": false,
+    "automatic_publication": false,
+    "site_publication_triggered": false
+  }
+}

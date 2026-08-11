@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://firewarning.fr/schemas/omniverse/reproducible-download-bundle-contract.v1.json",
+  "title": "FireViewer reproducible simulation download bundle contract V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contract_version",
+    "contract_status",
+    "bundle",
+    "case_reference",
+    "dependency_locks",
+    "reproducibility",
+    "portability",
+    "access_scope",
+    "quality_gates",
+    "release"
+  ],
+  "properties": {
+    "schema": {"const": "fireviewer.omniverse-reproducible-download-bundle-contract.v1"},
+    "contract_version": {"const": 1},
+    "contract_status": {"$ref": "#/$defs/contractStatus"},
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle_id",
+        "revision",
+        "kind",
+        "root_directory",
+        "entry_stage",
+        "entry_stage_sha256",
+        "manifest_sha256",
+        "archive_path",
+        "archive_sha256"
+      ],
+      "properties": {
+        "bundle_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,127}$"},
+        "revision": {"type": "integer", "minimum": 1},
+        "kind": {"enum": ["simulated_case", "historical_reproduction"]},
+        "root_directory": {"$ref": "#/$defs/relativePath"},
+        "entry_stage": {"$ref": "#/$defs/relativePath"},
+        "entry_stage_sha256": {"$ref": "#/$defs/nullableSha256"},
+        "manifest_sha256": {"$ref": "#/$defs/nullableSha256"},
+        "archive_path": {"anyOf": [{"$ref": "#/$defs/relativePath"}, {"type": "null"}]},
+        "archive_sha256": {"$ref": "#/$defs/nullableSha256"}
+      }
+    },
+    "case_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_record", "contract_record_sha256", "case_id", "package_id", "required_status"],
+      "properties": {
+        "contract_record": {"$ref": "#/$defs/relativePath"},
+        "contract_record_sha256": {"$ref": "#/$defs/sha256"},
+        "case_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,127}$"},
+        "package_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,127}$"},
+        "required_status": {"const": "active"}
+      }
+    },
+    "dependency_locks": {
+      "type": "array",
+      "minItems": 7,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "path", "sha256", "inside_bundle"],
+        "properties": {
+          "role": {
+            "enum": [
+              "map_contract",
+              "map_manifest",
+              "perimeter_contract",
+              "perimeter_manifest",
+              "camera_rig",
+              "scenario",
+              "flow",
+              "runtime_contract",
+              "source_truth",
+              "asset_inventory"
+            ]
+          },
+          "path": {"$ref": "#/$defs/relativePath"},
+          "sha256": {"$ref": "#/$defs/nullableSha256"},
+          "inside_bundle": {"const": true}
+        }
+      }
+    },
+    "reproducibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seed",
+        "timeline_seconds_per_day",
+        "state_selection",
+        "camera_selection",
+        "camera_retargeting",
+        "runtime_lock",
+        "source_snapshots_embedded"
+      ],
+      "properties": {
+        "seed": {"type": "integer", "minimum": 0},
+        "timeline_seconds_per_day": {"const": 60.0},
+        "state_selection": {"const": "deterministic"},
+        "camera_selection": {"const": "deterministic_seeded_random"},
+        "camera_retargeting": {"const": "nearest_visible_flame_point_to_camera"},
+        "runtime_lock": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kit_application", "kit_version", "required_extensions", "python_lock_path"],
+          "properties": {
+            "kit_application": {"type": "string", "minLength": 3},
+            "kit_version": {"type": "string", "minLength": 1},
+            "required_extensions": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 2}
+            },
+            "python_lock_path": {"$ref": "#/$defs/relativePath"}
+          }
+        },
+        "source_snapshots_embedded": {"const": true}
+      }
+    },
+    "portability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "self_contained",
+        "relative_paths_only",
+        "absolute_paths_present",
+        "remote_urls_present",
+        "symlinks_present",
+        "dependency_inventory_sha256",
+        "isolated_reopen"
+      ],
+      "properties": {
+        "self_contained": {"const": true},
+        "relative_paths_only": {"const": true},
+        "absolute_paths_present": {"const": false},
+        "remote_urls_present": {"const": false},
+        "symlinks_present": {"const": false},
+        "dependency_inventory_sha256": {"$ref": "#/$defs/nullableSha256"},
+        "isolated_reopen": {"$ref": "#/$defs/gate"}
+      }
+    },
+    "access_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["audience", "applies_to", "map_upload_included", "backend_implementation_in_scope"],
+      "properties": {
+        "audience": {"const": "authenticated_account_holders"},
+        "applies_to": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {"enum": ["simulated_cases", "historical_reproductions"]}
+        },
+        "map_upload_included": {"const": false},
+        "backend_implementation_in_scope": {"const": false}
+      }
+    },
+    "quality_gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_active",
+        "dependency_hashes",
+        "relative_path_scan",
+        "archive_integrity",
+        "isolated_kit_reopen",
+        "human_visual_review"
+      ],
+      "properties": {
+        "case_active": {"$ref": "#/$defs/gate"},
+        "dependency_hashes": {"$ref": "#/$defs/gate"},
+        "relative_path_scan": {"$ref": "#/$defs/gate"},
+        "archive_integrity": {"$ref": "#/$defs/gate"},
+        "isolated_kit_reopen": {"$ref": "#/$defs/gate"},
+        "human_visual_review": {"$ref": "#/$defs/gate"}
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "human_visual_decision",
+        "acceptance_receipt_sha256",
+        "download_allowed",
+        "dataset_capture_included",
+        "training_admission_included",
+        "automatic_publication"
+      ],
+      "properties": {
+        "human_visual_decision": {"enum": ["pending", "accepted", "rejected"]},
+        "acceptance_receipt_sha256": {"$ref": "#/$defs/nullableSha256"},
+        "download_allowed": {"type": "boolean"},
+        "dataset_capture_included": {"const": false},
+        "training_admission_included": {"const": false},
+        "automatic_publication": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "contractStatus": {"enum": ["candidate_pending_die_visual_acceptance", "active", "deprecated"]},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nullableSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$))[^\\r\\n]+$"
+    },
+    "gate": {"enum": ["not_run", "pending", "passed", "failed"]}
+  }
+}
