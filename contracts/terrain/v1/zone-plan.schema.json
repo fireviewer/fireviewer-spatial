@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireviewer.fr/contracts/terrain/v1/zone-plan.schema.json",
+  "title": "FireViewer canonical terrain zone plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "recipe_id",
+    "plan_id",
+    "zone",
+    "grid",
+    "tiles",
+    "seams",
+    "source_requests",
+    "dependencies",
+    "pilot",
+    "storage",
+    "summary"
+  ],
+  "properties": {
+    "schema": {"const": "fireviewer.zone-plan.v1"},
+    "recipe_id": {"$ref": "#/$defs/sha256"},
+    "plan_id": {"$ref": "#/$defs/sha256"},
+    "zone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["zone_id", "revision", "crs", "bounds_l93_m"],
+      "properties": {
+        "zone_id": {"type": "string"},
+        "revision": {"type": "string"},
+        "crs": {"const": "EPSG:2154"},
+        "bounds_l93_m": {"$ref": "#/$defs/bounds"}
+      }
+    },
+    "grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tile_size_m", "halo_m", "columns", "rows", "order"],
+      "properties": {
+        "tile_size_m": {"const": 500},
+        "halo_m": {"const": 10},
+        "columns": {"type": "integer", "minimum": 1},
+        "rows": {"type": "integer", "minimum": 1},
+        "order": {"const": "morton"}
+      }
+    },
+    "tiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "grid", "bounds_l93_m", "processing_bounds_l93_m"],
+        "properties": {
+          "id": {"type": "string"},
+          "grid": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {"type": "integer", "minimum": 0}
+          },
+          "bounds_l93_m": {"$ref": "#/$defs/bounds"},
+          "processing_bounds_l93_m": {"$ref": "#/$defs/bounds"}
+        }
+      }
+    },
+    "seams": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "a", "b"],
+        "properties": {
+          "id": {"type": "string"},
+          "a": {"type": "string"},
+          "b": {"type": "string"}
+        }
+      }
+    },
+    "source_requests": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": {"$ref": "zone-spec.schema.json#/$defs/sourceRecord"},
+      "contains": {
+        "type": "object",
+        "required": ["product"],
+        "properties": {"product": {"const": "orthophoto"}}
+      },
+      "minContains": 1,
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": ["product"],
+            "properties": {"product": {"const": "mnt"}}
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["product"],
+            "properties": {"product": {"const": "mns"}}
+          },
+          "minContains": 1
+        }
+      ]
+    },
+    "dependencies": {"$ref": "zone-spec.schema.json#/$defs/dependencies"},
+    "pilot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default_max_tiles", "selection"],
+      "properties": {
+        "default_max_tiles": {"type": "integer", "minimum": 1, "maximum": 9},
+        "selection": {"const": "contiguous_relief_and_semantic_maximization"}
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["estimated_peak_bytes", "safety_margin_bytes", "required_free_bytes"],
+      "properties": {
+        "estimated_peak_bytes": {"type": "integer", "minimum": 1},
+        "safety_margin_bytes": {"const": 21474836480},
+        "required_free_bytes": {"type": "integer", "minimum": 21474836481}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tile_count", "seam_count", "source_request_count"],
+      "properties": {
+        "tile_count": {"type": "integer", "minimum": 1},
+        "seam_count": {"type": "integer", "minimum": 0},
+        "source_request_count": {"type": "integer", "minimum": 3}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "bounds": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"type": "number"}
+    }
+  }
+}

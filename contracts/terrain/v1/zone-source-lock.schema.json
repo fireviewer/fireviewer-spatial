@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireviewer.fr/contracts/terrain/v1/zone-source-lock.schema.json",
+  "title": "FireViewer immutable terrain source lock",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "recipe_id",
+    "plan_id",
+    "recipe_build_id",
+    "identity_status",
+    "estimated_peak_bytes",
+    "sources",
+    "dependency_proofs"
+  ],
+  "properties": {
+    "schema": {"const": "fireviewer.zone-source-lock.v1"},
+    "recipe_id": {"$ref": "#/$defs/sha256"},
+    "plan_id": {"$ref": "#/$defs/sha256"},
+    "recipe_build_id": {"$ref": "#/$defs/sha256"},
+    "identity_status": {
+      "enum": ["fully_observed", "provisional_source_revision"]
+    },
+    "estimated_peak_bytes": {"type": "integer", "minimum": 0},
+    "sources": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/sourceProof"},
+      "contains": {
+        "type": "object",
+        "required": ["product"],
+        "properties": {"product": {"const": "orthophoto"}}
+      },
+      "minContains": 1,
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": ["product"],
+            "properties": {"product": {"const": "mnt"}}
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["product"],
+            "properties": {"product": {"const": "mns"}}
+          },
+          "minContains": 1
+        }
+      ]
+    },
+    "dependency_proofs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "clean_pbr_texture_library",
+        "ground_texture_contract",
+        "surface_correspondence_contract",
+        "surface_correspondence_model",
+        "surface_features",
+        "terrain_quadtree_contract",
+        "toolchain"
+      ],
+      "properties": {
+        "algorithm": {"$ref": "#/$defs/dependencyProof"},
+        "clean_pbr_texture_library": {"$ref": "#/$defs/dependencyProof"},
+        "ground_texture_contract": {"$ref": "#/$defs/dependencyProof"},
+        "surface_correspondence_contract": {"$ref": "#/$defs/dependencyProof"},
+        "surface_correspondence_model": {"$ref": "#/$defs/dependencyProof"},
+        "surface_features": {"$ref": "#/$defs/dependencyProof"},
+        "terrain_quadtree_contract": {"$ref": "#/$defs/dependencyProof"},
+        "toolchain": {"$ref": "#/$defs/dependencyProof"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "dependencyProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_name", "sha256", "schema", "status"],
+      "properties": {
+        "file_name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/\\\\:]+$"
+        },
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "schema": {"type": ["string", "null"]},
+        "status": {"type": ["string", "null"]}
+      }
+    },
+    "sourceProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "product",
+        "request_sha256",
+        "source_revision_id",
+        "identity_status",
+        "sha256",
+        "byte_count",
+        "license"
+      ],
+      "properties": {
+        "id": {"type": "string"},
+        "product": {"enum": ["mnt", "mns", "orthophoto"]},
+        "request_sha256": {"$ref": "#/$defs/sha256"},
+        "source_revision_id": {"type": ["string", "null"]},
+        "identity_status": {
+          "enum": [
+            "observed_local_file",
+            "expected_identity_locked",
+            "revision_locked",
+            "observed_temporary_source_deleted"
+          ]
+        },
+        "sha256": {
+          "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "byte_count": {
+          "anyOf": [
+            {"type": "integer", "minimum": 1},
+            {"type": "null"}
+          ]
+        },
+        "license": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"product": {"const": "orthophoto"}}},
+          "then": {
+            "properties": {
+              "source_revision_id": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      ]
+    }
+  }
+}
