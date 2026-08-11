@@ -286,6 +286,30 @@ def test_global_only_source_phase_downloads_sources_without_detail_tiles(
     assert stored["source_tiles"][0]["status"]["state"] == "ready"
 
 
+def test_terrain_only_execution_fails_closed_without_accepted_ground_gate(
+    tmp_path: Path,
+) -> None:
+    aoi = tmp_path / "aoi.geojson"
+    root = tmp_path / "production"
+    _write_aoi(aoi, (886_100.0, 6_400_100.0, 886_400.0, 6_400_400.0))
+    manifest = build_plan(
+        aoi,
+        root,
+        expected_source_tile_count=1,
+        terrain_only=True,
+    )
+    manifest_path = root / "production-manifest.json"
+    _atomic_write_json(manifest_path, manifest, overwrite=False)
+
+    with pytest.raises(RuntimeError, match="ground surface atlas"):
+        execute_manifest(
+            manifest_path,
+            aoi,
+            phase="sources",
+            minimum_free_gib=0.0,
+        )
+
+
 def test_asset_lock_reclaims_a_dead_process_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

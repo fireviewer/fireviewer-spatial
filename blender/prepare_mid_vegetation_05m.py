@@ -576,6 +576,33 @@ def _load_geometry(path: Path) -> list[Any]:
     return geometries
 
 
+def _is_lambert93(crs: Any | None) -> bool:
+    """Accept canonical EPSG:2154 or IGN WMS-R's equivalent incomplete WKT."""
+
+    if crs is None:
+        return False
+    if crs.to_epsg() == 2154:
+        return True
+    parameters = crs.to_dict()
+    expected = {
+        "proj": "lcc",
+        "lat_0": 46.5,
+        "lon_0": 3.0,
+        "lat_1": 49.0,
+        "lat_2": 44.0,
+        "x_0": 700000.0,
+        "y_0": 6600000.0,
+        "units": "m",
+    }
+    return all(
+        parameters.get(key) == value
+        if isinstance(value, str)
+        else parameters.get(key) is not None
+        and math.isclose(float(parameters[key]), value, abs_tol=1e-9)
+        for key, value in expected.items()
+    )
+
+
 def _mosaic(
     paths: Sequence[Path], bounds: Sequence[float]
 ) -> tuple[np.ndarray, Any, list[dict[str, Any]]]:
@@ -583,6 +610,21 @@ def _mosaic(
 
     datasets = [rasterio.open(path) for path in paths]
     try:
+        for path, dataset in zip(paths, datasets, strict=True):
+            if dataset.count != 1:
+                raise ValueError(f"Terrain source must have one band: {path}")
+            if not _is_lambert93(dataset.crs):
+                raise ValueError(f"Terrain source must use EPSG:2154: {path}")
+            transform = dataset.transform
+            if (
+                abs(float(transform.b)) > 1e-12
+                or abs(float(transform.d)) > 1e-12
+                or not math.isclose(float(transform.a), 0.5, abs_tol=1e-9)
+                or not math.isclose(float(transform.e), -0.5, abs_tol=1e-9)
+            ):
+                raise ValueError(
+                    f"Terrain source must use the north-up 0.5 m grid: {path}"
+                )
         aligned_bounds = _bounds_aligned_to_native_grid(bounds, datasets[0].transform)
         reference_transform = datasets[0].transform
         for dataset in datasets[1:]:

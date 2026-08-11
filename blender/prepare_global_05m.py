@@ -31,6 +31,7 @@ from shapely.ops import unary_union
 SCHEMA = "fireviewer.global-05m-production-manifest.v1"
 RECEIPT_SCHEMA = "fireviewer.global-05m-tile-receipt.v1"
 MID_PACKAGE_TERRAIN_CONTRACT = "exact-native-grid-500m-edges.v1"
+TERRAIN_ONLY_TILE_CONTRACT = "bare-mnt-square-grid-with-colocated-mns.v1"
 CRS = "EPSG:2154"
 DEFAULT_ORIGIN = (885_173.0, 6_404_926.0, 320.0)
 PACKAGE_WORKER_MEMORY_GIB = 0.75
@@ -44,6 +45,19 @@ REQUIRED_TILE_ASSETS = (
     "orthophoto_image",
     "orthophoto_geotiff",
 )
+TERRAIN_ONLY_REQUIRED_TILE_ASSETS = (
+    "terrain_package",
+    "ground_material_map",
+)
+
+
+def _required_tile_assets(tile: dict[str, Any]) -> tuple[str, ...]:
+    assets = tile.get("assets", {})
+    return (
+        TERRAIN_ONLY_REQUIRED_TILE_ASSETS
+        if "terrain_package" in assets
+        else REQUIRED_TILE_ASSETS
+    )
 
 
 def _ensure_parent_tool_path() -> None:
@@ -260,6 +274,8 @@ def _output_tiles(
     source_tiles: Sequence[dict[str, Any]],
     origin: Sequence[float],
     config: Global05mConfig,
+    *,
+    terrain_only: bool = False,
 ) -> list[dict[str, Any]]:
     records = []
     for x_index, y_index in _grid_indices(aoi.bounds, config.output_tile_size_m):
@@ -275,80 +291,94 @@ def _output_tiles(
             bounds[3] + config.halo_m,
         ]
         directory = f"tiles/{tile_id}"
-        records.append(
-            {
-                "id": tile_id,
-                "bounds_l93_m": bounds,
-                "processing_bounds_l93_m": processing_bounds,
-                "origin_l93_m": [float(value) for value in origin],
-                "aoi_intersection_area_m2": intersection_area,
-                "aoi_coverage_ratio": intersection_area
-                / float(config.output_tile_size_m**2),
-                "source_tile_ids": _intersecting_source_ids(
-                    processing_bounds, source_tiles
+        if terrain_only:
+            assets = {
+                "terrain_package": _asset(f"{directory}/terrain-0m50.json.gz"),
+                "ground_material_map": _asset(
+                    f"{directory}/ground-material-map.png"
                 ),
-                "status": {
-                    "state": "pending",
-                    "attempt_count": 0,
-                    "last_error": None,
-                    "updated_at_utc": None,
-                },
-                "assets": {
-                    "mid_package": _asset(f"{directory}/mid-vegetation-0m50.json.gz"),
-                    "orthophoto_source": _asset(
-                        f"{directory}/orthophoto-0m50.source.json"
-                    ),
-                    "orthophoto_image": _asset(f"{directory}/orthophoto-0m50.jpg"),
-                    "orthophoto_geotiff": _asset(f"{directory}/orthophoto-0m50.tif"),
-                    # The native 20 cm image is deliberately optional. Existing
-                    # 50 cm receipts stay valid and a close-view tile can be
-                    # upgraded independently without republishing all 475 tiles.
-                    "near_orthophoto_source": _asset(
-                        f"{directory}/orthophoto-0m20.source.json", required=False
-                    ),
-                    "near_orthophoto_image": _asset(
-                        f"{directory}/orthophoto-0m20.jpg", required=False
-                    ),
-                    "near_orthophoto_geotiff": _asset(
-                        f"{directory}/orthophoto-0m20.tif", required=False
-                    ),
-                    "blender_library": _asset(
-                        f"{directory}/scene.blend", required=False
-                    ),
-                    "completion_receipt": _asset(
-                        f"{directory}/tile.done.json", required=False
-                    ),
-                },
-                "orthophoto_request": {
-                    "url": _orthophoto_url(bounds, config.orthophoto_resolution_m),
-                    "resolution_m": config.orthophoto_resolution_m,
-                    "wms_tile_pixels": 2_000,
-                    "pixel_size": [
-                        int(config.output_tile_size_m / config.orthophoto_resolution_m),
-                        int(config.output_tile_size_m / config.orthophoto_resolution_m),
-                    ],
-                },
-                "near_orthophoto_request": {
-                    "url": _orthophoto_url(
-                        bounds,
-                        NEAR_ORTHOPHOTO_RESOLUTION_M,
-                        tile_pixels=NEAR_ORTHOPHOTO_WMS_TILE_PIXELS,
-                    ),
-                    "resolution_m": NEAR_ORTHOPHOTO_RESOLUTION_M,
-                    "wms_tile_pixels": NEAR_ORTHOPHOTO_WMS_TILE_PIXELS,
-                    "pixel_size": [
-                        int(config.output_tile_size_m / NEAR_ORTHOPHOTO_RESOLUTION_M),
-                        int(config.output_tile_size_m / NEAR_ORTHOPHOTO_RESOLUTION_M),
-                    ],
-                    "loading": "explicit_selected_near_tiles_only",
-                    "maximum_tiles_per_run": NEAR_ORTHOPHOTO_MAX_TILES_PER_RUN,
-                },
-                "visibility": {
-                    "default_visible": False,
-                    "activation": "camera_or_selected_attention_zone",
-                    "lod": "mid_0m50",
-                },
+                "completion_receipt": _asset(
+                    f"{directory}/tile.done.json", required=False
+                ),
             }
+        else:
+            assets = {
+                "mid_package": _asset(f"{directory}/mid-vegetation-0m50.json.gz"),
+                "orthophoto_source": _asset(
+                    f"{directory}/orthophoto-0m50.source.json"
+                ),
+                "orthophoto_image": _asset(f"{directory}/orthophoto-0m50.jpg"),
+                "orthophoto_geotiff": _asset(f"{directory}/orthophoto-0m50.tif"),
+                "near_orthophoto_source": _asset(
+                    f"{directory}/orthophoto-0m20.source.json", required=False
+                ),
+                "near_orthophoto_image": _asset(
+                    f"{directory}/orthophoto-0m20.jpg", required=False
+                ),
+                "near_orthophoto_geotiff": _asset(
+                    f"{directory}/orthophoto-0m20.tif", required=False
+                ),
+                "blender_library": _asset(
+                    f"{directory}/scene.blend", required=False
+                ),
+                "completion_receipt": _asset(
+                    f"{directory}/tile.done.json", required=False
+                ),
+            }
+        record = {
+            "id": tile_id,
+            "bounds_l93_m": bounds,
+            "processing_bounds_l93_m": processing_bounds,
+            "origin_l93_m": [float(value) for value in origin],
+            "aoi_intersection_area_m2": intersection_area,
+            "aoi_coverage_ratio": intersection_area
+            / float(config.output_tile_size_m**2),
+            "source_tile_ids": _intersecting_source_ids(
+                processing_bounds, source_tiles
+            ),
+            "status": {
+                "state": "pending",
+                "attempt_count": 0,
+                "last_error": None,
+                "updated_at_utc": None,
+            },
+            "assets": assets,
+            "visibility": {
+                "default_visible": False,
+                "activation": "camera_or_selected_attention_zone",
+                "lod": "terrain_ground_0m50" if terrain_only else "mid_0m50",
+            },
+            "production_stage": (
+                "terrain_ground_only" if terrain_only else "terrain_vegetation"
+            ),
+        }
+        if not terrain_only:
+            record["orthophoto_request"] = {
+                "url": _orthophoto_url(bounds, config.orthophoto_resolution_m),
+                "resolution_m": config.orthophoto_resolution_m,
+                "wms_tile_pixels": 2_000,
+                "pixel_size": [
+                    int(config.output_tile_size_m / config.orthophoto_resolution_m),
+                    int(config.output_tile_size_m / config.orthophoto_resolution_m),
+                ],
+            }
+            record["near_orthophoto_request"] = {
+                "url": _orthophoto_url(
+                    bounds,
+                    NEAR_ORTHOPHOTO_RESOLUTION_M,
+                    tile_pixels=NEAR_ORTHOPHOTO_WMS_TILE_PIXELS,
+                ),
+                "resolution_m": NEAR_ORTHOPHOTO_RESOLUTION_M,
+                "wms_tile_pixels": NEAR_ORTHOPHOTO_WMS_TILE_PIXELS,
+                "pixel_size": [
+                    int(config.output_tile_size_m / NEAR_ORTHOPHOTO_RESOLUTION_M),
+                    int(config.output_tile_size_m / NEAR_ORTHOPHOTO_RESOLUTION_M),
+                ],
+                "loading": "explicit_selected_near_tiles_only",
+                "maximum_tiles_per_run": NEAR_ORTHOPHOTO_MAX_TILES_PER_RUN,
+            }
+        records.append(
+            record
         )
     return records
 
@@ -365,7 +395,9 @@ def _summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "output_tile_count": len(output_tiles),
         "output_states": states,
         "elevation_source_request_count": len(source_tiles) * 2,
-        "orthophoto_request_count": len(output_tiles),
+        "orthophoto_request_count": sum(
+            "orthophoto_request" in tile for tile in output_tiles
+        ),
         "network_access_performed": False,
     }
 
@@ -378,6 +410,7 @@ def build_plan(
     config: Global05mConfig | None = None,
     expected_source_tile_count: int | None = None,
     source_only: bool = False,
+    terrain_only: bool = False,
 ) -> dict[str, Any]:
     active = config or Global05mConfig()
     active.validate()
@@ -395,13 +428,23 @@ def build_plan(
         )
     # A global-only delivery consumes no 500 m detail packages. Avoiding this
     # unused grid keeps a large-area plan bounded by the 1 km source tiles.
-    tiles = [] if source_only else _output_tiles(aoi, sources, origin, active)
+    tiles = (
+        []
+        if source_only
+        else _output_tiles(
+            aoi, sources, origin, active, terrain_only=terrain_only
+        )
+    )
+    identity_config = asdict(active)
+    if terrain_only:
+        identity_config.pop("orthophoto_resolution_m", None)
     immutable_identity = {
         "aoi_sha256": sha256_file(source_file),
-        "config": asdict(active),
+        "config": identity_config,
         "origin_l93_m": [float(value) for value in origin],
         "source_tile_ids": [tile["id"] for tile in sources],
         "output_tile_ids": [tile["id"] for tile in tiles],
+        "terrain_only": terrain_only,
     }
     manifest = {
         "schema": SCHEMA,
@@ -426,8 +469,15 @@ def build_plan(
             "terrain_rule": ("exact_500m_core_grid_sampled_on_native_ign_pixel_phase"),
             "terrain_edge_contract": MID_PACKAGE_TERRAIN_CONTRACT,
             "segmentation_rule": "process_core_plus_halo_then_keep_owned_apices",
-            "aoi_rule": "mask_to_fire_plus_1m5km_polygon",
+            "aoi_rule": (
+                "complete_square_grid_covering_incident_reference_bounds"
+                if terrain_only
+                else "mask_to_fire_plus_1m5km_polygon"
+            ),
             "detail_grid_planned": not source_only,
+            "production_stage": (
+                "terrain_ground_only" if terrain_only else "terrain_vegetation"
+            ),
         },
         "output_root_name": output_root.resolve().name,
         "path_policy": "relative_to_manifest_directory",
@@ -438,9 +488,28 @@ def build_plan(
         },
         "worker_contract": {
             "source_products": ["mnt", "mns", "orthophoto"],
-            "vegetation_source": "MNS_minus_MNT_at_0m50",
-            "post_detection_thinning": "forbidden",
-            "required_tile_assets": list(REQUIRED_TILE_ASSETS),
+            "vegetation_source": (
+                "deferred" if terrain_only else "MNS_minus_MNT_at_0m50"
+            ),
+            "post_detection_thinning": (
+                "not_applicable" if terrain_only else "forbidden"
+            ),
+            "required_tile_assets": list(
+                TERRAIN_ONLY_REQUIRED_TILE_ASSETS
+                if terrain_only
+                else REQUIRED_TILE_ASSETS
+            ),
+            "deferred_layers": (
+                [
+                    "buildings",
+                    "roads",
+                    "small_specific_assets",
+                    "vegetation",
+                    "simulation",
+                ]
+                if terrain_only
+                else []
+            ),
             "completion_receipt_schema": RECEIPT_SCHEMA,
             "completion_rule": "receipt_hashes_all_required_assets",
             "mid_package_terrain_contract": MID_PACKAGE_TERRAIN_CONTRACT,
@@ -468,6 +537,24 @@ def build_plan(
         "source_tiles": sources,
         "tiles": tiles,
     }
+    if terrain_only:
+        manifest["tiling"].pop("orthophoto_resolution_m", None)
+        manifest["tiling"].pop("ownership_rule", None)
+        manifest["tiling"].pop("segmentation_rule", None)
+        worker = manifest["worker_contract"]
+        worker["source_products"] = ["mnt", "mns"]
+        worker.pop("mid_package_terrain_contract", None)
+        worker.pop("orthophoto_display", None)
+        worker.pop("orthophoto_lod", None)
+        worker["terrain_tile_contract"] = TERRAIN_ONLY_TILE_CONTRACT
+        worker["ground_2d"] = {
+            "asset": "ground-material-map.png",
+            "format": "rgba_png",
+            "pixel_size": [256, 256],
+            "derivation": "aligned_mnt_slope_roughness_and_mns_reservation",
+            "orthophoto_dependency": "forbidden",
+            "shared_materials": "tileable_2d_pbr_library",
+        }
     manifest["summary"] = _summary(manifest)
     return manifest
 
@@ -523,7 +610,7 @@ def _validate_receipt(tile: dict[str, Any], root: Path) -> tuple[str, str | None
     recorded_outputs = receipt.get("outputs")
     if not isinstance(recorded_outputs, dict):
         return "incomplete", "completion receipt has no output hash mapping"
-    for name in REQUIRED_TILE_ASSETS:
+    for name in _required_tile_assets(tile):
         asset = tile["assets"][name]
         _refresh_asset(asset, root)
         if not asset["exists"]:
@@ -531,8 +618,9 @@ def _validate_receipt(tile: dict[str, Any], root: Path) -> tuple[str, str | None
         record = recorded_outputs.get(name)
         if not isinstance(record, dict) or record.get("sha256") != asset["sha256"]:
             return "incomplete", f"required asset hash mismatch: {name}"
-    optional = tile["assets"]["blender_library"]
-    _refresh_asset(optional, root)
+    optional = tile["assets"].get("blender_library")
+    if isinstance(optional, dict):
+        _refresh_asset(optional, root)
     return "ready", None
 
 
@@ -577,7 +665,7 @@ def completion_receipt(
     tile: dict[str, Any], root: Path, *, producer: str
 ) -> dict[str, Any]:
     outputs = {}
-    for name in REQUIRED_TILE_ASSETS:
+    for name in _required_tile_assets(tile):
         asset = tile["assets"][name]
         _refresh_asset(asset, root)
         if not asset["exists"]:
@@ -587,16 +675,20 @@ def completion_receipt(
             "byte_count": asset["byte_count"],
             "sha256": asset["sha256"],
         }
-    return {
+    receipt = {
         "schema": RECEIPT_SCHEMA,
         "tile_id": tile["id"],
-        "mid_package_terrain_contract": MID_PACKAGE_TERRAIN_CONTRACT,
         "completed_at_utc": utc_now(),
         "producer": producer,
         "bounds_l93_m": tile["bounds_l93_m"],
         "processing_bounds_l93_m": tile["processing_bounds_l93_m"],
         "outputs": outputs,
     }
+    if "terrain_package" in tile["assets"]:
+        receipt["terrain_tile_contract"] = TERRAIN_ONLY_TILE_CONTRACT
+    else:
+        receipt["mid_package_terrain_contract"] = MID_PACKAGE_TERRAIN_CONTRACT
+    return receipt
 
 
 @contextmanager
@@ -964,10 +1056,9 @@ def validate_mid_package(tile: dict[str, Any], root: Path) -> dict[str, Any]:
 
 
 def _package_job(job: dict[str, Any]) -> dict[str, Any]:
-    from prepare_mid_vegetation_05m import build_sector_package, write_sector_package
-
     tile = job["tile"]
     root = Path(job["root"])
+    terrain_only = "terrain_package" in tile["assets"]
     arguments = argparse.Namespace(
         mnt=[Path(path) for path in job["mnt"]],
         mns=[Path(path) for path in job["mns"]],
@@ -986,6 +1077,28 @@ def _package_job(job: dict[str, Any]) -> dict[str, Any]:
         origin_y=float(tile["origin_l93_m"][1]),
         origin_z=float(tile["origin_l93_m"][2]),
     )
+    if terrain_only:
+        from prepare_incident_terrain_tile import (
+            build_terrain_outputs,
+            validate_terrain_package,
+            write_ground_material_map,
+            write_terrain_package,
+        )
+
+        package, ground_material_map = build_terrain_outputs(arguments)
+        output = root / tile["assets"]["terrain_package"]["path"]
+        ground_output = root / tile["assets"]["ground_material_map"]["path"]
+        write_terrain_package(package, output)
+        write_ground_material_map(ground_material_map, ground_output)
+        validated = validate_terrain_package(output, tile)
+        return {
+            "tile_id": tile["id"],
+            "statistics": validated["statistics"],
+            "sha256": sha256_file(output),
+        }
+
+    from prepare_mid_vegetation_05m import build_sector_package, write_sector_package
+
     package = build_sector_package(arguments)
     output = root / tile["assets"]["mid_package"]["path"]
     write_sector_package(package, output)
@@ -1073,6 +1186,29 @@ def execute_manifest(
             f"only {free_gib:.2f} GiB are free; {minimum_free_gib:.2f} GiB required"
         )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    terrain_only = (
+        manifest.get("tiling", {}).get("production_stage")
+        == "terrain_ground_only"
+    )
+    if terrain_only:
+        gate = manifest.get("ground_surface_gate")
+        if not isinstance(gate, dict) or gate.get("status") != "accepted":
+            raise RuntimeError(
+                "terrain production is blocked until the four-texture ground surface "
+                "atlas and runtime composition contract are accepted"
+            )
+        catalog_path = (root / str(gate.get("catalog_path", ""))).resolve()
+        runtime_path = (root / str(gate.get("runtime_contract_path", ""))).resolve()
+        if not catalog_path.is_file() or sha256_file(catalog_path) != gate.get(
+            "catalog_sha256"
+        ):
+            raise RuntimeError("ground surface atlas catalog is absent or has changed")
+        if not runtime_path.is_file() or sha256_file(runtime_path) != gate.get(
+            "runtime_contract_sha256"
+        ):
+            raise RuntimeError("ground surface runtime contract is absent or has changed")
+    if terrain_only and rebuild_mid_packages:
+        raise ValueError("rebuild_mid_packages is unavailable for terrain-only plans")
     if required_elevation_resolution_m is not None:
         actual_resolution = manifest.get("tiling", {}).get("elevation_resolution_m")
         if not isinstance(actual_resolution, (int, float)) or not math.isclose(
@@ -1175,7 +1311,9 @@ def execute_manifest(
         if unavailable:
             _write_runtime_manifest(manifest_path, manifest, root)
         successful_tiles: list[dict[str, Any]] = []
-        if rebuild_mid_packages:
+        if terrain_only:
+            successful_tiles.extend(tiles)
+        elif rebuild_mid_packages:
             # This maintenance mode is deliberately offline for imagery: it
             # validates the required 0.5 m texture but never invokes a fetcher,
             # and it never reads or mutates the optional 0.2 m near assets.
@@ -1559,6 +1697,15 @@ def _parser() -> argparse.ArgumentParser:
             "global-only delivery with no 500 m detail packages."
         ),
     )
+    parser.add_argument(
+        "--terrain-only",
+        action="store_true",
+        help=(
+            "Produce only bare MNT terrain, aligned MNS validation and the "
+            "lightweight procedural 2D ground map; forbid orthophotos and "
+            "defer buildings, roads and vegetation."
+        ),
+    )
     parser.add_argument("--manifest-name", default="production-manifest.json")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--exclude-polygons", type=Path, action="append", default=[])
@@ -1609,7 +1756,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             minimum_free_gib=args.minimum_free_gib,
             timeout_s=args.timeout_s,
             continue_on_error=args.continue_on_error,
-            required_elevation_resolution_m=args.required_elevation_resolution_m,
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if not result["errors"] else 1
@@ -1632,6 +1778,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             retry_failed=args.retry_failed,
             rebuild_mid_packages=args.rebuild_mid_packages,
             continue_on_error=args.continue_on_error,
+            required_elevation_resolution_m=args.required_elevation_resolution_m,
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if not result["errors"] else 1
@@ -1657,6 +1804,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         expected_source_tile_count=args.expected_source_tile_count,
         source_only=args.source_only_plan,
+        terrain_only=args.terrain_only,
     )
     if args.dry_run:
         print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
