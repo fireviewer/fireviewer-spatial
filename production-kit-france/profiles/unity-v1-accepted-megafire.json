@@ -1,0 +1,53 @@
+{
+  "schema": "fireviewer.france-map-quality-profile.v1",
+  "profile_id": "unity-v1-accepted",
+  "description": "Profil V1 accepté pour l'emprise officielle CEMS d'un mégafeu. Les réglages de terrain, d'imagerie et de runtime restent identiques ; seule la limite de préflight est relevée pour cette révision dédiée.",
+  "crs": "EPSG:2154",
+  "vertical_reference": "NGF-IGN69",
+  "limits": {
+    "maximum_aoi_area_km2": 4200.0,
+    "minimum_free_gib": 80.0,
+    "download_workers": 2,
+    "package_workers": 1,
+    "package_memory_budget_gib": 4.0,
+    "unity_batch_size": 4,
+    "unity_workers": 1
+  },
+  "terrain": {
+    "detail_resolution_m": 0.5,
+    "tile_size_m": 500,
+    "processing_halo_m": 10.0,
+    "far_resolution_m": 5.0
+  },
+  "imagery": {
+    "far_resolution_m": 2.0,
+    "mid_resolution_m": 0.5,
+    "near_resolution_m": 0.2,
+    "jpeg_quality": 92,
+    "brightness": 0.78,
+    "contrast": 1.08,
+    "saturation": 1.12
+  },
+  "vectors": {
+    "terrain_step": 4,
+    "buffer_m": 1500.0,
+    "building_simplify_m": 0.05,
+    "minimum_visible_building_wall_m": 2.7,
+    "road_offset_m": 0.35,
+    "water_course_offset_m": 0.25,
+    "water_segment_offset_m": 0.2,
+    "water_surface_offset_m": 0.15,
+    "vegetation_building_clearance_m": 2.0,
+    "vegetation_road_clearance_m": 1.0,
+    "vegetation_water_clearance_m": 1.0,
+    "mid_tree_min_height_m": 3.0,
+    "mid_tree_spacing_m": 15.0,
+    "mid_tree_local_max_radius_m": 7.5,
+    "mid_tree_max_count": 200000
+  },
+  "runtime": {
+    "publish_distance_m": 600.0,
+    "preload_radius_m": 750.0,
+    "maximum_resident_tile_count": 16
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "FireViewer.SpatialTiles.Editor",
+  "rootNamespace": "FireViewer.SpatialTiles.Editor",
+  "references": ["FireViewer.SpatialTiles"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

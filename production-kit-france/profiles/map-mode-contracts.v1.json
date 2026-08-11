@@ -1,0 +1,27 @@
+{
+  "schema": "fireviewer.france-map-mode-contracts.v1",
+  "crs": "EPSG:2154",
+  "modes": {
+    "complete_3d": {
+      "maximum_aoi_area_km2": 250.0,
+      "detail_sections": ["terrain", "trees", "buildings", "roads", "water"],
+      "infrastructure_representation": "modelled_vector_meshes",
+      "tree_representation": "instanced_3d",
+      "requires_manual_unity_review": true
+    },
+    "trees_3d_lidar_infrastructure": {
+      "maximum_aoi_area_km2": 250.0,
+      "detail_sections": ["terrain", "trees"],
+      "infrastructure_representation": "lidar_surface_only",
+      "tree_representation": "instanced_3d",
+      "requires_manual_unity_review": true
+    },
+    "global_only": {
+      "maximum_aoi_area_km2": 4200.0,
+      "detail_sections": [],
+      "infrastructure_representation": "global_lidar_surface_only",
+      "tree_representation": "none",
+      "requires_manual_unity_review": true
+    }
+  }
+}
