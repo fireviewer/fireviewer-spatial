@@ -1,0 +1,33 @@
+{
+  "algorithm": "fireviewer.omniverse.asset4sim-composition.v2",
+  "asset_catalog": {
+    "catalog_id": "fireviewer-asset4sim-usd-r5",
+    "expected_asset_count": 295,
+    "sha256": null
+  },
+  "asset_coverage": "all_assets_at_least_once_across_portfolio",
+  "base_scene_count": 4,
+  "base_scenes": [
+    {"context_tags": ["rural_valley", "mixed_forest"], "id": "base-01"},
+    {"context_tags": ["mountain_forest", "sparse_habitat"], "id": "base-02"},
+    {"context_tags": ["agricultural_mosaic", "village"], "id": "base-03"},
+    {"context_tags": ["river_corridor", "periurban_rural"], "id": "base-04"}
+  ],
+  "contract_id": "fireviewer-scene-composition-r2",
+  "expected_asset_count": 295,
+  "master_seed": 20260808,
+  "placeholder_policy": "forbidden",
+  "release_gates": {
+    "download_publication": "blocked",
+    "isolated_kit_open": "pending",
+    "repeatability": "pending",
+    "usd_catalog": "pending",
+    "visual_acceptance": "pending"
+  },
+  "scene_count": 20,
+  "schema": "fireviewer.omniverse-scene-composition.v2",
+  "simplified_geometry_fallback": "forbidden",
+  "spatial_anchor_policy": "preserve_authoritative_positions_and_stable_ids",
+  "status": "blocked_pending_usd_assets",
+  "variants_per_base": 5
+}

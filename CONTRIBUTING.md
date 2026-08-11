@@ -10,9 +10,9 @@ Les priorités inter-dépôts sont maintenues dans le dépôt documentaire FireV
 une contribution doit correspondre à une issue spatiale actuelle et porter sur :
 
 1. le test de contrat entre le manifeste backend et l'UI ;
-2. le contrat WGS84 / ENU / Unity et les tests métriques ;
-3. le vertical slice fictif `FR-83-00042` ;
-4. les fallbacks texte, WebGL indisponible et erreurs réseau.
+2. le contrat WGS84 / ENU / OpenUSD et les tests métriques ;
+3. le catalogue définitif des 295 assets USD ;
+4. les compositions Omniverse déterministes, sans placeholder ni simplification.
 
 ## Licence des contributions
 

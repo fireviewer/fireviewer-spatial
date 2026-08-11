@@ -1,0 +1,14 @@
+{
+  "assets": [],
+  "catalog_id": "fireviewer-asset4sim-usd-r5",
+  "expected_asset_count": 295,
+  "received_asset_count": 0,
+  "release_gates": {
+    "all_usd_received": "pending",
+    "isolated_kit_open": "pending",
+    "license_and_provenance": "pending",
+    "sha256_inventory": "pending"
+  },
+  "schema": "fireviewer.omniverse-asset-catalog.v2",
+  "status": "blocked_pending_usd_assets"
+}

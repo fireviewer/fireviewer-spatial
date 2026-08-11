@@ -1,8 +1,8 @@
 # FireViewer Spatial
 
-Outils source pour préparer, valider et intégrer les packages spatiaux
-FireViewer : kit France, scripts Blender, package Unity runtime et contrats de
-catalogue.
+Outils source pour préparer, valider et intégrer les packages OpenUSD et
+Omniverse de FireViewer. Le runtime Unity et ses scènes de site sont retirés du
+périmètre actif.
 
 Ce dépôt ne contient aucune carte, orthophoto, scène générée, archive de
 production, dossier d’upload, modèle 3D, atlas, arbre source ou donnée
@@ -32,10 +32,10 @@ justifie pas leur promotion.
 
 ## Contenu
 
-- `production-kit-france/` : préparation reproductible d’une zone générique ;
 - `blender/` : génération et contrôles géométriques ;
-- `unity/` : export, validation et runtime de streaming ;
-- `runtime-package/` : package Unity réutilisable ;
+- `omniverse/` : contrats OpenUSD, composition déterministe et outils Kit ;
+- `omniverse/contracts/v2/` : frontière définitive du catalogue de 295 assets
+  et des vingt compositions reproductibles ;
 - `contracts/spatial/` : schémas du package et du catalogue ;
 - `tests/` : fixtures synthétiques sans données de production.
 
@@ -46,8 +46,13 @@ zone explicite. Les entrées LiDAR, orthophotos, vecteurs, modèles et rendus
 restent hors du checkout. Les manifestes générés conservent provenance,
 licences, tailles et SHA-256.
 
-La validation automatisée ne remplace pas la revue Unity. Une publication exige
-un reçu de validation Unity manuel conforme au schéma du kit.
+La validation automatisée ne remplace ni l'ouverture isolée dans Kit, ni la
+revue visuelle humaine. Aucun nouveau plan de scène ou pack n'est produit tant
+que les 295 assets USD refaits ne sont pas reçus et acceptés.
+
+Le dataset historique issu de la première simulation et son pack autonome de
+reproduction complet sont conservés hors Git. Ils servent au replay et à
+l'audit, mais ne définissent pas le contrat des futures scènes.
 
 Les packages et banques de rendus sont versionnés par zone et par révision. Les
 sorties de localisation conservent les CRS horizontaux, datums verticaux,
@@ -69,11 +74,11 @@ maintenus dans le dépôt canonique `fireviewer/Fireviewer_doc`.
 python -m unittest discover -s tests -v
 python -m pytest -q
 python -m ruff check .
-dotnet build unity/dotnet-bridge-probe/FireViewer.UnityBridge.Probe.csproj
+python omniverse/contracts/v2/validate_contracts.py
 ```
 
 Ces contrôles valident le code et les contrats. Ils ne prouvent pas une scène
-Unity, un package cartographique ou une publication distante.
+Omniverse, un rendu RTX, un package cartographique ou une publication distante.
 
 ## Licences
 

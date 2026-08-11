@@ -14,12 +14,6 @@ outputs/
 production-work/
 productions/
 site-upload/
-Library/
-Logs/
-Temp/
-UserSettings/
-Obj/
-Build/
 bin/
 *.blend
 *.cog

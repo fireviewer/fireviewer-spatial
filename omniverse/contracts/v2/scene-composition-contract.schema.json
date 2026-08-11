@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://firewarning.fr/schemas/omniverse-scene-composition.v2.json",
+  "title": "FireViewer reproducible Omniverse scene composition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "contract_id", "status", "algorithm", "master_seed", "expected_asset_count", "base_scene_count", "variants_per_base", "scene_count", "asset_catalog", "base_scenes", "placeholder_policy", "simplified_geometry_fallback", "asset_coverage", "spatial_anchor_policy", "release_gates"],
+  "properties": {
+    "schema": {"const": "fireviewer.omniverse-scene-composition.v2"},
+    "contract_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+    "status": {"enum": ["blocked_pending_usd_assets", "ready"]},
+    "algorithm": {"const": "fireviewer.omniverse.asset4sim-composition.v2"},
+    "master_seed": {"type": "integer", "minimum": 0},
+    "expected_asset_count": {"const": 295},
+    "base_scene_count": {"const": 4},
+    "variants_per_base": {"const": 5},
+    "scene_count": {"const": 20},
+    "asset_catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["catalog_id", "expected_asset_count", "sha256"],
+      "properties": {
+        "catalog_id": {"type": "string", "minLength": 3},
+        "expected_asset_count": {"const": 295},
+        "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "base_scenes": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "context_tags"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+          "context_tags": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        }
+      }
+    },
+    "placeholder_policy": {"const": "forbidden"},
+    "simplified_geometry_fallback": {"const": "forbidden"},
+    "asset_coverage": {"const": "all_assets_at_least_once_across_portfolio"},
+    "spatial_anchor_policy": {"const": "preserve_authoritative_positions_and_stable_ids"},
+    "release_gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["usd_catalog", "repeatability", "isolated_kit_open", "visual_acceptance", "download_publication"],
+      "properties": {
+        "usd_catalog": {"enum": ["pending", "passed"]},
+        "repeatability": {"enum": ["pending", "passed"]},
+        "isolated_kit_open": {"enum": ["pending", "passed"]},
+        "visual_acceptance": {"enum": ["pending", "passed"]},
+        "download_publication": {"enum": ["blocked", "passed"]}
+      }
+    }
+  }
+}

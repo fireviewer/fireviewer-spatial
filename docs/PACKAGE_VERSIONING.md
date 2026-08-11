@@ -31,7 +31,7 @@ Une nouvelle révision ne remplace pas silencieusement les références des anci
 
 ## Publication
 
-La validation automatisée ne remplace pas la revue Unity ou la validation humaine requise par le contrat du package.
+La validation automatisée ne remplace pas l'ouverture isolée dans Omniverse Kit, le rendu attendu ou la validation humaine requise par le contrat du package.
 
 ## Retrait
 
