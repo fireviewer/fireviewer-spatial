@@ -13,9 +13,9 @@ WGS84 est une représentation dérivée, pas le repère principal du PnP ou du r
 - origine locale ;
 - unité ;
 - ordre des axes ;
-- MNT ;
-- MNS/DSM ;
-- résolution ;
+- révision canonique FVTQ et bornes verticales LOD2 ;
+- contrat des sources MNT/MNS 2 m ;
+- plan de résidence caméra ;
 - empreintes ;
 - révision.
 
@@ -51,6 +51,11 @@ La pose est représentée dans le repère local avec :
 - caméra au-dessus du terrain ;
 - stabilité ;
 - cohérence des profondeurs.
+
+Le frustum utilise les six plans near/far inclus et les AABB 3D issues de
+LOD2. Une caméra principale n'est publiée que lorsque toutes ses tuiles
+visibles sont résidentes en LOD0. Les LOD1 et LOD2 sont interdits dans les
+pixels terrain RGB ou thermiques ; l'AOV `fireviewer:terrain_lod` le contrôle.
 
 ## Conversion
 

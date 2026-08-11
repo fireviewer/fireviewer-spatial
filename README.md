@@ -33,7 +33,7 @@ justifie pas leur promotion.
 ## Contenu
 
 - `blender/` : génération et contrôles géométriques ;
-- `omniverse/` : contrats OpenUSD, composition déterministe et outils Kit ;
+- `omniverse/` : export et validation structurelle des payloads OpenUSD ;
 - `omniverse/contracts/v2/` : contrat futur du catalogue de 295 assets et des
   compositions reproductibles, après reconstruction des couches terrain ;
 - `contracts/spatial/` : schémas du package et du catalogue ;
@@ -41,29 +41,54 @@ justifie pas leur promotion.
 
 ## Production
 
-Chaque production utilise un dossier de travail externe et une configuration de
-zone explicite. Pour les six incidents actifs, le relief 3D est dérivé du
-MNT/MNS IGN aligné à 0,5 m. Le sol 2D léger combine une palette PBR et des
-masques classifiés : sols naturels/brûlés, champs orientés, routes, chemins,
-berges et plateformes ferroviaires. Les réseaux, parcelles et classes de sol
-doivent provenir de couches vectorielles ou classifiées approuvées ; toute
-orthophoto ou imagerie aérienne lourde est interdite. Les entrées LiDAR,
-vecteurs, modèles et rendus restent hors du checkout. Les manifestes générés
-conservent provenance, licences, tailles et SHA-256.
+Chaque production utilise un dossier de travail externe sur `D:` et une
+configuration de zone explicite. Pour les six incidents actifs, le MNT/MNS de
+travail est aligné sur une grille globale de 2 m en `EPSG:2154`. Il est compilé
+en tuiles coeur de 500 m avec halo de 10 m, sous la forme d'un quadtree
+adaptatif à trois LOD. Les rasters de travail ne constituent pas la livraison
+et sont supprimables dès que toutes leurs dépendances sont validées.
 
-Les sources ImageGen rapprochées servent uniquement de micro-détail hors ligne.
-Elles sont empaquetées dans exactement quatre textures atlas runtime. Les 72
-profils de surface ajoutent la variété à 16–64 m et 128–512 m par paramètres,
-bruit déterministe et masques de contexte ; aucune source individuelle n’est
-importée dans la scène. Les routes, chemins, cours d’eau et voies ferrées
-conservent une abscisse UV continue entre tuiles et changent de profil tous les
-250 m sans répéter les deux variantes précédentes.
+Le sol cible référence 72 textures PBR propres, empaquetées dans quatre atlas
+runtime (`basecolor`, `normal`, `height`, `ORM`). Cette bibliothèque propre
+n'existe pas encore sous une forme acceptée : les images et l'atlas v3 actuels
+ne constituent pas ce livrable.
 
-La validation automatisée ne remplace ni l'ouverture isolée dans Kit, ni la
-revue visuelle humaine. Les 295 assets USD refaits bloquent leur couche de
-composition et les packs finaux, mais pas la reconstruction terrain/sol. Les
-rails métalliques restent une future géométrie 3D ; les matériaux 2D ne couvrent
-que ballast, traverses, talus et accotements.
+La nouvelle production utilisera temporairement une orthophoto RGB à 1 m par
+fenêtre de 500 m avec halo de 10 m. Elle sert uniquement à classifier le sol
+vers les 72 profils. Le coeur produit quatre cartes de 500 × 500 pixels : IDs,
+weights, confidence et orientation. Le RGB temporaire n'est supprimé qu'après
+le scellement de `tile-package.v3.json` et la validation de
+`tile.done.v3.json` contre toutes ses sorties. Il n'entre jamais dans Blender,
+OpenUSD, un package ou le runtime. Aucun matériau procédural ou profil
+`procedural_only` n'est admis. Le compilateur déterministe
+[`orthophoto_surface_correspondence.py`](./blender/orthophoto_surface_correspondence.py),
+son acquisition temporaire, le backend mono-zone et le package v3 sont reliés.
+Cette intégration testée sur données synthétiques ne constitue pas une preuve
+de production : aucune orthophoto réelle n'a été téléchargée.
+
+Les parcelles, l'occupation du sol, le transport, l'hydrographie et la géologie
+restent des priors et des corrections de la classification, pas la source
+principale qui peint le terrain. L'ancienne composition v2 à grille 5 m et ses
+overlays vectoriels sont dépréciés pour toute nouvelle écriture. Les lecteurs
+v2 sont conservés uniquement pour le replay et l'audit des anciens packages.
+Les entrées LiDAR, vecteurs, images, modèles et rendus restent hors du checkout.
+
+La QA terrain Blender headless compose les quatre atlas avec les projections
+métriques `world_xy` et `world_triplanar` sur le véritable LOD0 FVTQ, puis
+produit des vues et un AOV LOD vérifiés par hash. Le chemin technique
+synthétique est qualifié avec Blender 4.5.3 en 512 px : les vues top-down et
+oblique ont zéro pixel LOD/couverture invalide et 44 544 pixels utilisent
+réellement `world_triplanar`. Ce résultat ne vaut ni acceptation de la future
+bibliothèque PBR réelle, ni revue humaine. La couche OpenUSD conserve
+volontairement un
+`UsdPreviewSurface` magenta de diagnostic : le shader runtime dédié reste
+`pending_dedicated_mdl_validation` et `usd_runtime_gate=false`. Ce gate USD
+séparé ne bloque pas l'acceptation terrain dans Blender, mais il bloque toute
+qualification de rendu texturé Omniverse/RTX. Les 295 assets USD refaits
+bloquent leur couche de composition et les packs finaux, mais pas la
+reconstruction terrain/sol. Les rails métalliques restent une future géométrie
+3D ; les matériaux 2D ne couvrent que ballast, traverses, talus et
+accotements.
 
 Le dataset historique issu de la première simulation et son pack autonome de
 reproduction complet sont conservés hors Git. Ils servent au replay et à
@@ -73,16 +98,37 @@ Les packages et banques de rendus sont versionnés par zone et par révision. Le
 sorties de localisation conservent les CRS horizontaux, datums verticaux,
 transformations, résolutions et empreintes exactes nécessaires au replay.
 
-Le validateur terrain profond reconstruit une tuile depuis les GeoTIFF MNT/MNS
-référencés et compare les hashes sources, la grille, chaque altitude arrondie du
-maillage et chaque pixel de la carte de contexte. Cette carte MNT/MNS ne vaut
-pas mapping contextuel des sols : tant que les parcelles, transports,
-hydrographie, occupation et géologie ne sont pas liés, la production générale
-et les placements de routes ou bâtiments restent bloqués.
+Le package canonique v3 conserve les trois fichiers FVTQ, le HAG compact, les
+quatre cartes de correspondance, `surface-correspondence.json`, le contrat de
+matériau v2 et leur provenance. Les packages v2 restent lisibles uniquement
+pour le replay et l'audit. Deux compilations depuis les mêmes entrées doivent
+être identiques bit à bit. Le streamer sélectionne les tuiles par intersection
+de leur AABB 3D avec le frustum réel : seule la couverture LOD0 complète peut
+être publiée dans une caméra principale. LOD1 et LOD2 ne servent jamais de
+fallback visible pendant une capture.
+
+État au 9 août 2026 : `0/6` zone réelle est produite ou acceptée. Le gate atlas
+v3 a échoué en mode fail-closed : 24 cellules micro sont sombres ou plates et
+quatre profils `road_surface` restent `procedural_only`, sans contrat
+d'échantillonnage atlas. Le rendu n'a donc émis ni reçu `pending`, ni
+acceptation visuelle. Il faut
+corriger/refaire la bibliothèque PBR et ses quatre atlas, relancer leur rendu
+technique complet, les contrôler avec le gate Blender texturé désormais
+qualifié sur fixture, puis obtenir la revue humaine. Seulement après ces gates viendront
+le preflight et le pilote de Lédenon. Une preuve synthétique ne remplace jamais
+cette chaîne ; l'état reste `0/6`.
 
 ## Documentation de référence
 
 - `docs/CAMERA_AND_CRS_CONTRACT.md` : repères, caméra, pose et contrôles ;
+- `docs/ADAPTIVE_TERRAIN_PRODUCTION.md` : terrain adaptatif, composition,
+  streaming caméra et gates de production ;
+- `docs/ORTHOPHOTO_TEXTURE_CORRESPONDENCE.md` : orthophoto temporaire 1 m,
+  cartes 500 × 500, bibliothèque PBR cible et règles de nettoyage ;
+- `blender/ORTHOPHOTO_SURFACE_CORRESPONDENCE.md` : API déterministe, contrat
+  des cinq sorties, hashes et qualification synthétique du matcher ;
+- `blender/ADAPTIVE_ZONE_SPEC_GENERATOR.md` : génération hors ligne d'un unique
+  `zone-spec.v1` 2 m à partir du catalogue signé des six emprises ;
 - `docs/PACKAGE_VERSIONING.md` : immutabilité et dépendances des révisions ;
 - `docs/RENDER_BANK_SPEC.md` : contenu et portée des banques de rendus ;
 - `docs/UAV_REGISTRATION_BENCHMARK.md` : protocole de comparaison des matchers.

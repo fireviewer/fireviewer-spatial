@@ -6,13 +6,13 @@ La banque de rendus est locale à une zone ou un package d’incident. Elle n’
 
 ## Sources
 
-- MNT ;
-- MNS/DSM ;
-- LiDAR ;
-- orthophoto ;
-- scène ou package 3D ;
+- package terrain canonique FVTQ/HAG/composition ;
+- payloads OpenUSD régénérés depuis ce package ;
 - vecteurs utiles ;
 - profils de caméra.
+
+Les MNT/MNS 2 m sont des entrées de compilation temporaires. Une orthophoto
+n'est ni une texture de terrain, ni une dépendance de la banque active.
 
 ## Artefacts par rendu
 
