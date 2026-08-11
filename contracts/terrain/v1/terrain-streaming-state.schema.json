@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireviewer.fr/contracts/terrain/v1/terrain-streaming-state.schema.json",
+  "title": "FireViewer terrain streaming state v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "terrain_build_id",
+    "generation",
+    "last_action_sequence",
+    "active_camera_id",
+    "staging_camera_id",
+    "active_camera",
+    "staging_camera",
+    "published_visible_lod0_tile_ids",
+    "published_visible_lod0_payloads",
+    "resident_payloads",
+    "quarantined_payloads",
+    "failure_counts",
+    "retained_lod0",
+    "retry_backoff_remaining_ticks",
+    "pending_action",
+    "last_error",
+    "budget",
+    "policy",
+    "telemetry_counters"
+  ],
+  "properties": {
+    "schema": {"const": "fireviewer.terrain-streaming-state.v2"},
+    "terrain_build_id": {"$ref": "#/$defs/sha256"},
+    "generation": {"type": "integer", "minimum": 0},
+    "last_action_sequence": {"type": "integer", "minimum": 0},
+    "active_camera_id": {"type": ["string", "null"]},
+    "staging_camera_id": {"type": ["string", "null"]},
+    "active_camera": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/camera"}]},
+    "staging_camera": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/camera"}]},
+    "published_visible_lod0_tile_ids": {"$ref": "#/$defs/ids"},
+    "published_visible_lod0_payloads": {"type": "array", "items": {"$ref": "#/$defs/payload"}, "uniqueItems": true},
+    "resident_payloads": {"type": "array", "items": {"$ref": "#/$defs/payload"}, "uniqueItems": true},
+    "quarantined_payloads": {"type": "array", "items": {"$ref": "#/$defs/payload"}, "uniqueItems": true},
+    "failure_counts": {"type": "array", "items": {"$ref": "#/$defs/failure"}},
+    "retained_lod0": {"type": "array", "items": {"$ref": "#/$defs/retained"}},
+    "retry_backoff_remaining_ticks": {"type": "integer", "minimum": 0},
+    "pending_action": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/action"}]},
+    "last_error": {"type": ["string", "null"]},
+    "budget": {"$ref": "#/$defs/streamingBudget"},
+    "policy": {"$ref": "#/$defs/policy"},
+    "telemetry_counters": {"$ref": "#/$defs/telemetry"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "vec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["view_id", "position_l93_ngf_m", "forward", "up", "vertical_fov_deg", "aspect_ratio", "near_clip_m", "far_clip_m"],
+      "properties": {
+        "view_id": {"type": "string", "minLength": 1},
+        "position_l93_ngf_m": {"$ref": "#/$defs/vec3"},
+        "forward": {"$ref": "#/$defs/vec3"},
+        "up": {"$ref": "#/$defs/vec3"},
+        "vertical_fov_deg": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 179},
+        "aspect_ratio": {"type": "number", "exclusiveMinimum": 0},
+        "near_clip_m": {"type": "number", "exclusiveMinimum": 0},
+        "far_clip_m": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "camera_id", "mode", "views"],
+      "properties": {
+        "schema": {"const": "fireviewer.camera-envelope.v1"},
+        "camera_id": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["planned", "predicted", "interactive"]},
+        "views": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/view"}}
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tile_id", "lod", "stitch_mask"],
+      "properties": {
+        "tile_id": {"type": "string", "minLength": 1},
+        "lod": {"enum": [0, 1, 2]},
+        "stitch_mask": {"type": "integer", "minimum": 0, "maximum": 15}
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tile_id", "lod", "stitch_mask", "count"],
+      "properties": {
+        "tile_id": {"type": "string", "minLength": 1},
+        "lod": {"enum": [0, 1, 2]},
+        "stitch_mask": {"type": "integer", "minimum": 0, "maximum": 15},
+        "count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "retained": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tile_id", "lod", "stitch_mask", "until_s"],
+      "properties": {
+        "tile_id": {"type": "string", "minLength": 1},
+        "lod": {"const": 0},
+        "stitch_mask": {"type": "integer", "minimum": 0, "maximum": 15},
+        "until_s": {"type": "number"}
+      }
+    },
+    "streamingBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu_bytes", "gpu_bytes", "maximum_triangles", "reserve_fraction"],
+      "properties": {
+        "cpu_bytes": {"type": "integer", "minimum": 1},
+        "gpu_bytes": {"type": "integer", "minimum": 1},
+        "maximum_triangles": {"type": ["integer", "null"], "minimum": 1},
+        "reserve_fraction": {"type": "number", "minimum": 0.25, "exclusiveMaximum": 1}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hysteresis_seconds", "maximum_load_failure_count", "load_retry_backoff_ticks"],
+      "properties": {
+        "hysteresis_seconds": {"type": "number", "minimum": 0},
+        "maximum_load_failure_count": {"type": "integer", "minimum": 1},
+        "load_retry_backoff_ticks": {"type": "integer", "minimum": 0}
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tick_count", "staged_camera_count", "publication_count", "load_attempt_count", "load_success_count", "load_failure_count", "eviction_action_count", "evicted_payload_count", "action_failure_count"],
+      "properties": {
+        "tick_count": {"type": "integer", "minimum": 0},
+        "staged_camera_count": {"type": "integer", "minimum": 0},
+        "publication_count": {"type": "integer", "minimum": 0},
+        "load_attempt_count": {"type": "integer", "minimum": 0},
+        "load_success_count": {"type": "integer", "minimum": 0},
+        "load_failure_count": {"type": "integer", "minimum": 0},
+        "eviction_action_count": {"type": "integer", "minimum": 0},
+        "evicted_payload_count": {"type": "integer", "minimum": 0},
+        "action_failure_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "generation", "kind", "payloads", "camera_id", "visible_lod0_tile_ids", "reason", "issued_at_s", "expected_build_id", "expected_sha256"],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 1},
+        "generation": {"type": "integer", "minimum": 0},
+        "kind": {"enum": ["load_payload", "evict_payloads", "publish_camera"]},
+        "payloads": {"type": "array", "items": {"$ref": "#/$defs/payload"}, "uniqueItems": true},
+        "camera_id": {"type": ["string", "null"]},
+        "visible_lod0_tile_ids": {"$ref": "#/$defs/ids"},
+        "reason": {"type": "string"},
+        "issued_at_s": {"type": "number"},
+        "expected_build_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "expected_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "load_payload"}}, "required": ["kind"]},
+          "then": {
+            "properties": {
+              "payloads": {"minItems": 1, "maxItems": 1},
+              "expected_build_id": {"$ref": "#/$defs/sha256"},
+              "expected_sha256": {"$ref": "#/$defs/sha256"}
+            }
+          },
+          "else": {
+            "properties": {
+              "expected_build_id": {"const": null},
+              "expected_sha256": {"const": null}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "publish_camera"}}, "required": ["kind"]},
+          "then": {
+            "properties": {
+              "camera_id": {"type": "string", "minLength": 1},
+              "payloads": {"minItems": 1, "items": {"allOf": [{"$ref": "#/$defs/payload"}, {"properties": {"lod": {"const": 0}}}]}}
+            }
+          }
+        }
+      ]
+    }
+  }
+}

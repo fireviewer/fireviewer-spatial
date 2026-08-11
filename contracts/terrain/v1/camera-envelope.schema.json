@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireviewer.fr/contracts/terrain/v1/camera-envelope.schema.json",
+  "title": "FireViewer camera envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "camera_id", "mode", "views"],
+  "properties": {
+    "schema": {"const": "fireviewer.camera-envelope.v1"},
+    "camera_id": {"$ref": "#/$defs/id"},
+    "mode": {"enum": ["planned", "predicted", "interactive"]},
+    "views": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/view"}
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1},
+    "vec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view_id",
+        "position_l93_ngf_m",
+        "forward",
+        "up",
+        "vertical_fov_deg",
+        "aspect_ratio",
+        "near_clip_m",
+        "far_clip_m"
+      ],
+      "properties": {
+        "view_id": {"$ref": "#/$defs/id"},
+        "position_l93_ngf_m": {"$ref": "#/$defs/vec3"},
+        "forward": {"$ref": "#/$defs/vec3"},
+        "up": {"$ref": "#/$defs/vec3"},
+        "vertical_fov_deg": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 179},
+        "aspect_ratio": {"type": "number", "exclusiveMinimum": 0},
+        "near_clip_m": {"type": "number", "exclusiveMinimum": 0},
+        "far_clip_m": {"type": "number", "exclusiveMinimum": 0}
+      }
+    }
+  }
+}
