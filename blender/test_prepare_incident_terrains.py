@@ -16,7 +16,7 @@ from prepare_incident_terrains import (
 
 def _write_test_ground_contracts(
     tmp_path: Path, monkeypatch
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path, dict]:
     modes = ["ground_blend"] * 8 + [
         "directional_area",
         "linear_overlay",
@@ -73,7 +73,49 @@ def _write_test_ground_contracts(
     }
     runtime_path = tmp_path / "ground-surface-runtime-contract.json"
     runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
-    return catalog_path, runtime_path
+    context_root = tmp_path / "context"
+    context_cases = []
+    for case in CASES:
+        case_root = context_root / case.fire_id.lower()
+        case_root.mkdir(parents=True)
+        package = case_root / "ground-context.gpkg"
+        package.write_bytes(f"context-{case.fire_id}".encode())
+        package_hash = incident.sha256_file(package)
+        manifest = {
+            "fire_id": case.fire_id,
+            "profile_binding_count": len(modes),
+            "package": {"sha256": package_hash},
+            "source_cleanup": {
+                "status": "completed_after_package_validation"
+            },
+        }
+        manifest_path = case_root / "ground-context-manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        context_cases.append(
+            {
+                "fire_id": case.fire_id,
+                "package_path": package.relative_to(context_root).as_posix(),
+                "package_sha256": package_hash,
+                "package_byte_count": package.stat().st_size,
+                "manifest_path": manifest_path.relative_to(context_root).as_posix(),
+                "manifest_sha256": incident.sha256_file(manifest_path),
+                "feature_count": 1,
+            }
+        )
+    context = {
+        "schema": incident.GROUND_CONTEXT_CATALOG_SCHEMA,
+        "status": "validated_six_case_context",
+        "crs": incident.SOURCE_CRS,
+        "orthophoto_dependency": "forbidden",
+        "case_count": 6,
+        "profile_binding_count": len(modes),
+        "total_feature_count": 6,
+        "cases": context_cases,
+    }
+    context["catalog_sha256"] = incident._canonical_sha256(context)
+    context_path = context_root / "ground-context-catalog.json"
+    context_path.write_text(json.dumps(context), encoding="utf-8")
+    return catalog_path, runtime_path, context_path, context
 
 
 def test_six_square_cases_cover_reference_bounds_with_margin() -> None:
@@ -96,12 +138,16 @@ def test_die_is_replanned_without_legacy_terrain_or_placements(
     tmp_path: Path, monkeypatch
 ) -> None:
     die = next(case for case in CASES if case.fire_id == "FR-26-00001")
-    catalog_path, runtime_path = _write_test_ground_contracts(tmp_path, monkeypatch)
+    catalog_path, runtime_path, context_path, context = _write_test_ground_contracts(
+        tmp_path, monkeypatch
+    )
     result = write_case_plan(
         die,
         tmp_path,
         catalog_path,
         runtime_path,
+        context_path,
+        context,
         overwrite=False,
     )
     root = tmp_path / result["root"]
@@ -125,9 +171,11 @@ def test_die_is_replanned_without_legacy_terrain_or_placements(
     assert "ownership_rule" not in manifest["tiling"]
     assert "segmentation_rule" not in manifest["tiling"]
     assert all("orthophoto_request" not in tile for tile in manifest["tiles"])
-    assert manifest["status"] == "blocked_pending_ground_surface_mapping"
+    assert manifest["status"] == "blocked_pending_ground_surface_visual_acceptance"
     gate = manifest["ground_surface_gate"]
     assert gate["runtime_texture_count"] == 4
+    assert gate["ground_context"]["status"] == "validated"
+    assert gate["ground_context"]["feature_count"] == 1
     assert set(gate["candidate_profile_ids_by_application_mode"]) == {
         "ground_blend",
         "directional_area",

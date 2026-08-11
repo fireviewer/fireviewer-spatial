@@ -26,8 +26,9 @@ SOURCE_CRS = "EPSG:2154"
 TILE_SIZE_M = 500
 SAFETY_MARGIN_M = 5_000
 PUBLIC_INDEX_URL = "https://fireviewer-api.vercel.app/api/v1/incidents/recent"
-GROUND_SURFACE_SCHEMA = "fireviewer.ground-surface-atlas-library.v2"
-GROUND_RUNTIME_SCHEMA = "fireviewer.ground-surface-runtime-contract.v2"
+GROUND_SURFACE_SCHEMA = "fireviewer.ground-surface-atlas-library.v3"
+GROUND_RUNTIME_SCHEMA = "fireviewer.ground-surface-runtime-contract.v3"
+GROUND_CONTEXT_CATALOG_SCHEMA = "fireviewer.ground-context-catalog.v1"
 GROUND_MICRO_SOURCE_COUNT = 21
 GROUND_PROFILE_COUNT = 72
 GROUND_RUNTIME_TEXTURE_COUNT = 4
@@ -234,6 +235,49 @@ def load_ground_runtime_contract(path: Path) -> dict[str, Any]:
     return payload
 
 
+def load_ground_context_catalog(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema") != GROUND_CONTEXT_CATALOG_SCHEMA:
+        raise ValueError("Unsupported ground context catalog")
+    if payload.get("status") != "validated_six_case_context":
+        raise ValueError("Ground context catalog is not validated")
+    if payload.get("crs") != SOURCE_CRS:
+        raise ValueError("Ground context catalog must use EPSG:2154")
+    if payload.get("orthophoto_dependency") != "forbidden":
+        raise ValueError("Ground context catalog must forbid orthophotos")
+    if payload.get("profile_binding_count") != GROUND_PROFILE_COUNT:
+        raise ValueError("Ground context catalog must bind all 72 profiles")
+    unsigned = dict(payload)
+    expected_hash = unsigned.pop("catalog_sha256", None)
+    if expected_hash != _canonical_sha256(unsigned):
+        raise ValueError("Ground context catalog SHA-256 is invalid")
+    cases = payload.get("cases")
+    if not isinstance(cases, list) or len(cases) != 6:
+        raise ValueError("Ground context catalog must contain six cases")
+    if {case.get("fire_id") for case in cases} != {case.fire_id for case in CASES}:
+        raise ValueError("Ground context cases do not match terrain cases")
+    root = path.parent
+    for case in cases:
+        package = root / case["package_path"]
+        manifest_path = root / case["manifest_path"]
+        if not package.is_file() or sha256_file(package) != case["package_sha256"]:
+            raise ValueError(f"Ground context package mismatch: {case['fire_id']}")
+        if not manifest_path.is_file() or sha256_file(manifest_path) != case["manifest_sha256"]:
+            raise ValueError(f"Ground context manifest mismatch: {case['fire_id']}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("fire_id") != case["fire_id"]:
+            raise ValueError(f"Ground context manifest incident mismatch: {case['fire_id']}")
+        if manifest.get("package", {}).get("sha256") != case["package_sha256"]:
+            raise ValueError(f"Ground context manifest package mismatch: {case['fire_id']}")
+        if manifest.get("profile_binding_count") != GROUND_PROFILE_COUNT:
+            raise ValueError(f"Ground context profile binding mismatch: {case['fire_id']}")
+        if manifest.get("source_cleanup", {}).get("status") != (
+            "completed_after_package_validation"
+        ):
+            raise ValueError(f"Ground context source cleanup is incomplete: {case['fire_id']}")
+    return payload
+
+
 def _write_json(path: Path, payload: dict[str, Any], *, overwrite: bool) -> None:
     if path.exists() and not overwrite:
         raise FileExistsError(f"refusing to overwrite existing file: {path}")
@@ -251,6 +295,8 @@ def write_case_plan(
     output_root: Path,
     ground_surface_catalog_path: Path,
     ground_runtime_contract_path: Path,
+    ground_context_catalog_path: Path,
+    ground_context_catalog: dict[str, Any],
     *,
     overwrite: bool,
 ) -> dict[str, Any]:
@@ -288,6 +334,13 @@ def write_case_plan(
     }
     ground_catalog = load_ground_surface_catalog(ground_surface_catalog_path)
     runtime_contract = load_ground_runtime_contract(ground_runtime_contract_path)
+    context_case = next(
+        entry
+        for entry in ground_context_catalog["cases"]
+        if entry["fire_id"] == case.fire_id
+    )
+    context_package_path = ground_context_catalog_path.parent / context_case["package_path"]
+    context_manifest_path = ground_context_catalog_path.parent / context_case["manifest_path"]
     candidate_profile_ids_by_mode = {
         mode: sorted(
             profile["id"]
@@ -308,7 +361,7 @@ def write_case_plan(
         os.path.relpath(ground_runtime_contract_path.resolve(), case_root.resolve())
     ).as_posix()
     manifest["ground_surface_gate"] = {
-        "status": "blocked_pending_visual_acceptance_and_context_mapping",
+        "status": "blocked_pending_visual_acceptance",
         "catalog_path": catalog_relative,
         "catalog_sha256": ground_catalog["catalog_sha256"],
         "catalog_status": ground_catalog["status"],
@@ -319,15 +372,37 @@ def write_case_plan(
         "runtime_texture_count": GROUND_RUNTIME_TEXTURE_COUNT,
         "candidate_profile_ids_by_application_mode": candidate_profile_ids_by_mode,
         "maximum_active_materials_per_tile": 4,
+        "ground_context": {
+            "catalog_path": Path(
+                os.path.relpath(
+                    ground_context_catalog_path.resolve(), case_root.resolve()
+                )
+            ).as_posix(),
+            "catalog_sha256": ground_context_catalog["catalog_sha256"],
+            "package_path": Path(
+                os.path.relpath(context_package_path.resolve(), case_root.resolve())
+            ).as_posix(),
+            "package_sha256": context_case["package_sha256"],
+            "manifest_path": Path(
+                os.path.relpath(context_manifest_path.resolve(), case_root.resolve())
+            ).as_posix(),
+            "manifest_sha256": context_case["manifest_sha256"],
+            "feature_count": context_case["feature_count"],
+            "profile_binding_count": GROUND_PROFILE_COUNT,
+            "status": "validated",
+        },
         "structured_overlay_sources": [
+            "approved_landcover_class",
+            "approved_geological_parent_material",
             "approved_land_parcels",
+            "approved_agricultural_parcels",
             "approved_transport_network",
             "approved_hydrography",
         ],
         "railway_steel_rails": "required_separate_future_3d_geometry",
         "silent_fallback": "forbidden",
     }
-    manifest["status"] = "blocked_pending_ground_surface_mapping"
+    manifest["status"] = "blocked_pending_ground_surface_visual_acceptance"
     manifest_path = case_root / "production-manifest.json"
     _write_json(manifest_path, manifest, overwrite=overwrite)
     return {
@@ -354,13 +429,15 @@ def write_case_plan(
 def write_catalog(
     output_root: Path,
     ground_surface_catalog_path: Path,
+    ground_context_catalog_path: Path,
     *,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     if len(CASES) != 6 or len({case.fire_id for case in CASES}) != 6:
         raise ValueError("The terrain production catalog must contain six unique cases")
-    runtime_source = Path(__file__).with_name("ground_surface_runtime_contract.v2.json")
+    runtime_source = Path(__file__).with_name("ground_surface_runtime_contract.v3.json")
     runtime_contract = load_ground_runtime_contract(runtime_source)
+    ground_context_catalog = load_ground_context_catalog(ground_context_catalog_path)
     runtime_output = output_root / "ground-surface-runtime-contract.json"
     _write_json(runtime_output, runtime_contract, overwrite=overwrite)
     plans = [
@@ -369,13 +446,15 @@ def write_catalog(
             output_root,
             ground_surface_catalog_path,
             runtime_output,
+            ground_context_catalog_path,
+            ground_context_catalog,
             overwrite=overwrite,
         )
         for case in CASES
     ]
     catalog = {
         "schema": CATALOG_SCHEMA,
-        "status": "blocked_pending_ground_surface_acceptance_and_mapping",
+        "status": "blocked_pending_ground_surface_visual_acceptance",
         "case_count": len(plans),
         "crs": SOURCE_CRS,
         "tile_size_m": TILE_SIZE_M,
@@ -413,6 +492,18 @@ def write_catalog(
             "runtime_contract_sha256": sha256_file(runtime_output),
             "production_gate": "blocked",
         },
+        "ground_context": {
+            "catalog_path": Path(
+                os.path.relpath(
+                    ground_context_catalog_path.resolve(), output_root.resolve()
+                )
+            ).as_posix(),
+            "catalog_sha256": ground_context_catalog["catalog_sha256"],
+            "case_count": ground_context_catalog["case_count"],
+            "profile_binding_count": ground_context_catalog["profile_binding_count"],
+            "total_feature_count": ground_context_catalog["total_feature_count"],
+            "production_gate": "passed",
+        },
         "plans": plans,
     }
     catalog["catalog_sha256"] = _canonical_sha256(catalog)
@@ -429,6 +520,7 @@ def _parser() -> argparse.ArgumentParser:
         dest="ground_surface_catalog",
         type=Path,
     )
+    parser.add_argument("--ground-context-catalog", type=Path)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--write-plans", action="store_true")
     return parser
@@ -449,9 +541,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.ground_surface_catalog is None:
         raise ValueError("--ground-surface-catalog is required with --write-plans")
+    if args.ground_context_catalog is None:
+        raise ValueError("--ground-context-catalog is required with --write-plans")
     catalog = write_catalog(
         args.output_root.resolve(),
         args.ground_surface_catalog.resolve(),
+        args.ground_context_catalog.resolve(),
         overwrite=args.overwrite,
     )
     print(json.dumps(catalog, ensure_ascii=False, indent=2, sort_keys=True))

@@ -8,7 +8,7 @@ import unicodedata
 from typing import Any
 
 
-CATALOG_SCHEMA = "fireviewer.ground-surface-atlas-library.v2"
+CATALOG_SCHEMA = "fireviewer.ground-surface-atlas-library.v3"
 DEFAULT_LINEAR_SEGMENT_LENGTH_M = 250.0
 CLIFF_GEOLOGY_VARIANTS = {
     "limestone_strata": ("calcaire", "limestone"),

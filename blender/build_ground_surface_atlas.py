@@ -14,8 +14,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 
-SCHEMA = "fireviewer.ground-surface-atlas-library.v2"
-CONTRACT_SCHEMA = "fireviewer.ground-surface-runtime-contract.v2"
+SCHEMA = "fireviewer.ground-surface-atlas-library.v3"
+CONTRACT_SCHEMA = "fireviewer.ground-surface-runtime-contract.v3"
 EXPECTED_MICRO_SOURCE_COUNT = 21
 EXPECTED_PROFILE_COUNT = 72
 EXPECTED_RUNTIME_TEXTURE_COUNT = 4
@@ -25,6 +25,12 @@ EXPECTED_APPLICATION_MODES = {
     "linear_overlay",
     "watercourse_overlay",
     "slope_cliff_overlay",
+}
+SURFACE_BASES = {
+    "atlas_pbr",
+    "procedural_only",
+    "procedural_tint_with_atlas_relief",
+    "procedural_water_over_contextual_bed",
 }
 REQUIRED_INCIDENTS = {
     "FR-30-00001",
@@ -108,10 +114,40 @@ def load_contract(path: Path) -> dict[str, Any]:
     if application_modes != EXPECTED_APPLICATION_MODES:
         raise ValueError("Ground surface application modes are incomplete")
     known_groups = set(group_ids)
+    source_group = {
+        str(source): str(group["id"])
+        for group in groups
+        for source in group.get("sources", [])
+    }
     for family in families:
         referenced = set(family.get("micro_source_groups", []))
         if not referenced or not referenced <= known_groups:
             raise ValueError(f"Invalid micro source pool for {family['id']}")
+        variant_ids = [str(variant) for variant in family.get("variant_ids", [])]
+        bindings = family.get("variant_bindings")
+        if not isinstance(bindings, dict) or set(bindings) != set(variant_ids):
+            raise ValueError(f"Explicit variant bindings are incomplete for {family['id']}")
+        for variant in variant_ids:
+            binding = bindings[variant]
+            if not isinstance(binding, dict):
+                raise ValueError(f"Invalid variant binding for {family['id']}.{variant}")
+            basis = str(binding.get("surface_basis", ""))
+            if basis not in SURFACE_BASES:
+                raise ValueError(f"Invalid surface basis for {family['id']}.{variant}")
+            source = binding.get("micro_source")
+            if basis == "procedural_only":
+                if source is not None:
+                    raise ValueError(
+                        f"Procedural-only profile cannot declare a micro source: "
+                        f"{family['id']}.{variant}"
+                    )
+                continue
+            if source not in source_group:
+                raise ValueError(f"Unknown micro source for {family['id']}.{variant}")
+            if source_group[str(source)] not in referenced:
+                raise ValueError(
+                    f"Micro source group is not allowed for {family['id']}.{variant}"
+                )
     if payload.get("determinism", {}).get("silent_fallback") != "forbidden":
         raise ValueError("Ground surface composition must fail closed")
     return payload
@@ -315,7 +351,7 @@ def build_library(contract_path: Path, source_root: Path, output_root: Path) -> 
         ),
     }
     source_records: list[dict[str, Any]] = []
-    source_by_group: dict[str, list[dict[str, Any]]] = {group["id"]: [] for group in groups}
+    source_by_name: dict[str, dict[str, Any]] = {}
     for index, source_name in enumerate(sorted(expected_sources)):
         group = source_settings[source_name]
         source = source_root / source_name
@@ -364,7 +400,7 @@ def build_library(contract_path: Path, source_root: Path, output_root: Path) -> 
             "qa": {"automated": "passed", "maximum_edge_error": maximum_edge_error},
         }
         source_records.append(record)
-        source_by_group[group["id"]].append(record)
+        source_by_name[source_name] = record
     atlas_root = output_root / "runtime-atlas"
     role_names = {
         "basecolor": "srgb_base_color_atlas",
@@ -380,32 +416,35 @@ def build_library(contract_path: Path, source_root: Path, output_root: Path) -> 
     scale = contract["scale_contract"]
     profiles = []
     for family in contract["profile_families"]:
-        pool = [
-            source
-            for group_id in family["micro_source_groups"]
-            for source in source_by_group[group_id]
-        ]
         for variant in family["variant_ids"]:
             profile_id = f"{family['id']}.{variant}"
-            digest = hashlib.sha256(profile_id.encode("utf-8")).digest()
-            source = pool[int.from_bytes(digest[:2], "big") % len(pool)]
-            profiles.append(
-                {
-                    "id": profile_id,
-                    "family": family["id"],
-                    "variant": variant,
-                    "application_mode": family["application_mode"],
-                    "shader": family["shader"],
-                    "micro_source_id": source["id"],
-                    "micro_source_slot": source["slot"],
-                    "parameters": _profile_parameters(
-                        profile_id,
-                        scale["meso_variation_m"],
-                        scale["macro_variation_m"],
-                    ),
-                    "compatible_incidents": sorted(REQUIRED_INCIDENTS),
-                }
-            )
+            binding = family["variant_bindings"][variant]
+            basis = binding["surface_basis"]
+            profile = {
+                "id": profile_id,
+                "family": family["id"],
+                "variant": variant,
+                "application_mode": family["application_mode"],
+                "shader": family["shader"],
+                "surface_basis": basis,
+                "parameters": _profile_parameters(
+                    profile_id,
+                    scale["meso_variation_m"],
+                    scale["macro_variation_m"],
+                ),
+                "compatible_incidents": sorted(REQUIRED_INCIDENTS),
+            }
+            source_name = binding.get("micro_source")
+            if source_name is not None:
+                source = source_by_name[source_name]
+                profile["micro_source_id"] = source["id"]
+                profile["micro_source_slot"] = source["slot"]
+                profile["micro_source_role"] = {
+                    "atlas_pbr": "full_pbr",
+                    "procedural_tint_with_atlas_relief": "relief_and_roughness_only",
+                    "procedural_water_over_contextual_bed": "contextual_bed",
+                }[basis]
+            profiles.append(profile)
     contact_sheet = _write_contact_sheet(source_records, source_root, output_root)
     catalog = {
         "schema": SCHEMA,
@@ -498,6 +537,23 @@ def validate_catalog(catalog: dict[str, Any], root: Path) -> None:
             raise ValueError(f"Runtime atlas asset mismatch: {path}")
     if any(source["qa"]["maximum_edge_error"] != 0 for source in catalog["micro_sources"]):
         raise ValueError("A micro source cell is not periodic")
+    sources_by_id = {source["id"]: source for source in catalog["micro_sources"]}
+    for profile in catalog.get("profiles", []):
+        basis = profile.get("surface_basis")
+        if basis not in SURFACE_BASES:
+            raise ValueError(f"Invalid catalog surface basis: {profile.get('id')}")
+        source_id = profile.get("micro_source_id")
+        source_slot = profile.get("micro_source_slot")
+        if basis == "procedural_only":
+            if source_id is not None or source_slot is not None:
+                raise ValueError(
+                    f"Procedural-only catalog profile has a micro source: {profile['id']}"
+                )
+            continue
+        if source_id not in sources_by_id:
+            raise ValueError(f"Catalog profile has an unknown micro source: {profile['id']}")
+        if source_slot != sources_by_id[source_id]["slot"]:
+            raise ValueError(f"Catalog profile has a mismatched atlas slot: {profile['id']}")
 
 
 def _parser() -> argparse.ArgumentParser:

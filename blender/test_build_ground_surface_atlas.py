@@ -76,6 +76,12 @@ def test_builds_four_runtime_atlases_and_parameterized_profiles(
                         "shader": "layered_pbr",
                         "micro_source_groups": ["test"],
                         "variant_ids": ["first"],
+                        "variant_bindings": {
+                            "first": {
+                                "surface_basis": "atlas_pbr",
+                                "micro_source": "test-ground.png",
+                            }
+                        },
                     }
                 ],
                 "composition": {"ground_blend": {}},
@@ -100,4 +106,63 @@ def test_builds_four_runtime_atlases_and_parameterized_profiles(
     }
     assert catalog["micro_source_runtime_import"] == "forbidden"
     assert catalog["profiles"][0]["parameters"]["macro_scale_m"] >= 128.0
+    assert catalog["profiles"][0]["micro_source_id"] == "test-ground"
+    assert catalog["profiles"][0]["surface_basis"] == "atlas_pbr"
     assert catalog["micro_sources"][0]["qa"]["maximum_edge_error"] == 0
+
+
+def test_contract_rejects_implicit_or_incompatible_variant_bindings(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(atlas, "EXPECTED_MICRO_SOURCE_COUNT", 1)
+    monkeypatch.setattr(atlas, "EXPECTED_PROFILE_COUNT", 1)
+    monkeypatch.setattr(atlas, "EXPECTED_APPLICATION_MODES", {"ground_blend"})
+    payload = {
+        "schema": atlas.CONTRACT_SCHEMA,
+        "orthophoto_dependency": "forbidden",
+        "scale_contract": {
+            "source_image_role": "offline_micro_detail_only",
+            "direct_source_image_import": "forbidden",
+        },
+        "runtime_atlas": {
+            "size_px": 256,
+            "grid_size": 2,
+            "cell_size_px": 128,
+            "gutter_px": 8,
+            "runtime_textures": ["basecolor", "normal", "height", "orm"],
+            "runtime_texture_count": 4,
+        },
+        "micro_source_groups": [
+            {
+                "id": "test",
+                "physical_scale_m": 2.0,
+                "base_roughness": 0.8,
+                "normal_strength": 4.0,
+                "sources": ["test-ground.png"],
+            }
+        ],
+        "profile_families": [
+            {
+                "id": "test_family",
+                "application_mode": "ground_blend",
+                "micro_source_groups": ["test"],
+                "variant_ids": ["first"],
+                "variant_bindings": {},
+            }
+        ],
+        "determinism": {"silent_fallback": "forbidden"},
+    }
+    path = tmp_path / "invalid-contract.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with np.testing.assert_raises_regex(ValueError, "bindings are incomplete"):
+        atlas.load_contract(path)
+
+    payload["profile_families"][0]["variant_bindings"] = {
+        "first": {
+            "surface_basis": "procedural_only",
+            "micro_source": "test-ground.png",
+        }
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with np.testing.assert_raises_regex(ValueError, "cannot declare a micro source"):
+        atlas.load_contract(path)
