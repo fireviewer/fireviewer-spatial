@@ -1,0 +1,102 @@
+{
+  "schema": "fireviewer.zone-visual-qa-contract.v1",
+  "runtime": {
+    "blender": "4.5 LTS",
+    "command": [
+      "--background",
+      "--factory-startup",
+      "--disable-autoexec",
+      "--offline-mode",
+      "--python-exit-code",
+      "1"
+    ],
+    "storage": "D-only",
+    "network": "forbidden",
+    "omniverse": "forbidden"
+  },
+  "backend_api": {
+    "build_job": "build_zone_visual_job(...)->fireviewer.zone-visual-job.v1",
+    "inspect": "inspect_zone_job(job_path, require_d=True, validate_packages=True)",
+    "render": "render_zone_visual_qa(job_path)->fireviewer.zone-visual-technical-receipt.v1",
+    "review_template": "create_human_review_template(technical_receipt_path, output_path)",
+    "accept": "accept_zone_visual_review(technical_receipt_path, human_review_path, output_path)->fireviewer.zone-blender-visual-acceptance.v2"
+  },
+  "job": {
+    "schema": "fireviewer.zone-visual-job.v1",
+    "identity_binding": {
+      "recipe_id": "immutable zone recipe",
+      "recipe_build_id": "source-locked recipe identity shared by tile-package.v2 and tile.done.v2",
+      "build_id": "final observed-source Merkle identity shared by the tile catalog and zone acceptance"
+    },
+    "hash_locked_inputs": [
+      "terrain-tile-catalog.v1.json",
+      "zone QA metrics",
+      "every tile.done.v2.json",
+      "every terrain-usd-package.v1.json",
+      "every terrain-lod0.fvtq",
+      "shared ground material contract and four runtime atlases"
+    ],
+    "required_budget": [
+      "cpu_bytes",
+      "gpu_bytes",
+      "triangles",
+      "reserve_ratio>=0.25"
+    ]
+  },
+  "capture_plan": {
+    "schema": "fireviewer.zone-visual-capture-plan.v1",
+    "required": {
+      "orthographic_full_square": 1,
+      "orthographic_grid_3x3": 9,
+      "orthographic_worst_seam": "0..20, exactly two adjacent LOD0 tiles each",
+      "oblique_relief_extremes": [
+        "highest",
+        "lowest",
+        "maximum_local_relief"
+      ],
+      "oblique_network_richness": 1,
+      "oblique_dominant_surface": "up to three distinct dominant profiles"
+    },
+    "primary_camera_allowed_lods": [
+      0
+    ],
+    "required_artifacts_per_capture": [
+      "beauty.png",
+      "terrain-lod.exr",
+      "terrain-coverage.exr",
+      "capture.done.v1.json"
+    ],
+    "reference_material_channels": [
+      "basecolor",
+      "normal",
+      "height_bump",
+      "orm"
+    ]
+  },
+  "technical_receipt": {
+    "schema": "fireviewer.zone-visual-technical-receipt.v1",
+    "only_success_status": "rendered_pending_zone_visual_review",
+    "production_visual_gate_passed": false,
+    "automatic_acceptance": false,
+    "capture_plan_gate": "rehash plan, verify canonical plan hash and identities, require the complete planned category set, then bind every capture receipt to its exact plan entry"
+  },
+  "human_review": {
+    "schema": "fireviewer.zone-visual-human-review.v1",
+    "required_decision": "accepted",
+    "reviewer_kind": "human",
+    "coverage": "every capture exactly once",
+    "hash_binding": [
+      "technical_receipt_sha256",
+      "capture_set_sha256",
+      "beauty_sha256",
+      "terrain_lod_sha256",
+      "terrain_coverage_sha256"
+    ]
+  },
+  "acceptance": {
+    "schema": "fireviewer.zone-blender-visual-acceptance.v2",
+    "status": "accepted_blender_visual",
+    "precondition": "explicit exhaustive hash-matched human review",
+    "scope": "zone terrain visual evidence only"
+  }
+}

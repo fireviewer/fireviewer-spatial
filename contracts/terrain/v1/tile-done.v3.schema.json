@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireviewer.fr/contracts/terrain/v1/tile-done.v3.schema.json",
+  "title": "FireViewer adaptive terrain tile completion receipt v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "tile_id", "recipe_id", "recipe_build_id", "normal_halo_sha256", "stitch_variants", "inputs", "ground_material", "surface_mapping", "outputs"],
+  "properties": {
+    "schema": {"const": "fireviewer.tile.done.v3"},
+    "tile_id": {"type": "string", "minLength": 1},
+    "recipe_id": {"$ref": "tile-package.v3.schema.json#/$defs/sha256"},
+    "recipe_build_id": {"$ref": "tile-package.v3.schema.json#/$defs/sha256"},
+    "normal_halo_sha256": {"$ref": "tile-package.v3.schema.json#/$defs/sha256"},
+    "stitch_variants": {"$ref": "tile-package.schema.json#/$defs/stitchCatalog"},
+    "inputs": {"type": "object", "required": ["surface_correspondence"], "additionalProperties": {"$ref": "tile-package.v3.schema.json#/$defs/artifact"}},
+    "ground_material": {"$ref": "tile-package.v3.schema.json#/$defs/groundMaterial"},
+    "surface_mapping": {"$ref": "tile-package.v3.schema.json#/$defs/surfaceMapping"},
+    "outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["terrain_lod0", "terrain_lod1", "terrain_lod2", "hag_max_2m", "ground_profile_ids", "ground_profile_weights", "ground_confidence", "ground_orientation", "tile_package"],
+      "properties": {
+        "terrain_lod0": {"$ref": "tile-package.v3.schema.json#/$defs/artifact"}, "terrain_lod1": {"$ref": "tile-package.v3.schema.json#/$defs/artifact"}, "terrain_lod2": {"$ref": "tile-package.v3.schema.json#/$defs/artifact"}, "hag_max_2m": {"$ref": "tile-package.v3.schema.json#/$defs/artifact"}, "ground_profile_ids": {"$ref": "tile-package.v3.schema.json#/$defs/artifact"}, "ground_profile_weights": {"$ref": "tile-package.v3.schema.json#/$defs/artifact"}, "ground_confidence": {"$ref": "tile-package.v3.schema.json#/$defs/artifact"}, "ground_orientation": {"$ref": "tile-package.v3.schema.json#/$defs/artifact"}, "tile_package": {"$ref": "tile-package.v3.schema.json#/$defs/artifact"}
+      }
+    }
+  }
+}

@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireviewer.fr/contracts/terrain/v1/tile-package.schema.json",
+  "title": "FireViewer canonical adaptive terrain tile package v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "tile_id", "recipe_id", "recipe_build_id", "crs", "bounds_l93_m", "normal_halo_sha256", "stitch_variants", "inputs", "ground_material", "outputs"],
+  "properties": {
+    "schema": {"const": "fireviewer.tile-package.v2"},
+    "tile_id": {"type": "string", "minLength": 1},
+    "recipe_id": {"$ref": "#/$defs/sha256"},
+    "recipe_build_id": {"$ref": "#/$defs/sha256"},
+    "crs": {"const": "EPSG:2154"},
+    "bounds_l93_m": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
+    "normal_halo_sha256": {"$ref": "#/$defs/sha256"},
+    "stitch_variants": {"$ref": "#/$defs/stitchCatalog"},
+    "inputs": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/artifact"}},
+    "ground_material": {"$ref": "#/$defs/groundMaterial"},
+    "outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terrain_lod0",
+        "terrain_lod1",
+        "terrain_lod2",
+        "hag_max_2m",
+        "ground_profile_ids",
+        "ground_profile_weights",
+        "surface_overlays",
+        "tile_composition"
+      ],
+      "properties": {
+        "terrain_lod0": {"$ref": "#/$defs/artifact"},
+        "terrain_lod1": {"$ref": "#/$defs/artifact"},
+        "terrain_lod2": {"$ref": "#/$defs/artifact"},
+        "hag_max_2m": {"$ref": "#/$defs/artifact"},
+        "ground_profile_ids": {"$ref": "#/$defs/artifact"},
+        "ground_profile_weights": {"$ref": "#/$defs/artifact"},
+        "surface_overlays": {"$ref": "#/$defs/artifact"},
+        "tile_composition": {"$ref": "#/$defs/artifact"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "stitchRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mask", "triangle_count", "triangle_indices_sha256", "maximum_error_mm", "effective_edge_signatures"],
+      "properties": {
+        "mask": {"type": "integer", "minimum": 0, "maximum": 15},
+        "triangle_count": {"type": "integer", "minimum": 1},
+        "triangle_indices_sha256": {"$ref": "#/$defs/sha256"},
+        "maximum_error_mm": {"type": "integer", "minimum": 0, "maximum": 8000},
+        "effective_edge_signatures": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "stitchLod": {
+      "type": "array",
+      "minItems": 16,
+      "maxItems": 16,
+      "items": {"$ref": "#/$defs/stitchRecord"}
+    },
+    "stitchCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["encoding", "edge_order", "edge_mask_bits", "available_masks", "lods"],
+      "properties": {
+        "encoding": {"const": "fvtq-base-remove-add.v1"},
+        "edge_order": {"const": ["west", "east", "south", "north"]},
+        "edge_mask_bits": {"const": {"west": 1, "east": 2, "south": 4, "north": 8}},
+        "available_masks": {"const": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]},
+        "lods": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["lod0", "lod1", "lod2"],
+          "properties": {
+            "lod0": {"$ref": "#/$defs/stitchLod"},
+            "lod1": {"$ref": "#/$defs/stitchLod"},
+            "lod2": {"$ref": "#/$defs/stitchLod"}
+          }
+        }
+      }
+    },
+    "groundMaterial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "zone_path", "contract_sha256", "source_atlas_catalog_sha256", "atlas_catalog_sha256", "runtime_atlas_sha256", "material_layer_sha256", "visual_acceptance"],
+      "properties": {
+        "schema": {"const": "fireviewer.ground-material-contract.v1"},
+        "zone_path": {"type": "string", "minLength": 1},
+        "contract_sha256": {"$ref": "#/$defs/sha256"},
+        "source_atlas_catalog_sha256": {"$ref": "#/$defs/sha256"},
+        "atlas_catalog_sha256": {"$ref": "#/$defs/sha256"},
+        "runtime_atlas_sha256": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["basecolor", "normal", "height", "orm"],
+          "properties": {
+            "basecolor": {"$ref": "#/$defs/sha256"},
+            "normal": {"$ref": "#/$defs/sha256"},
+            "height": {"$ref": "#/$defs/sha256"},
+            "orm": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "material_layer_sha256": {"$ref": "#/$defs/sha256"},
+        "visual_acceptance": {"enum": ["pending_human_review", "accepted_human_visual"]}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "byte_count", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$"
+        },
+        "byte_count": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}
