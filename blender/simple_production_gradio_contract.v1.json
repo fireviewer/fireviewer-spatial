@@ -1,0 +1,110 @@
+{
+  "schema": "fireviewer.simple-production-gradio.v1",
+  "status": "locked",
+  "interface": {
+    "framework": "gradio",
+    "screens": 1,
+    "menus": 0,
+    "database": "forbidden"
+  },
+  "input": {
+    "coordinate_crs": "EPSG:4326",
+    "coordinate_role": "square_center",
+    "shape": "square",
+    "side_unit": "kilometre"
+  },
+  "production": {
+    "crs": "EPSG:2154",
+    "tile_size_m": 500,
+    "mode": "strictly_sequential",
+    "generator": "simple_measured_tile_pilot_identical",
+    "terrain": "FVTG fixed grid",
+    "ground": "orthophoto RGB baked 1 m",
+    "placement": "MNT-MNS measured",
+    "prototype_assets": 294,
+    "shared_prototype_bundle": true,
+    "database": "forbidden"
+  },
+  "container": {
+    "runtime": "pod_or_docker_only",
+    "geographic_download_at_build": "forbidden",
+    "terrain_compilation_at_build": "forbidden",
+    "python_dependencies": "embedded_and_import_checked",
+    "blender": "embedded_4.5_and_hash_checked",
+    "openusd": "bundled_with_blender_and_smoke_checked",
+    "assets": "complete_294_reference_catalog_with_real_usd_or_deterministic_real_usd_fallback_embedded_and_hash_checked_at_start",
+    "production_scripts": "embedded_and_presence_checked",
+    "work_volume": "/work",
+    "port": 7860
+  },
+  "cleanup": {
+    "after_each_validated_tile": [
+      "MNT raster",
+      "MNS raster",
+      "orthophoto raster"
+    ],
+    "preserve": [
+      "source receipts",
+      "zone context",
+      "packages",
+      "shared prototypes"
+    ]
+  },
+  "output": {
+    "portable_zip": true,
+    "entry_stage": "zone.usda",
+    "standalone_blend": "zone.blend_with_packed_textures",
+    "visual_gallery": "exactly_20_png_512x512_pending_human_review",
+    "gradio_gallery": "display_all_20_after_render",
+    "scene": "unified_relative_references",
+    "independent_after_extraction": true,
+    "dataset_publication": "optional_private_hugging_face_after_zip_validation",
+    "dataset_credentials": "runtime_secret_only"
+  },
+  "perimeter_layer": {
+    "input": "timeline_json_or_geojson_feature_collection",
+    "source_crs": "EPSG:4326",
+    "output_crs": "EPSG:2154",
+    "fixed_layers": true,
+    "categories": [
+      "affected",
+      "active"
+    ],
+    "timeline_data": "observed_instants_and_explicit_ranges",
+    "between_observations": "undefined",
+    "prediction": "forbidden",
+    "download": "portable_usda_timeline_manifest_zip",
+    "viewer_map_input": "portable_fireviewer_zone_zip",
+    "viewer": "one_derived_glb_per_observed_instant_or_range",
+    "viewer_timeline": "manual_observed_instant_or_range_slider",
+    "viewer_authoritative": false,
+    "database": "forbidden"
+  },
+  "fixed_asset_placement": {
+    "optional": true,
+    "request_schema": "fireviewer.fixed-asset-placement-request.v1",
+    "schema_file": "fixed_asset_placement_request.v1.schema.json",
+    "template_file": "fixed_asset_placement_template.v1.json",
+    "source_crs": "EPSG:4326",
+    "target_crs": "EPSG:2154",
+    "required_fields": [
+      "placement_id",
+      "asset_id",
+      "latitude",
+      "longitude",
+      "yaw_deg"
+    ],
+    "asset_identity": "exact_embedded_catalog_asset_id",
+    "xy": "projected_from_user_WGS84_coordinate",
+    "z": "sampled_from_tile_MNT_never_user_authored",
+    "scale": "catalog_native_never_user_authored",
+    "tile_ownership": "single_half_open_500m_tile",
+    "automatic_catalog_selection": "bypassed_for_fixed_asset_id",
+    "legacy_launch_endpoint": "launch(latitude,longitude,side_km)",
+    "fixed_launch_endpoint": "launch_with_fixed_assets(latitude,longitude,side_km,fixed_request)"
+  },
+  "acceptance": {
+    "technical_production": true,
+    "automatic_human_acceptance": false
+  }
+}

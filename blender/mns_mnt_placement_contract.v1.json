@@ -1,0 +1,141 @@
+{
+  "schema": "fireviewer.mns-mnt-placement-contract.v1",
+  "status": "locked",
+  "crs": "EPSG:2154",
+  "grid": {
+    "resolution_m": 1,
+    "row_order": "north_to_south",
+    "tile_size_m": 500,
+    "processing_halo_m": 10,
+    "processing_shape": [520, 520],
+    "core_shape": [500, 500],
+    "tile_origin": "south_west_core_corner_on_integer_metre_grid",
+    "ownership": "half_open_west_south_inclusive_east_north_exclusive"
+  },
+  "sources": {
+    "required": ["MNT", "MNS"],
+    "alignment": "same_shape_transform_crs_resolution_and_extent",
+    "height_quantization": "source_metres_to_signed_millimetres_half_away_from_zero",
+    "negative_hag_tolerance_cm": 50,
+    "negative_hag_hard_limit_cm": 100,
+    "maximum_negative_outlier_count_per_520x520_window": 8,
+    "maximum_negative_outlier_fraction": 0.00005,
+    "negative_hag_policy": "clamp_negative_to_zero; allow at most 8 isolated samples and fraction at most 0.00005 between -50cm and -100cm with explicit diagnostics; reject any sample below -100cm or a larger outlier population",
+    "maximum_hag_cm": 65534
+  },
+  "hag": {
+    "filename": "placement-hag-1m.tif",
+    "shape": [500, 500],
+    "dtype": "uint16",
+    "unit": "centimetre",
+    "nodata": 65535,
+    "source": "core_MNS_minus_MNT_clamped_to_zero",
+    "negative_source_diagnostics": [
+      "minimum_source_delta_mm",
+      "negative_source_sample_count_clamped",
+      "negative_outlier_below_tolerance_count",
+      "negative_outlier_fraction"
+    ],
+    "compression": "DEFLATE"
+  },
+  "buildings": {
+    "identity": "stable_source_footprint_id_or_hash_of_global_HAG_component_cells",
+    "one_classification_per_owned_HAG_component": true,
+    "fallback_without_footprints": "classify_every_four_connected_HAG_component_at_or_above_2m",
+    "autodetection_metrics": [
+      "height_dispersion_p90_p10",
+      "local_roof_planarity",
+      "rectangularity",
+      "compactness",
+      "area",
+      "vegetation_and_building_prior_overlap"
+    ],
+    "autodetected_building_exclusion_from_trees": "semantically_confirmed_valid_only",
+    "morphology_only_policy": "fail_closed_ambiguous_never_valid_and_never_removes_tree_candidates",
+    "semantic_confirmation": "approved building mask or univocally matched SIG footprint; temporary orthophoto may confirm class but never author XY Z footprint dimensions or height",
+    "SIG_footprint_role": "confirmation_mask_only_with_bidirectional_univocal_overlap_matching",
+    "geometry_authority": "matched_HAG_component_pixels_only",
+    "height": "nearest_rank_p95_of_MNS_minus_MNT_samples",
+    "ground": "lower_median_MNT_sample",
+    "minimum_valid_height_cm": 200,
+    "statuses": ["valid", "ambiguous", "rejected"],
+    "unmeasured_or_truncated": "explicit_never_silently_removed"
+  },
+  "trees": {
+    "eligible_height_cm": {
+      "default": 200,
+      "accepted_woody_context": 100
+    },
+    "local_maximum_radius_m": 1,
+    "segmentation": "eight_connected_integer_marker_watershed",
+    "minimum_crown_area_m2": {
+      "default": 4,
+      "accepted_woody_context_at_or_above_200cm": 1,
+      "accepted_woody_context_100_to_199cm": 2
+    },
+    "minimum_crown_area_policy": "the context changes only the minimum area of a crown already measured by MNS-minus-MNT; it never creates an unmeasured tree",
+    "exclusions": ["buildings", "roads", "rail", "water"],
+    "vegetation_context": "may_lower_the_measured_MNS_minus_MNT_floor_from_200cm_to_100cm_inside_accepted_woody_context; never_creates_an_instance_without_measured_HAG_and_never_suppresses_a_default_eligible_component",
+    "quota": "forbidden",
+    "thinning": "forbidden",
+    "statuses": ["valid", "ambiguous", "rejected"],
+    "seam_merge": "global_peak_ids_plus_cross_boundary_label_evidence"
+  },
+  "context_assets": {
+    "input": "stable SIG feature IDs, geometries and scalar metadata plus optional exact fixed user placements projected from the locked WGS84 request",
+    "supported": {
+      "roads": "road_equipment",
+      "rail": "rail_equipment",
+      "hydro_lines": "hydro_equipment",
+      "hydro_surfaces": "hydro_equipment",
+      "road_hydro_intersection": "drainage_equipment"
+    },
+    "xy": "stable SIG geometry midpoint or representative point",
+    "z": "MNT sample at the candidate XY",
+    "yaw": "deterministic principal feature segment",
+    "quantity": "one candidate per owned stable feature, crossing or fixed placement; no quota",
+    "fixed_placement": {
+      "identity": "unique placement_id plus exact catalog asset_id",
+      "xy": "projected EPSG:2154 point owned by one half-open tile",
+      "z": "MNT sample at fixed XY",
+      "yaw": "explicit yaw_deg converted to radians",
+      "scale": "catalog native",
+      "selection": "exact asset_id bypasses automatic catalog selection"
+    },
+    "catalogue_reuse": "the same real or placeholder USD may serve multiple candidates",
+    "unsupported_without_evidence": [
+      "vehicles",
+      "sports equipment",
+      "pasture equipment",
+      "public equipment",
+      "utility equipment"
+    ]
+  },
+  "inventory": {
+    "canonical": "placement-inventory.json",
+    "canonical_json": "UTF-8_sort_keys_no_whitespace_no_nan",
+    "optional_derivative": "placement-candidates.gpkg_when_fiona_is_available",
+    "required_reconciliation": "source_count_equals_valid_plus_ambiguous_plus_rejected",
+    "placement_reconciliation": "source_count_equals_placement_ready_plus_placement_blocked_and_instantiated_asset_count_is_zero",
+    "global_ids": "SHA-256_from_source_id_or_global_peak_cell",
+    "source_hashes": ["MNT_mm", "MNS_mm", "context_including_fixed_placements", "contract", "algorithm"]
+  },
+  "cli": {
+    "entrypoint": "python mns_mnt_placement_inventory.py",
+    "source": "--source-npz containing mnt mns and optional mask_buildings mask_vegetation mask_roads mask_rail mask_water",
+    "context": "optional --context-json containing building_footprints, context_geometries and stable context_features",
+    "mode": "exactly_one_of_dry_run_or_execute",
+    "scope": "exactly_one_tile_no_download_no_asset_instancing"
+  },
+  "retention": {
+    "keep": [
+      "placement-hag-1m.tif",
+      "placement-inventory.json",
+      "placement-candidates.gpkg_if_available",
+      "source_and_contract_hashes"
+    ],
+    "delete_after_validation": ["raw_MNT", "raw_MNS", "parts", "temporary_masks"],
+    "orthophoto_dependency": "forbidden",
+    "storage_drive": "D"
+  }
+}

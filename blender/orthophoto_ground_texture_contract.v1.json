@@ -1,0 +1,53 @@
+{
+  "schema": "fireviewer.orthophoto-ground-texture-contract.v1",
+  "status": "locked",
+  "crs": "EPSG:2154",
+  "input": {
+    "pixel_type": "RGB8",
+    "resolution_m": 1,
+    "north_up": true,
+    "global_grid_alignment_m": 1,
+    "processing_halo_m": 10,
+    "orthophoto_retention": "temporary_source_deleted_after_validation",
+    "revision_format": "stable_non_path_token"
+  },
+  "output": {
+    "tile_size_m": 500,
+    "resolution_m": 1,
+    "grid_size_px": [
+      500,
+      500
+    ],
+    "texture": "ground-color.png_RGB8",
+    "manifest": "ground-color.json"
+  },
+  "downsample": {
+    "implementation": "none_exact_core_crop",
+    "block_size_px": [
+      1,
+      1
+    ],
+    "channel_domain": "RGB8_source_values_preserved",
+    "rounding": "not_applicable",
+    "alignment": "global_EPSG2154_1m_cells"
+  },
+  "runtime": {
+    "orthophoto_source_file_dependency": "forbidden",
+    "orthophoto_source_path_in_manifest": "forbidden",
+    "texture_file": "ground-color.png"
+  },
+  "provenance": {
+    "required_sha256": [
+      "orthophoto_source_manifest",
+      "orthophoto_tile_input",
+      "algorithm",
+      "contract",
+      "ground-color.png"
+    ],
+    "required_metadata": [
+      "orthophoto_revision",
+      "bounds_l93_m",
+      "source_window_bounds_l93_m"
+    ]
+  }
+}

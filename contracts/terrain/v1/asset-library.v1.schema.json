@@ -1,0 +1,512 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireviewer.fr/contracts/terrain/v1/asset-library.v1.schema.json",
+  "title": "FireViewer extensible USD asset library",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "build_algorithm",
+    "contract_sha256",
+    "catalog_revision",
+    "asset_count",
+    "category_counts",
+    "normalization_policy",
+    "selection_pools",
+    "input_evidence",
+    "assets"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fireviewer.asset-library.v1"
+    },
+    "status": {
+      "const": "catalogued_pending_simready_qualification"
+    },
+    "build_algorithm": {
+      "const": "fireviewer.asset-library-53-builder.v1"
+    },
+    "contract_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "catalog_revision": {
+      "$ref": "#/$defs/sha256"
+    },
+    "asset_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "category_counts": {
+      "$ref": "#/$defs/categoryCounts"
+    },
+    "normalization_policy": {
+      "$ref": "#/$defs/normalizationPolicy"
+    },
+    "selection_pools": {
+      "$ref": "#/$defs/selectionPools"
+    },
+    "input_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference_manifest",
+        "usd_conversion_manifest",
+        "glb_validation_manifest"
+      ],
+      "properties": {
+        "reference_manifest": {
+          "$ref": "#/$defs/artifact"
+        },
+        "usd_conversion_manifest": {
+          "$ref": "#/$defs/artifact"
+        },
+        "glb_validation_manifest": {
+          "$ref": "#/$defs/artifact"
+        }
+      }
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "portablePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$))[^\\\\]+$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "path",
+        "byte_count",
+        "sha256"
+      ],
+      "properties": {
+        "root": {
+          "enum": [
+            "generated_assets",
+            "reference_assets",
+            "review_batch"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/portablePath"
+        },
+        "byte_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "categoryCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "building",
+        "pasture_equipment",
+        "road_equipment",
+        "tree",
+        "vehicle"
+      ],
+      "properties": {
+        "building": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pasture_equipment": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "road_equipment": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tree": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "vehicle": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "normalizationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bounds_are_physical_dimensions",
+        "final_scene_requires_accepted_normalization",
+        "source_stage_units_are_evidence_only",
+        "technical_pilot_status"
+      ],
+      "properties": {
+        "bounds_are_physical_dimensions": {
+          "const": false
+        },
+        "final_scene_requires_accepted_normalization": {
+          "const": true
+        },
+        "source_stage_units_are_evidence_only": {
+          "const": true
+        },
+        "technical_pilot_status": {
+          "const": "technical_pilot_non_final"
+        }
+      }
+    },
+    "selectionPools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "building",
+        "tree"
+      ],
+      "properties": {
+        "building": {
+          "type": "array",
+          "minItems": 24,
+          "maxItems": 24,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{12}_[a-z0-9_]+$"
+          }
+        },
+        "tree": {
+          "type": "array",
+          "minItems": 18,
+          "maxItems": 18,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{12}_[a-z0-9_]+$"
+          }
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strategy",
+        "rejected_reported_asset_id"
+      ],
+      "properties": {
+        "strategy": {
+          "const": "artifact_stem+reference_manifest"
+        },
+        "rejected_reported_asset_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "sourceBounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "coordinate_space",
+        "minimum",
+        "maximum",
+        "diagonal"
+      ],
+      "properties": {
+        "status": {
+          "const": "reported"
+        },
+        "coordinate_space": {
+          "const": "source_glb_unscaled"
+        },
+        "minimum": {
+          "$ref": "#/$defs/vector3"
+        },
+        "maximum": {
+          "$ref": "#/$defs/vector3"
+        },
+        "diagonal": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "vector3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number"
+      }
+    },
+    "usdStage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "up_axis",
+            "meters_per_unit",
+            "default_prim"
+          ],
+          "properties": {
+            "status": {
+              "const": "inspected"
+            },
+            "up_axis": {
+              "const": "Y"
+            },
+            "meters_per_unit": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "default_prim": {
+              "type": "string",
+              "pattern": "^/[^/].*$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "up_axis",
+            "meters_per_unit",
+            "default_prim"
+          ],
+          "properties": {
+            "status": {
+              "const": "pending"
+            },
+            "up_axis": {
+              "type": "null"
+            },
+            "meters_per_unit": {
+              "type": "null"
+            },
+            "default_prim": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "collision",
+        "dimensions",
+        "forward_axis",
+        "ground_anchor",
+        "lod",
+        "scale",
+        "visual"
+      ],
+      "properties": {
+        "collision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "const": "pending"
+            }
+          }
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "value_m"
+          ],
+          "properties": {
+            "status": {
+              "const": "pending"
+            },
+            "value_m": {
+              "type": "null"
+            }
+          }
+        },
+        "forward_axis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "value"
+          ],
+          "properties": {
+            "status": {
+              "const": "pending"
+            },
+            "value": {
+              "type": "null"
+            }
+          }
+        },
+        "ground_anchor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "offset_m"
+          ],
+          "properties": {
+            "status": {
+              "const": "pending"
+            },
+            "offset_m": {
+              "type": "null"
+            }
+          }
+        },
+        "lod": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "levels"
+          ],
+          "properties": {
+            "status": {
+              "const": "pending"
+            },
+            "levels": {
+              "const": []
+            }
+          }
+        },
+        "scale": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "uniform_scale"
+          ],
+          "properties": {
+            "status": {
+              "const": "pending"
+            },
+            "uniform_scale": {
+              "type": "null"
+            }
+          }
+        },
+        "visual": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "accepted"
+          ],
+          "properties": {
+            "status": {
+              "const": "pending"
+            },
+            "accepted": {
+              "const": false
+            }
+          }
+        }
+      }
+    },
+    "eligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "final_scene",
+        "technical_pilot"
+      ],
+      "properties": {
+        "final_scene": {
+          "const": "blocked"
+        },
+        "technical_pilot": {
+          "const": "allowed_non_final"
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id",
+        "category",
+        "identity",
+        "source",
+        "usd",
+        "texture",
+        "receipt",
+        "source_bounds",
+        "usd_stage",
+        "qualification",
+        "eligibility"
+      ],
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{12}_[a-z0-9_]+$"
+        },
+        "category": {
+          "enum": [
+            "building",
+            "pasture_equipment",
+            "road_equipment",
+            "tree",
+            "vehicle"
+          ]
+        },
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "source": {
+          "$ref": "#/$defs/artifact"
+        },
+        "usd": {
+          "$ref": "#/$defs/artifact"
+        },
+        "texture": {
+          "$ref": "#/$defs/artifact"
+        },
+        "receipt": {
+          "$ref": "#/$defs/artifact"
+        },
+        "source_bounds": {
+          "$ref": "#/$defs/sourceBounds"
+        },
+        "usd_stage": {
+          "$ref": "#/$defs/usdStage"
+        },
+        "qualification": {
+          "$ref": "#/$defs/qualification"
+        },
+        "eligibility": {
+          "$ref": "#/$defs/eligibility"
+        }
+      }
+    }
+  }
+}

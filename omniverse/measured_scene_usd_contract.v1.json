@@ -1,0 +1,134 @@
+{
+  "schema": "fireviewer.measured-scene-usd-contract.v1",
+  "algorithm": "fireviewer.measured-scene-usd-builder.v1",
+  "crs": "EPSG:2154",
+  "stage": {
+    "default_prim": "MeasuredScene",
+    "meters_per_unit": 1,
+    "up_axis": "Z",
+    "terrain_arc": "relative_reference",
+    "asset_arcs": "relative_bundle_references",
+    "asset_source_up_axis": "Y"
+  },
+  "placement": {
+    "input_schema": "fireviewer.mns-mnt-placement-inventory.v1",
+    "instance_status": "valid_only",
+    "blocked_statuses": [
+      "ambiguous",
+      "rejected"
+    ],
+    "position_source": "inventory_anchor_or_peak_cell_or_stable_SIG_feature_grounded_by_MNT",
+    "ground_source": "inventory_ground_elevation_mm",
+    "height_source": "inventory_height_cm",
+    "building_footprint_source": "inventory_footprint_geojson_or_explicit_component_dimensions",
+    "tree_crown_source": "inventory_equivalent_crown_radius_m",
+    "quota": "forbidden",
+    "thinning": "forbidden",
+    "fallback_primitive": "forbidden",
+    "catalogued_placeholder_usd": "allowed_repeatable_and_receipted",
+    "context_assets": "one candidate per stable supported SIG feature, measured crossing or exact fixed user placement; no catalogue quota"
+  },
+  "selection": {
+    "catalog_schemas": [
+      "fireviewer.asset-library.v1",
+      "fireviewer.reference-usd-asset-library.v1"
+    ],
+    "catalog_asset_count": "catalog_declared_count",
+    "categories": [
+      "building",
+      "tree",
+      "vegetation",
+      "road_equipment",
+      "rail_equipment",
+      "hydro_equipment",
+      "drainage_equipment",
+      "public_equipment",
+      "utility_equipment",
+      "pasture_equipment",
+      "sports_equipment",
+      "vehicle"
+    ],
+    "api": "build_asset_library_53.select_asset_for_candidate",
+    "fixed_asset_override": "a validated fixed_asset_id bypasses the API and must resolve to the exact same-category catalog asset; seed remains deterministic",
+    "rule_versions": {
+      "building": "fireviewer.measured-building-selection.v1",
+      "tree": "fireviewer.measured-tree-selection.v1",
+      "vegetation": "fireviewer.measured-low-vegetation-selection.v1",
+      "road_equipment": "fireviewer.measured-road-equipment-selection.v1",
+      "rail_equipment": "fireviewer.measured-rail-equipment-selection.v1",
+      "hydro_equipment": "fireviewer.measured-hydro-equipment-selection.v1",
+      "drainage_equipment": "fireviewer.measured-drainage-equipment-selection.v1",
+      "public_equipment": "fireviewer.measured-public-equipment-selection.v1",
+      "utility_equipment": "fireviewer.measured-utility-equipment-selection.v1",
+      "pasture_equipment": "fireviewer.measured-pasture-equipment-selection.v1",
+      "sports_equipment": "fireviewer.measured-sports-equipment-selection.v1",
+      "vehicle": "fireviewer.measured-vehicle-selection.v1"
+    },
+    "allowed_usage": [
+      "technical_pilot_non_final",
+      "final_scene"
+    ]
+  },
+  "prototype_bundle": {
+    "scope": "selected_assets_only",
+    "default_root": "<output_root>/prototypes/<asset_id>",
+    "explicit_shared_root": "allowed_only_with_asset_bundle_root_parameter",
+    "shared_publish": "immutable_idempotent_by_asset_id_and_hash",
+    "source_usd": "catalog_hash_verified_copy",
+    "color_texture": "catalog_hash_verified_png_copy",
+    "wrapper": "prototype.usda",
+    "references": "relative_only",
+    "unused_catalog_assets": "forbidden",
+    "source_material_dependencies_outside_bundle": "overridden"
+  },
+  "prototype_material": {
+    "implementation": "UsdPreviewSurface",
+    "texture_role": "color",
+    "source_color_space": "sRGB",
+    "roughness": 0.75,
+    "metallic": 0,
+    "opacity": "texture_alpha",
+    "binding": "wrapper_ancestor",
+    "binding_strength": "strongerThanDescendants",
+    "pbr_atlas": "forbidden"
+  },
+  "normalization": {
+    "prototype_grounding": "translate_source_min_y_to_zero_before_instancing",
+    "axis_conversion": "positive_90_degrees_about_x_then_building_footprint_yaw_about_z",
+    "tree_scale": "uniform_from_mns_mnt_height",
+    "tree_yaw": "deterministic_selection_seed",
+    "context_asset_scale": "catalog_native_uniform",
+    "context_asset_yaw": "stable_SIG_feature_axis",
+    "building_scale": "measured_target_extents_divided_by_native_source_bounds_extents",
+    "technical_missing_dimensions_or_pivot": "allowed_only_as_technical_pilot_non_final",
+    "non_uniform_building_scale": "technical_pilot_non_final_only",
+    "final_missing_dimensions_or_pivot": "blocked"
+  },
+  "outputs": {
+    "scene": "scene.usda",
+    "receipt": "scene.done.json",
+    "prototype_bundle": "prototypes",
+    "canonical_json": "UTF-8_sort_keys_no_nan",
+    "atomic_directory_publish": true,
+    "overwrite": "forbidden",
+    "storage_drive": "D"
+  },
+  "reconciliation": {
+    "per_family": "source_count_equals_instantiated_valid_plus_explicitly_blocked",
+    "valid": "valid_count_equals_instance_count",
+    "blocked": "ambiguous_plus_rejected_with_candidate_ids_and_reason_codes"
+  },
+  "validation": {
+    "rehash_scene": true,
+    "rehash_prototype_usd": true,
+    "rehash_prototype_texture": true,
+    "rehash_prototype_wrapper": true,
+    "reject_extra_bundle_files": true,
+    "reject_tamper": true
+  },
+  "acceptance": {
+    "builder_never_grants_final_acceptance": true,
+    "technical_status": "technical_pilot_non_final",
+    "qualified_status": "assembled_final_candidate"
+  }
+}

@@ -10,6 +10,8 @@ Ils ne contiennent aucun terrain, incident, asset GLB ou aperçu PNG réel.
 | `fixtures/zone-registry.json` | registre de zones réutilisables, versionnées et limitées à l'emprise déclarée |
 | `fixtures/zone-revision.json` | nouvelle révision d'une zone, sans mutation de la révision précédente |
 | `fixtures/spatial-snapshot.json` | snapshot immuable lié à une révision de manifeste d'incident et à son archive PNG |
+| `scene-consumer-input.schema.json` | liaison immuable d'une simulation, d'un dataset ou d'un replay vers une carte et, si nécessaire, sa timeline observée |
+| `fixtures/scene-consumer-input.json` | exemple synthétique sans donnée de production |
 
 ## Conventions verrouillées
 
@@ -25,6 +27,12 @@ Ils ne contiennent aucun terrain, incident, asset GLB ou aperçu PNG réel.
 - Un PNG appartient à l'archive d'un snapshot de révision de manifeste, pas à toutes les
   zones actives. Il est identifié par URI, hash, dimensions et date de production.
 - Aucun globe, jeu de tuiles ou runtime Cesium ne fait partie de ce profil.
+- Un consommateur ne reconstruit ni le terrain ni les périmètres. Il référence
+  leurs package IDs, révisions, build IDs, contrats et archives hashés.
+- Une carte `technical_unpublished` peut alimenter un travail interne ; sa
+  publication publique reste une décision distincte.
+- La timeline observée conserve `between_observations=undefined` et
+  `prediction=none`. Les GLB de contrôle ne remplacent jamais son JSON.
 
 Le [contrat caméra et CRS](../../../docs/CAMERA_AND_CRS_CONTRACT.md) constitue la référence
 normative actuelle. Ce profil v1 reste une fixture de compatibilité : ses valeurs de contrôle ne

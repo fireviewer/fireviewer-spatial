@@ -1,0 +1,91 @@
+{
+  "schema": "fireviewer.measured-scene-validation-contract.v1",
+  "job_schema": "fireviewer.measured-scene-render-job.v1",
+  "receipt_schema": "fireviewer.measured-scene-technical-receipt.v1",
+  "successful_technical_status": "rendered_pending_human_review",
+  "automatic_visual_acceptance": false,
+  "scene_inventory": {
+    "categories": [
+      "terrain",
+      "building",
+      "tree",
+      "context_asset"
+    ],
+    "category_attribute": "fireviewer:category",
+    "count_attribute": "fireviewer:count",
+    "count_policy": "terrain_marker_is_one_and_point_instancer_counts_must_match_all_authored_instance_arrays",
+    "prototype_material_policy": "every_composed_prototype_mesh_must_resolve_a_bound_material",
+    "grounding_policy": "every_instance_ground_z_must_be_within_one_meter_of_the_composed_terrain_world_z_range"
+  },
+  "ground_texture": {
+    "file_role": "ground_color",
+    "media_type": "image/png",
+    "accepted_encodings": [
+      "RGB8",
+      "RGBA8"
+    ],
+    "sampling_policy": "read_only_srgb_bytes_no_correction"
+  },
+  "ground_quality_thresholds": {
+    "maximum_mean_luminance": 0.82,
+    "maximum_near_white_fraction": 0.35,
+    "minimum_luminance_standard_deviation": 0.04,
+    "minimum_mean_saturation": 0.08
+  },
+  "captures": [
+    {
+      "name": "topdown",
+      "projection": "orthographic",
+      "resolution": [
+        512,
+        512
+      ]
+    },
+    {
+      "name": "oblique",
+      "projection": "perspective",
+      "lens_mm": 50.0,
+      "resolution": [
+        512,
+        512
+      ]
+    }
+  ],
+  "render": {
+    "engine": "BLENDER_EEVEE_NEXT",
+    "view_transform": "AgX",
+    "exposure": 0.0,
+    "gamma": 1.0,
+    "world_color": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "world_strength": 0.35,
+    "sun_energy": 2.0
+  },
+  "evidence": {
+    "artifacts": [
+      "job",
+      "scene",
+      "ground_texture",
+      "topdown",
+      "oblique"
+    ],
+    "hash": "sha256",
+    "receipt_reverification": true
+  },
+  "storage": {
+    "production_drive": "D:",
+    "allow_c_drive_artifacts": false,
+    "temporary_environment_variables": [
+      "TEMP",
+      "TMP",
+      "PYTHONPYCACHEPREFIX",
+      "BLENDER_USER_CONFIG",
+      "BLENDER_USER_SCRIPTS",
+      "BLENDER_USER_DATAFILES",
+      "BLENDER_USER_EXTENSIONS"
+    ]
+  }
+}

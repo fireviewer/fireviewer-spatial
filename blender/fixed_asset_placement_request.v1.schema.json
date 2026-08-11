@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireviewer.local/contracts/fixed-asset-placement-request.v1.schema.json",
+  "title": "FireViewer fixed asset placement request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "crs",
+    "placements"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fireviewer.fixed-asset-placement-request.v1"
+    },
+    "crs": {
+      "const": "EPSG:4326"
+    },
+    "placements": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "placement_id",
+          "asset_id",
+          "latitude",
+          "longitude",
+          "yaw_deg"
+        ],
+        "properties": {
+          "placement_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "asset_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$"
+          },
+          "latitude": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90
+          },
+          "longitude": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180
+          },
+          "yaw_deg": {
+            "type": "number",
+            "minimum": 0,
+            "exclusiveMaximum": 360
+          }
+        }
+      }
+    }
+  }
+}

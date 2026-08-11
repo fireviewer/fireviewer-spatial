@@ -1,0 +1,64 @@
+{
+  "schema": "fireviewer.fixed-terrain-usd-contract.v1",
+  "status": "locked",
+  "crs": "EPSG:2154",
+  "stage": {
+    "meters_per_unit": 1,
+    "up_axis": "Z",
+    "default_lod": 0,
+    "lod_variant_set": "terrainLod"
+  },
+  "inputs": {
+    "terrain": "terrain.fvtg",
+    "ground_color": "ground-color.png",
+    "ground_color_manifest": "ground-color.json"
+  },
+  "outputs": {
+    "root_stage": "terrain-tile.usda",
+    "lod_payloads": [
+      "terrain-lod0.usda",
+      "terrain-lod1.usda",
+      "terrain-lod2.usda"
+    ],
+    "manifest": "fixed-terrain-usd.v1.json"
+  },
+  "material": {
+    "surface_shader": "UsdPreviewSurface",
+    "texture_shader": "UsdUVTexture",
+    "texture_count": 1,
+    "texture_color_space": "sRGB",
+    "roughness": 0.9,
+    "metallic": 0,
+    "wrap_s": "clamp",
+    "wrap_t": "clamp",
+    "custom_shader": "forbidden"
+  },
+  "uv": {
+    "source_crs": "EPSG:2154",
+    "u_axis": "east",
+    "v_axis": "north",
+    "tile_normalization_m": 500,
+    "southwest": [
+      0,
+      0
+    ],
+    "northeast": [
+      1,
+      1
+    ]
+  },
+  "skirts": {
+    "separate_mesh": true,
+    "default_visibility": "invisible",
+    "main_camera_visibility": "forbidden",
+    "collision": "forbidden",
+    "shadow": "forbidden"
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "input_paths": "package_local_relative_paths_with_exact_basenames",
+    "output_paths": "package_local_exact_names",
+    "absolute_paths_in_output": "forbidden",
+    "validation": "rehash_and_reauthor_all_payloads"
+  }
+}

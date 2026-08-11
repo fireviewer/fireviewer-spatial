@@ -1,0 +1,32 @@
+{
+  "schema": "fireviewer.simple-production-api-contract.v1",
+  "status": "locked",
+  "transport": {
+    "framework": "fastapi",
+    "database": "forbidden",
+    "gradio": "forbidden",
+    "job_state": "memory_plus_hash_locked_files_below_work_root"
+  },
+  "map_production": {
+    "planner": "fireviewer.simple-measured-zone-plan.v1",
+    "tile_size_m": 500,
+    "fixed_asset_request": "fireviewer.fixed-asset-placement-request.v1",
+    "archive": "fireviewer-zone.zip",
+    "capture_count": 20
+  },
+  "perimeter_production": {
+    "source": "JSON_or_GeoJSON",
+    "fixed_layers": true,
+    "map_archive_optional": true,
+    "timeline_frames": "observed_instants_and_explicit_ranges_only"
+  },
+  "security": {
+    "bearer_token": "optional_locally_required_when_FIREVIEWER_API_TOKEN_is_set",
+    "cors": "explicit_FIREVIEWER_API_CORS_ORIGINS_only",
+    "absolute_paths_in_responses": "forbidden"
+  },
+  "acceptance": {
+    "automatic_human_acceptance": false,
+    "docker_and_pod_proof_separate": true
+  }
+}

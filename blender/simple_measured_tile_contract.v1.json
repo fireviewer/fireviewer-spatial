@@ -1,0 +1,80 @@
+{
+  "schema": "fireviewer.simple-measured-tile-contract.v1",
+  "status": "locked",
+  "scope": {
+    "tile_count": 1,
+    "download": "forbidden",
+    "pbr": "forbidden",
+    "frontend_backend": "forbidden",
+    "usage": "technical_pilot_non_final"
+  },
+  "storage": {
+    "windows_drive": "D:",
+    "c_drive": "forbidden",
+    "publish": "staged_directory_atomic_rename",
+    "existing_valid_package": "verify_and_reuse",
+    "existing_invalid_package": "reject"
+  },
+  "source": {
+    "crs": "EPSG:2154",
+    "tile_size_m": 500,
+    "halo_m": 10,
+    "elevation_resolution_m": 0.5,
+    "elevation_shape": [
+      1040,
+      1040
+    ],
+    "orthophoto_resolution_m": 1,
+    "orthophoto_shape": [
+      520,
+      520
+    ],
+    "row_order": "north_to_south",
+    "mnt_mns": "coregistered_single_band_geotiff",
+    "orthophoto": "RGB8_PNG",
+    "placement_context": "required_EPSG2154_vector_JSON_with_optional_hash_locked_fixed_asset_placements",
+    "source_receipts": "required_and_rehashed"
+  },
+  "terrain": {
+    "format": "fireviewer.terrain-fixed-grid.v1",
+    "canonical_resolution_m": 2,
+    "normal_halo_shape": [
+      253,
+      253
+    ],
+    "sample_coordinates_m": "minus_2_through_502_inclusive",
+    "source_pixel_quantization": "millimetre_half_away_from_zero",
+    "vertex_filter": "integer_mean_of_four_surrounding_1m_pixel_centres_half_away_from_zero"
+  },
+  "ground": {
+    "output": "ground-color.png",
+    "shape": [
+      500,
+      500,
+      3
+    ],
+    "resolution_m": 1,
+    "source_payload_retained": false
+  },
+  "placement": {
+    "source": "MNT_MNS_0.5m_max_HAG_reduced_to_1m",
+    "gpkg": "off",
+    "quota": "forbidden",
+    "thinning": "forbidden",
+    "fixed_assets": "exact catalog asset ID at projected XY with MNT-authored Z and catalog-native scale"
+  },
+  "scene": {
+    "terrain": "fixed_terrain_usd",
+    "instances": "measured_scene_usd",
+    "prototype_bundle": "output_local_or_explicit_shared_immutable",
+    "asset_library_count": 53,
+    "accepted_final": false
+  },
+  "integrity": {
+    "hash": "sha256",
+    "canonical_json": "sorted_compact_utf8_lf",
+    "rebuild": "bit_identical",
+    "unknown_output": "reject",
+    "overwrite_different_bytes": "reject"
+  }
+}

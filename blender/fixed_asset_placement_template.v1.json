@@ -1,0 +1,5 @@
+{
+  "schema": "fireviewer.fixed-asset-placement-request.v1",
+  "crs": "EPSG:4326",
+  "placements": []
+}

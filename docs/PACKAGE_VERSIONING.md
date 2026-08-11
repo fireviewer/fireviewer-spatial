@@ -1,62 +1,53 @@
-# Versionnement des packages spatiaux
+# Versionnement des cartes et périmètres
 
 ## Principe
 
-Un package spatial est immuable après publication. Toute modification crée une nouvelle révision.
+Une carte ou une timeline de périmètres est immuable après scellement. Toute
+modification des sources, de l'emprise, du code, des assets ou des observations
+crée un nouveau package, une nouvelle révision et un nouveau `build_id`.
 
-## Contenu du manifeste
+## Package carte
 
-- identifiant de zone ;
-- révision ;
-- emprise ;
-- CRS ;
-- datum vertical ;
-- contrat et révision des sources MNT/MNS 2 m ;
-- FVTQ LOD0, LOD1 et LOD2 ;
-- réservation HAG compacte ;
-- quatre cartes de sol 500 × 500 : IDs, poids, confiance et orientation ;
-- manifeste hash-locké `surface-correspondence.json` ;
-- `ground-material-contract.v2` et identité des quatre atlas partagés ;
-- manifeste `tile-package.v3.json` et reçu `tile.done.v3.json` ;
-- payloads OpenUSD dérivés ;
-- catalogue de rendus ;
-- tailles ;
-- empreintes ;
-- licences ;
-- date des sources ;
-- reçu de validation.
+Le package `fireviewer.simple-measured-map-package.v1` inventorie notamment :
 
-Une orthophoto, une image source rapprochée ou un ancien terrain n'est pas une
-dépendance admissible d'un package terrain adaptatif. Le RGB orthophoto
-temporaire n'est supprimé qu'après validation de `tile.done.v3.json`, puis ne
-subsiste ni dans le package ni dans le runtime.
+- la demande GPS, l'emprise alignée et le plan de tuiles de 500 m ;
+- `zone.usda`, `zone.blend` et `zone.done.json` ;
+- chaque relief FVTG, texture de sol bakée et scène de tuile ;
+- les assets USD et textures réellement utilisés ;
+- les placements MNS−MNT et les placements GPS explicites ;
+- les petits reçus de provenance conservés après suppression des rasters ;
+- quatre vues générales et seize vues de détail ;
+- le SHA-256 et la taille de chaque fichier portable.
 
-## Dépendances
+Le ZIP original reste autonome après extraction. Il ne contient ni MNT, ni MNS,
+ni orthophoto brute, ni cache, ni chemin absolu de la machine de production.
 
-Les artefacts de recalage enregistrent la révision exacte du package et de la banque de rendus.
+## Package de périmètres
 
-## Compatibilité
+Le package `fireviewer.observed-perimeter-package.v1` verrouille :
 
-Une nouvelle révision ne remplace pas silencieusement les références des anciens runs.
+- le package, la révision, la zone et le build exact de la carte de base ;
+- les observations normalisées ;
+- `geographic-perimeters.usda` ;
+- `fire-progression-timeline.json` ;
+- le manifeste et les vues GLB dérivées de contrôle.
 
-Les packages terrain v2 restent lisibles uniquement pour le replay et l'audit.
-Toute nouvelle production écrit exclusivement `tile-package.v3.json`,
-`tile.done.v3.json` et `ground-material-contract.v2`.
+Une nouvelle observation produit un package supplémentaire. Elle ne modifie et
+ne reconstruit jamais la carte. Entre observations, la progression reste
+`undefined` et aucune prédiction n'est ajoutée.
 
-## Publication
+## Compatibilité et consommateurs
 
-La qualification terrain exige le reçu Blender headless texturé, la
-composition `world_xy`/`world_triplanar` sur le LOD0 FVTQ et son AOV LOD0. La
-fixture synthétique passe ce gate technique en 512 px avec zéro pixel
-LOD/couverture invalide et 44 544 pixels triplanaires. Le statut de production
-reste en attente de la bibliothèque PBR réelle et de sa revue humaine.
+Les simulations, datasets et replays utilisent
+`fireviewer.scene-consumer-input.v1`. Le contrat référence les identités et
+hashes immuables ; le consommateur ne peut recalculer ni terrain ni périmètres.
 
-Le `UsdPreviewSurface` magenta du package est diagnostique. Le shader runtime
-reste `pending_dedicated_mdl_validation` et `usd_runtime_gate=false` tant qu'un
-MDL dédié n'a pas été validé. Ce gate USD séparé ne bloque pas l'acceptation du
-terrain dans Blender ; il bloque la qualification de rendu texturé
-OpenUSD/Omniverse et ne remplace pas la revue humaine finale.
+Les anciens packages FVTQ/PBR, Unity ou catalogues de tuiles ne sont pas des
+sorties admissibles du pipeline actif. Ils restent des archives historiques
+tant que leur retrait n'a pas été validé séparément.
 
-## Retrait
+## Publication et retrait
 
-Le retrait d’un package public masque son usage futur sans effacer les liens d’audit nécessaires aux anciens runs.
+L'import technique, la validation humaine et la publication sont trois gates
+distincts. Le retrait d'un package public empêche son nouvel usage public sans
+effacer sa provenance ni les liens d'audit déjà produits.

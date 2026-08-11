@@ -1,16 +1,25 @@
-# Provenance du snapshot
+# Provenance
 
-Ce dépôt est un snapshot source neuf extrait du monorepo public
-`charli-dev420/fireviewer`, sans reprise de son historique Git.
+Ce dépôt contient uniquement le code, les contrats et de petites fixtures
+synthétiques du pipeline spatial FireViewer.
 
-- base spatiale : `spatial` à `2c0b138` ;
-- compléments historiques : kit France, Blender et runtime Unity qualifiés au
-  27 juillet 2026, désormais retirés du chemin actif ;
-- cible active : contrats OpenUSD/Omniverse V2, sans assets générés dans Git ;
-- productions, cartes, dossiers d'upload, archives et projets générés : exclus.
+La production active relie explicitement :
 
-Le dataset de la première simulation et son pack de reproduction autonome sont
-conservés dans le stockage local historique. Les futurs packages ne seront
-distribués qu'après inventaire SHA-256, ouverture Kit isolée et validation
-visuelle humaine ; ils ne sont jamais versionnés dans Git.
+- la demande GPS et son plan de tuiles ;
+- les révisions et requêtes des sources MNT, MNS et orthophoto ;
+- les SHA-256 observés avant suppression des rasters temporaires ;
+- le compilateur FVTG, la texture bakée et l'inventaire MNS−MNT ;
+- le catalogue d'assets, les USD/textures réellement utilisés et leurs hashes ;
+- la scène unifiée, les vingt captures et le package portable ;
+- les observations de périmètre et le build exact de la carte de base.
 
+Ce lot actif n'ajoute aucun modèle, dataset, asset 3D, carte, orthophoto,
+archive de production, credential ou reçu réel. Les payloads et reçus
+historiques déjà suivis restent intacts jusqu'à une décision de nettoyage
+séparée. Les modèles et datasets distribués sur Hugging Face restent des
+dépendances externes versionnées ; leur présence distante ne dispense jamais
+de vérifier leur révision et leur hash au démarrage du producteur.
+
+Les anciens pipelines Unity, terrain adaptatif/FVTQ-PBR et registres globaux de
+packs ne définissent plus le chemin actif. Leur suppression physique reste une
+opération de nettoyage séparée, bornée et revue avant exécution.

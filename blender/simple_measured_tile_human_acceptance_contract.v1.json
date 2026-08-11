@@ -1,0 +1,25 @@
+{
+  "schema": "fireviewer.simple-measured-tile-human-acceptance-contract.v1",
+  "status": "locked",
+  "accepted_status": "accepted_human_visual",
+  "automatic_acceptance": false,
+  "inputs": {
+    "qa_link_schema": "fireviewer.simple-measured-tile-qa-link.v1",
+    "qa_link_status": "rendered_pending_human_review",
+    "required_captures": [
+      "topdown",
+      "oblique"
+    ],
+    "reviewer_kind": "human",
+    "explicit_review_statement": true
+  },
+  "integrity": {
+    "hash": "sha256",
+    "package_drive": "D:",
+    "evidence_replay": "required",
+    "acceptance_write": "atomic_same_bytes_or_reject",
+    "capture_tamper": "reject",
+    "qa_link_tamper": "reject",
+    "automatic_promotion": "forbidden"
+  }
+}

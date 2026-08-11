@@ -1,0 +1,37 @@
+{
+  "schema": "fireviewer.scene-consumer-input.v1",
+  "consumer_kind": "simulation",
+  "map": {
+    "package_id": "map-gps-fixture-r1",
+    "revision": 1,
+    "zone_id": "GPS-FIXTURE",
+    "map_build_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "contract_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "archive_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "entry_stage": "zone.usda",
+    "horizontal_crs": "EPSG:2154",
+    "vertical_datum": "NGF-IGN69",
+    "publication_state": "technical_unpublished"
+  },
+  "perimeter_timeline": {
+    "package_id": "perimeter-gps-fixture-r1",
+    "revision": 1,
+    "layer_build_id": "4444444444444444444444444444444444444444444444444444444444444444",
+    "contract_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "archive_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "base_map_build_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "entry_layer": "geographic-perimeters.usda",
+    "timeline_path": "fire-progression-timeline.json",
+    "timeline_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+    "state_count": 2,
+    "between_observations": "undefined",
+    "prediction": "none"
+  },
+  "policy": {
+    "terrain_rebuild": "forbidden",
+    "perimeter_rebuild": "forbidden",
+    "source_rasters_required": false,
+    "between_observations": "undefined",
+    "simulation_execution": "external_consumer_responsibility"
+  }
+}

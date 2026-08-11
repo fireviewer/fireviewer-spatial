@@ -1,0 +1,68 @@
+{
+  "schema": "fireviewer.geographic-perimeter-layer-contract.v1",
+  "status": "locked",
+  "input": {
+    "crs": "EPSG:4326",
+    "coordinate_order": "longitude_latitude",
+    "accepted_containers": [
+      "fireviewer timeline JSON",
+      "GeoJSON FeatureCollection"
+    ],
+    "maximum_bytes": 52428800,
+    "maximum_frames": 366,
+    "maximum_coordinate_count": 500000
+  },
+  "projection": {
+    "crs": "EPSG:2154",
+    "origin_alignment_m": 500,
+    "up_axis": "Z",
+    "meters_per_unit": 1
+  },
+  "categories": {
+    "affected": {
+      "meaning": "observed cumulative affected perimeter",
+      "color": "#ea580c",
+      "opacity": 0.55,
+      "z_offset_m": 0.5
+    },
+    "active": {
+      "meaning": "observed active progression zone",
+      "color": "#f59e0b",
+      "opacity": 0.82,
+      "z_offset_m": 0.75
+    }
+  },
+  "timeline": {
+    "source": "observed timestamps or explicit time_window start/end only",
+    "sort": "ascending_explicit_range_start_then_observed_timestamp_utc",
+    "instant_representation": "start_equals_end_equals_observed_at",
+    "explicit_range_representation": "source_start_and_end_preserved_without_inference",
+    "duplicate_timestamps": "forbidden",
+    "between_observations": "undefined",
+    "prediction": "forbidden",
+    "simulation_time": "elapsed_start_end_and_observed_seconds_from_first_explicit_start"
+  },
+  "outputs": {
+    "stage": "geographic-perimeters.usda",
+    "timeline": "fire-progression-timeline.json",
+    "normalized_source": "perimeters.normalized.json",
+    "manifest": "perimeter-layer.manifest.json",
+    "archive": "fireviewer-perimeter-layer.zip"
+  },
+  "semantics": {
+    "fixed_layers": true,
+    "simulation_timeline_data": true,
+    "terrain_drape": "consumer_responsibility",
+    "interpolation": "none"
+  },
+  "viewer": {
+    "map_input": "portable_fireviewer_zone_zip",
+    "map_geometry": "validated_fvtg_lod2",
+    "map_texture": "baked_ground_color_mosaic",
+    "perimeter_geometry": "usd_fixed_layers_draped_for_preview_only",
+    "timeline_control": "one_observed_instant_or_explicit_range_at_a_time",
+    "browser_format": "glb_preview_derived_from_usd_truth",
+    "maximum_mosaic_side_px": 2048,
+    "preview_is_authoritative": false
+  }
+}

@@ -1,0 +1,121 @@
+{
+  "schema": "fireviewer.terrain-fixed-grid-contract.v1",
+  "format_schema": "fireviewer.terrain-fixed-grid.v1",
+  "crs": "EPSG:2154",
+  "axis_convention": "X=east, Y=north, Z=up",
+  "linear_unit": "metre",
+  "tile_size_m": 500.0,
+  "source": {
+    "resolution_m": 2.0,
+    "core_shape": [
+      251,
+      251
+    ],
+    "row_order": "south_to_north",
+    "column_order": "west_to_east",
+    "acquisition_halo_m": 10.0,
+    "acquisition_halo_shape": [
+      261,
+      261
+    ],
+    "acquisition_core_slice": [
+      5,
+      256,
+      5,
+      256
+    ],
+    "retained_normal_halo_m": 2.0,
+    "retained_normal_halo_shape": [
+      253,
+      253
+    ],
+    "retained_from_acquisition_slice": [
+      4,
+      257,
+      4,
+      257
+    ],
+    "retained_core_slice": [
+      1,
+      252,
+      1,
+      252
+    ],
+    "orthophoto_dependency": "forbidden"
+  },
+  "height_quantization": {
+    "unit": "millimetre",
+    "rounding": "half_away_from_zero",
+    "storage": "signed_int32"
+  },
+  "geometry": {
+    "lod0_derivation": "integer_bilinear_interpolation_at_global_EPSG2154_coordinates",
+    "coarser_lod_derivation": "strict_subsampling_of_lod0",
+    "triangle_diagonal": "southwest_to_northeast",
+    "core_and_skirt_sections": "separate",
+    "skirt_depth_m": 10.0,
+    "skirt_collision": "forbidden",
+    "skirt_shadow": "forbidden",
+    "skirt_main_camera_visibility": "forbidden"
+  },
+  "gradients": {
+    "storage": "two_signed_int32",
+    "unit": "millimetre_height_difference_per_4m",
+    "method": "centred_difference_at_plus_minus_2m_from_retained_halo"
+  },
+  "normals": {
+    "storage": "three_signed_int16_snorm",
+    "range": [
+      -32767,
+      32767
+    ],
+    "method": "integer_fixed_point_normalization_of_negative_gradient_x_negative_gradient_y_positive_4000mm"
+  },
+  "lods": [
+    {
+      "lod": 0,
+      "grid_shape": [
+        129,
+        129
+      ],
+      "lod0_stride": 1,
+      "cell_size_fraction_m": "500/128",
+      "core_triangle_count": 32768
+    },
+    {
+      "lod": 1,
+      "grid_shape": [
+        33,
+        33
+      ],
+      "lod0_stride": 4,
+      "cell_size_fraction_m": "500/32",
+      "core_triangle_count": 2048
+    },
+    {
+      "lod": 2,
+      "grid_shape": [
+        9,
+        9
+      ],
+      "lod0_stride": 16,
+      "cell_size_fraction_m": "500/8",
+      "core_triangle_count": 128
+    }
+  ],
+  "binary_format": {
+    "schema": "fireviewer.terrain-fixed-grid.v1",
+    "extension": ".fvtg",
+    "endianness": "little",
+    "magic_ascii": "FVTG",
+    "version": 1,
+    "sections": [
+      "header",
+      "retained_normal_halo_absolute_heights_mm"
+    ],
+    "derived_geometry_storage": "implicit_and_rebuilt_deterministically_from_the_retained_halo",
+    "integrity": "sha256_of_zero_digest_header_and_payload",
+    "unknown_trailing_payload": "reject",
+    "contract_hash_mismatch": "reject"
+  }
+}

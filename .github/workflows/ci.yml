@@ -9,21 +9,66 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  validate-simple-production:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "8.0.x"
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.simple-production-api.txt
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r requirements.txt pytest ruff
-      # The imported production kit has heterogeneous historical formatting.
-      # Keep the initial public gate focused on executable Python defects.
-      - run: ruff check --select E9,F63,F7,F82 .
-      - run: python -m unittest discover -s tests -v
-      - run: python -m pytest -q detail unity production-kit-france
-      - run: dotnet build unity/dotnet-bridge-probe/FireViewer.TileProbe.csproj
+      - run: python -m pip install -r requirements.simple-production-api.txt pytest ruff jsonschema
+      - name: Lint active production modules
+        run: >-
+          ruff check
+          blender/accept_simple_measured_tile_review.py
+          blender/build_asset_library_53.py
+          blender/build_reference_usd_asset_library.py
+          blender/fixed_asset_placement.py
+          blender/fixed_terrain_grid.py
+          blender/geographic_perimeter_layer.py
+          blender/geographic_perimeter_viewer.py
+          blender/inspect_reference_usd_candidates.py
+          blender/mid_distance_roads.py
+          blender/mns_mnt_placement_inventory.py
+          blender/orthophoto_ground_texture.py
+          blender/portable_scene_package.py
+          blender/prepare_simple_measured_tile_sources.py
+          blender/prepare_simple_measured_zone_context.py
+          blender/produce_simple_measured_tile.py
+          blender/render_simple_zone_gallery.py
+          blender/run_simple_measured_tile_qa.py
+          blender/simple_production_api.py
+          blender/simple_production_gradio.py
+          blender/spatial_data.py
+          blender/validate_measured_scene.py
+          omniverse/build_measured_scene_usd.py
+          omniverse/fixed_terrain_usd.py
+          scene_consumer_contract.py
+      - name: Test active production contracts
+        run: >-
+          python -m pytest -q
+          blender/test_accept_simple_measured_tile_review.py
+          blender/test_build_asset_library_53.py
+          blender/test_build_reference_usd_asset_library.py
+          blender/test_fixed_asset_placement.py
+          blender/test_fixed_terrain_grid.py
+          blender/test_geographic_perimeter_layer.py
+          blender/test_geographic_perimeter_viewer.py
+          blender/test_mid_distance_roads.py
+          blender/test_mns_mnt_placement_inventory.py
+          blender/test_orthophoto_ground_texture.py
+          blender/test_portable_scene_package.py
+          blender/test_prepare_simple_measured_tile_sources.py
+          blender/test_prepare_simple_measured_zone_context.py
+          blender/test_produce_simple_measured_tile.py
+          blender/test_render_simple_zone_gallery.py
+          blender/test_run_simple_measured_tile_qa.py
+          blender/test_simple_production_api.py
+          blender/test_spatial_data.py
+          blender/test_validate_measured_scene.py
+          omniverse/test_build_measured_scene_usd.py
+          omniverse/test_fixed_terrain_usd.py
+          test_scene_consumer_contract.py

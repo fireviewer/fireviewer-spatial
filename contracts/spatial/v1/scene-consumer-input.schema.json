@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/charli-dev420/fireviewer/contracts/spatial/v1/scene-consumer-input.schema.json",
+  "title": "FireViewer immutable map and observed timeline consumer input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "consumer_kind",
+    "map",
+    "policy"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fireviewer.scene-consumer-input.v1"
+    },
+    "consumer_kind": {
+      "enum": [
+        "simulation",
+        "dataset",
+        "replay"
+      ]
+    },
+    "map": {
+      "$ref": "#/$defs/mapReference"
+    },
+    "perimeter_timeline": {
+      "$ref": "#/$defs/perimeterReference"
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terrain_rebuild",
+        "perimeter_rebuild",
+        "source_rasters_required",
+        "between_observations",
+        "simulation_execution"
+      ],
+      "properties": {
+        "terrain_rebuild": {
+          "const": "forbidden"
+        },
+        "perimeter_rebuild": {
+          "const": "forbidden"
+        },
+        "source_rasters_required": {
+          "const": false
+        },
+        "between_observations": {
+          "const": "undefined"
+        },
+        "simulation_execution": {
+          "const": "external_consumer_responsibility"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "packageId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "zoneId": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9-]{2,63}$"
+    },
+    "mapReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package_id",
+        "revision",
+        "zone_id",
+        "map_build_id",
+        "contract_sha256",
+        "archive_sha256",
+        "entry_stage",
+        "horizontal_crs",
+        "vertical_datum",
+        "publication_state"
+      ],
+      "properties": {
+        "package_id": {
+          "$ref": "#/$defs/packageId"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "zone_id": {
+          "$ref": "#/$defs/zoneId"
+        },
+        "map_build_id": {
+          "$ref": "#/$defs/sha256"
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "archive_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "entry_stage": {
+          "const": "zone.usda"
+        },
+        "horizontal_crs": {
+          "const": "EPSG:2154"
+        },
+        "vertical_datum": {
+          "const": "NGF-IGN69"
+        },
+        "publication_state": {
+          "enum": [
+            "technical_unpublished",
+            "published"
+          ]
+        }
+      }
+    },
+    "perimeterReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package_id",
+        "revision",
+        "layer_build_id",
+        "contract_sha256",
+        "archive_sha256",
+        "base_map_build_id",
+        "entry_layer",
+        "timeline_path",
+        "timeline_sha256",
+        "state_count",
+        "between_observations",
+        "prediction"
+      ],
+      "properties": {
+        "package_id": {
+          "$ref": "#/$defs/packageId"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "layer_build_id": {
+          "$ref": "#/$defs/sha256"
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "archive_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "base_map_build_id": {
+          "$ref": "#/$defs/sha256"
+        },
+        "entry_layer": {
+          "const": "geographic-perimeters.usda"
+        },
+        "timeline_path": {
+          "const": "fire-progression-timeline.json"
+        },
+        "timeline_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "state_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 366
+        },
+        "between_observations": {
+          "const": "undefined"
+        },
+        "prediction": {
+          "const": "none"
+        }
+      }
+    }
+  }
+}

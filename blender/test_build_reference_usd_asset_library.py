@@ -1,0 +1,990 @@
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+from pathlib import Path
+import sys
+import zipfile
+
+import pytest
+import jsonschema
+
+import build_reference_usd_asset_library as library
+
+OMNIVERSE_ROOT = Path(__file__).resolve().parents[1] / "omniverse"
+if str(OMNIVERSE_ROOT) not in sys.path:
+    sys.path.insert(0, str(OMNIVERSE_ROOT))
+import build_measured_scene_usd as measured  # noqa: E402
+
+
+def _sha(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _reference(asset_id: str, path: str, route: str = "hunyuan3d") -> dict:
+    content = f"reference:{path}".encode()
+    return {
+        "asset_id": asset_id,
+        "route": route,
+        "source_relative": path,
+        "source_bytes": len(content),
+        "source_sha256": _sha(content),
+        "seed": 1,
+    }
+
+
+def _reviewed(reference: dict, category: str) -> dict:
+    usd = b"reviewed-usd"
+    texture = b"reviewed-texture"
+    return {
+        "asset_id": reference["asset_id"],
+        "category": category,
+        "source": {
+            "root": "reference_assets",
+            "path": reference["source_relative"],
+            "byte_count": reference["source_bytes"],
+            "sha256": reference["source_sha256"],
+        },
+        "usd": {
+            "root": "review_batch",
+            "path": f"usd/{reference['asset_id']}.usd",
+            "byte_count": len(usd),
+            "sha256": _sha(usd),
+        },
+        "texture": {
+            "root": "review_batch",
+            "path": f"usd/textures/{reference['asset_id']}.png",
+            "byte_count": len(texture),
+            "sha256": _sha(texture),
+        },
+        "source_bounds": {
+            "status": "reported",
+            "coordinate_space": "source_glb_unscaled",
+            "minimum": [-1.0, -1.0, -1.0],
+            "maximum": [1.0, 1.0, 1.0],
+            "diagonal": 3.464,
+        },
+        "usd_stage": {
+            "status": "inspected",
+            "up_axis": "Y",
+            "meters_per_unit": 0.001,
+            "default_prim": "/Asset",
+        },
+        "qualification": {
+            "dimensions": {"status": "pending", "value_m": None},
+            "ground_anchor": {"status": "pending", "offset_m": None},
+            "visual": {"status": "pending", "accepted": False},
+        },
+    }
+
+
+def _fixture() -> tuple[dict, dict, dict, dict]:
+    tree = _reference("111111111111_tree", "01_arbres/Lot 1/Tree.png")
+    building = _reference(
+        "222222222222_house",
+        "02_batiments/01_petite_ville_rurale/House.png",
+    )
+    tile = _reference(
+        "333333333333_tile",
+        "pack_dalles_terrain_2D_53_assets/01/Tile.png",
+        "terrain_2d",
+    )
+    documentation = _reference(
+        "444444444444_doc",
+        "validation_documentation/Preview.png",
+        "documentation",
+    )
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 4,
+        "route_counts": {"hunyuan3d": 2, "terrain_2d": 1, "documentation": 1},
+        "assets": [documentation, tile, building, tree],
+    }
+    reviewed = {
+        "schema": "fireviewer.asset-library.v1",
+        "assets": [_reviewed(tree, "tree"), _reviewed(building, "building")],
+    }
+    return manifest, reviewed, tree, building
+
+
+def _inspection(path: Path, *, scope_safe: bool = True, up_axis: str = "Y") -> dict:
+    basis = {
+        "schema": "fireviewer.usd-candidate-inspection.v1",
+        "artifacts": [
+            {
+                "source_name": path.name,
+                "source_sha256": _sha(path.read_bytes()),
+                "source_bounds": {
+                    "status": "reported",
+                    "coordinate_space": "usd_authored_world",
+                    "minimum": [-1.0, 0.0, -1.0],
+                    "maximum": [1.0, 2.0, 1.0],
+                },
+                "usd_stage": {
+                    "status": "inspected",
+                    "up_axis": up_axis,
+                    "meters_per_unit": 1.0,
+                    "default_prim": "/Asset",
+                },
+                "mesh_count": 1,
+                "material_count": 1,
+                "bound_material_mesh_count": 1,
+                "material_scope_safe": scope_safe,
+            }
+        ],
+    }
+    basis["content_sha256"] = _sha(library._canonical_bytes(basis))
+    return basis
+
+
+def _simready_root(
+    root: Path,
+    *,
+    active_reference: dict,
+    rejected_reference: dict,
+) -> Path:
+    asset_id = active_reference["asset_id"]
+    rejected_id = rejected_reference["asset_id"]
+    directory = root / "assets" / f"001_{asset_id}"
+    texture = directory / "textures" / f"{asset_id}.png"
+    usd = directory / f"{asset_id}.usd"
+    glb = directory / f"{asset_id}.glb"
+    texture.parent.mkdir(parents=True)
+    usd.write_bytes(b"#usda 1.0 normalized")
+    glb.write_bytes(b"normalized glb")
+    texture.write_bytes(b"normalized png")
+    active = {
+        "schema_version": 1,
+        "status": "validated_omniverse_minimal_placeable_visual",
+        "property_assignment_intent": "skip",
+        "asset_count": 1,
+        "rejected_count": 7,
+        "meters_per_unit": 1.0,
+        "scale_policy": "uniform_root_scale_only",
+        "color_policy": "adaptive_sRGB_gamma_contrast_saturation",
+        "usd_up_axis": "Z",
+        "usd_root_rotation_degrees": 0.0,
+        "assets": [
+            {
+                "index": 1,
+                "asset_id": asset_id,
+                "glb": str(glb),
+                "usd": str(usd),
+                "texture": str(texture),
+                "scale_color": {
+                    "target_m": 4.0,
+                    "axis_scale_ratios": [2.0, 2.0, 2.0],
+                    "corrected_sha256": _sha(glb.read_bytes()),
+                    "after_geometry": {"bounds": [[-1.0, 0.0, -0.5], [1.0, 4.0, 0.5]]},
+                },
+                "usd_material_restore": {
+                    "passed": True,
+                    "source_glb_sha256": _sha(glb.read_bytes()),
+                    "usd_sha256": _sha(usd.read_bytes()),
+                    "meters_per_unit": 1.0,
+                    "up_axis": "Z",
+                    "root_rotation_x_degrees": 0.0,
+                    "structural_validation": {
+                        "texture_sha256": _sha(texture.read_bytes())
+                    },
+                },
+                "passed": True,
+            }
+        ],
+    }
+    rejected_assets = [
+        {"index": index, "asset_id": value}
+        for index, value in (
+            (2, rejected_id),
+            (3, "reject-3"),
+            (4, "reject-4"),
+            (5, "reject-5"),
+            (6, "reject-6"),
+            (7, "reject-7"),
+            (8, "reject-8"),
+        )
+    ]
+    validation = {
+        "schema_version": 1,
+        "expected_active_count": 1,
+        "expected_rejected_indices": list(range(2, 9)),
+        "asset_count": 1,
+        "passed_count": 1,
+        "failed_count": 0,
+        "library_errors": [],
+        "passed": True,
+        "assets": [
+            {
+                "asset_id": asset_id,
+                "passed": True,
+                "errors": [],
+                "evidence": {
+                    "glb_sha256": _sha(glb.read_bytes()),
+                    "usd_sha256": _sha(usd.read_bytes()),
+                    "texture_sha256": _sha(texture.read_bytes()),
+                    "meters_per_unit": 1.0,
+                    "up_axis": "Z",
+                    "usd_extents_m": [2.0, 1.0, 4.0],
+                },
+            }
+        ],
+    }
+    omniverse = {
+        "status": "PASS",
+        "features": [
+            {
+                "id": "com.nvidia.usd.minimal_placeable_visual",
+                "status": "PASS",
+            }
+        ],
+    }
+    rejected = {
+        "schema_version": 1,
+        "status": "user_rejected",
+        "asset_count": 7,
+        "assets": rejected_assets,
+    }
+    for name, payload in (
+        ("active-assets.json", active),
+        ("simready-validation.json", validation),
+        ("omniverse-asset-validator.json", omniverse),
+        ("rejected-assets.json", rejected),
+    ):
+        (root / name).write_text(json.dumps(payload), encoding="utf-8")
+    return root
+
+
+def test_images_define_expected_assets_but_never_enter_runtime() -> None:
+    manifest, reviewed, tree, building = _fixture()
+    payload = library.build_reference_asset_library(manifest, reviewed)
+
+    assert payload["asset_count"] == 2
+    assert payload["availability_counts"] == {"real_usd": 2}
+    assert payload["fallback_policy"]["fallback_asset_count"] == 0
+    assert [asset["asset_id"] for asset in payload["assets"]] == sorted(
+        (tree["asset_id"], building["asset_id"])
+    )
+    assert payload["reference_manifest"]["runtime_images_embedded"] is False
+    assert payload["selection_pools"]["tree"] == [tree["asset_id"]]
+    assert payload["selection_pools"]["building"] == [building["asset_id"]]
+    assert payload["available_asset_pools"]["tree"] == [tree["asset_id"]]
+    assert payload["available_asset_pools"]["building"] == [building["asset_id"]]
+    assert all(
+        "pack_dalles_terrain_2D" not in asset["reference"]["path"]
+        for asset in payload["assets"]
+    )
+
+
+def test_simready_normalized_replaces_reviewed_and_blocks_rejected_hunyuan(
+    tmp_path: Path,
+) -> None:
+    active = _reference("111111111111_tree", "01_arbres/Lot 1/Normalized Tree.png")
+    rejected = _reference("222222222222_tree", "01_arbres/Lot 1/Rejected Tree.png")
+    extra_references = [
+        _reference(f"reject-{index}", f"01_arbres/Lot 1/Reject {index}.png")
+        for index in range(3, 9)
+    ]
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 8,
+        "route_counts": {"hunyuan3d": 8},
+        "assets": [active, rejected, *extra_references],
+    }
+    reviewed = {
+        "schema": "fireviewer.asset-library.v1",
+        "assets": [_reviewed(active, "tree"), _reviewed(rejected, "tree")],
+    }
+    simready = _simready_root(
+        tmp_path / "simready",
+        active_reference=active,
+        rejected_reference=rejected,
+    )
+    candidates = library.discover_candidate_assets(manifest, simready_root=simready)
+    payload = library.build_reference_asset_library(
+        manifest, reviewed, candidate_assets=candidates
+    )
+    indexed = {asset["asset_id"]: asset for asset in payload["assets"]}
+
+    assert candidates.rejected_asset_ids == {
+        rejected["asset_id"],
+        *(reference["asset_id"] for reference in extra_references),
+    }
+    assert payload["source_counts"] == {"simready_normalized": 1}
+    assert indexed[active["asset_id"]]["source_selection"]["tier"] == (
+        "simready_normalized"
+    )
+    assert indexed[active["asset_id"]]["material"] == {
+        "policy": "scoped_source_pbr",
+        "source_package": False,
+        "pbr_preserved": True,
+    }
+    assert indexed[active["asset_id"]]["usd_stage"]["up_axis"] == "Z"
+    assert (
+        indexed[active["asset_id"]]["qualification"]["dimensions"]["status"]
+        == "accepted"
+    )
+    assert indexed[rejected["asset_id"]]["fallback_resolution"]["used"] is True
+    assert (
+        indexed[rejected["asset_id"]]["fallback_resolution"]["donor_asset_id"]
+        == active["asset_id"]
+    )
+
+    output = tmp_path / "published"
+    result = library.write_reference_asset_library(
+        payload,
+        review_batch_root=output,
+        output_catalog=output / "reference-asset-library.v1.json",
+        candidate_assets=candidates,
+    )
+    assert result["materialized_simready_normalized_count"] == 1
+    assert (output / "simready-normalized" / f"{active['asset_id']}.usd").is_file()
+    assert (
+        output / "simready-normalized" / "textures" / f"{active['asset_id']}.png"
+    ).is_file()
+
+    manifest_path = tmp_path / "reference-manifest.json"
+    reviewed_path = tmp_path / "reviewed-library.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    reviewed_path.write_text(json.dumps(reviewed), encoding="utf-8")
+    cli_output = tmp_path / "cli-published"
+    assert (
+        library.main(
+            [
+                "--reference-manifest",
+                str(manifest_path),
+                "--reviewed-library",
+                str(reviewed_path),
+                "--review-batch-root",
+                str(cli_output),
+                "--reviewed-source-root",
+                str(tmp_path / "unused-reviewed-source"),
+                "--output-catalog",
+                str(cli_output / "reference-asset-library.v1.json"),
+                "--simready-root",
+                str(simready),
+                "--execute",
+            ]
+        )
+        == 0
+    )
+    assert (cli_output / "reference-asset-library.v1.json").is_file()
+
+
+def test_missing_asset_resolves_to_compatible_real_usd_without_black_cube() -> None:
+    donor = _reference(
+        "aaaaaaaaaaaa_farm",
+        "Lot_09_ferme_ancienne_renovee_et_habitat_agricole_realiste/01_corps_de_ferme.png",
+    )
+    missing = _reference(
+        "bbbbbbbbbbbb_barn",
+        "Lot_09_ferme_ancienne_renovee_et_habitat_agricole_realiste/02_grange.png",
+    )
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 2,
+        "route_counts": {"hunyuan3d": 2},
+        "assets": [missing, donor],
+    }
+    payload = library.build_reference_asset_library(
+        manifest,
+        {
+            "schema": "fireviewer.asset-library.v1",
+            "assets": [_reviewed(donor, "building")],
+        },
+    )
+    resolved = next(
+        asset for asset in payload["assets"] if asset["asset_id"] == missing["asset_id"]
+    )
+
+    assert payload["availability_counts"] == {"real_usd": 2}
+    assert payload["fallback_policy"]["fallback_asset_count"] == 1
+    assert resolved["fallback_resolution"]["used"] is True
+    assert resolved["fallback_resolution"]["donor_asset_id"] == donor["asset_id"]
+    assert resolved["fallback_resolution"]["compatibility_mode"] == "exact_category"
+    assert resolved["usd"]["path"] == f"usd/{donor['asset_id']}.usd"
+    assert "placeholders" not in resolved["usd"]["path"]
+
+
+def test_fallback_resolution_is_schema_valid_deterministic_and_tamper_evident() -> None:
+    donor = _reference(
+        "aaaaaaaaaaaa_farm",
+        "Lot_09_ferme_ancienne_renovee_et_habitat_agricole_realiste/01_ferme.png",
+    )
+    missing = _reference(
+        "bbbbbbbbbbbb_barn",
+        "Lot_09_ferme_ancienne_renovee_et_habitat_agricole_realiste/02_grange.png",
+    )
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 2,
+        "route_counts": {"hunyuan3d": 2},
+        "assets": [missing, donor],
+    }
+    reviewed = {
+        "schema": "fireviewer.asset-library.v1",
+        "assets": [_reviewed(donor, "building")],
+    }
+    first = library.build_reference_asset_library(manifest, reviewed)
+    second = library.build_reference_asset_library(manifest, reviewed)
+    schema_path = (
+        Path(__file__).resolve().parents[1]
+        / "contracts"
+        / "terrain"
+        / "v1"
+        / "reference-asset-library.v1.schema.json"
+    )
+
+    assert library._canonical_bytes(first) == library._canonical_bytes(second)
+    jsonschema.validate(first, json.loads(schema_path.read_text(encoding="utf-8")))
+
+    tampered = copy.deepcopy(first)
+    fallback = next(
+        asset
+        for asset in tampered["assets"]
+        if asset["asset_id"] == missing["asset_id"]
+    )
+    fallback["fallback_resolution"]["metadata_match_score"] += 1
+    without_revision = dict(tampered)
+    without_revision.pop("catalog_revision")
+    tampered["catalog_revision"] = _sha(library._canonical_bytes(without_revision))
+    with pytest.raises(
+        library.ReferenceAssetLibraryError,
+        match="fallback resolution differs",
+    ):
+        library.validate_reference_asset_library(tampered)
+
+
+def test_real_usd_replaces_same_identifier_on_next_build() -> None:
+    donor = _reference(
+        "aaaaaaaaaaaa_existing_house",
+        "02_batiments/01_petite_ville_rurale/Existing House.png",
+    )
+    building = _reference(
+        "bbbbbbbbbbbb_new_house",
+        "02_batiments/01_petite_ville_rurale/New House.png",
+    )
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 2,
+        "route_counts": {"hunyuan3d": 2},
+        "assets": [building, donor],
+    }
+    reviewed = {
+        "schema": "fireviewer.asset-library.v1",
+        "assets": [_reviewed(donor, "building")],
+    }
+    pending = library.build_reference_asset_library(manifest, reviewed)
+    pending_record = next(
+        asset
+        for asset in pending["assets"]
+        if asset["asset_id"] == building["asset_id"]
+    )
+    assert pending_record["availability"] == "real_usd"
+    assert pending_record["fallback_resolution"]["used"] is True
+    assert pending_record["fallback_resolution"]["donor_asset_id"] == donor["asset_id"]
+
+    updated = copy.deepcopy(reviewed)
+    updated["assets"].append(_reviewed(building, "building"))
+    rebuilt = library.build_reference_asset_library(manifest, updated)
+    real_record = next(
+        asset
+        for asset in rebuilt["assets"]
+        if asset["asset_id"] == building["asset_id"]
+    )
+    assert real_record["availability"] == "real_usd"
+    assert real_record["fallback_resolution"]["used"] is False
+    assert real_record["replacement"]["key"] == pending_record["replacement"]["key"]
+    assert real_record["usd"]["path"] == f"usd/{building['asset_id']}.usd"
+    expected_ids = sorted((donor["asset_id"], building["asset_id"]))
+    assert rebuilt["selection_pools"]["building"] == expected_ids
+    assert rebuilt["available_asset_pools"]["building"] == expected_ids
+
+
+def test_premium_usdz_replaces_added_and_reviewed_hunyuan_atomically(
+    tmp_path: Path,
+) -> None:
+    reference = _reference(
+        "7546cb9a6b30_02_petite_caserne_sdis",
+        "02_lot_2_services_et_habitat/02_petite_caserne_sdis.png",
+    )
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 1,
+        "route_counts": {"hunyuan3d": 1},
+        "assets": [reference],
+    }
+    reviewed = {
+        "schema": "fireviewer.asset-library.v1",
+        "assets": [_reviewed(reference, "building")],
+    }
+    batch = tmp_path / "candidates" / "batch-0053-0057"
+    usd = batch / "usd" / f"{reference['asset_id']}.usd"
+    texture = batch / "usd" / "textures" / f"{reference['asset_id']}.png"
+    receipt = batch / "reports" / "usd" / f"{reference['asset_id']}-usd.json"
+    usd.parent.mkdir(parents=True)
+    texture.parent.mkdir(parents=True)
+    receipt.parent.mkdir(parents=True)
+    usd.write_bytes(b"added-hunyuan-usd")
+    texture.write_bytes(b"added-hunyuan-texture")
+    receipt.write_text(
+        json.dumps(
+            {
+                "asset": reference["asset_id"],
+                "passed": True,
+                "usd_sha256": _sha(usd.read_bytes()),
+                "structural_validation": {"texture_sha256": _sha(texture.read_bytes())},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (batch / "reports" / "glb-validation.json").write_text(
+        json.dumps(
+            {
+                "assets": [
+                    {
+                        "path": f"/remote/{reference['asset_id']}.glb",
+                        "passed": True,
+                        "bounds": [[-1, 0, -1], [1, 2, 1]],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    premium_root = tmp_path / "premium"
+    premium_root.mkdir()
+    premium = premium_root / "02_petite_caserne_sdis.usdz"
+    with zipfile.ZipFile(premium, "w") as archive:
+        archive.writestr("asset.usdc", b"premium-usdc")
+        archive.writestr("textures/premium_0.jpg", b"premium-base-color")
+
+    candidates = library.discover_candidate_assets(
+        manifest,
+        hunyuan_roots=[tmp_path / "candidates"],
+        premium_usdz_root=premium_root,
+        candidate_inspection=_inspection(premium, up_axis="Z"),
+    )
+    assert candidates[reference["asset_id"]].tier == "premium_usdz"
+    payload = library.build_reference_asset_library(
+        manifest,
+        reviewed,
+        candidate_assets=candidates,
+    )
+    asset = payload["assets"][0]
+    assert payload["source_counts"] == {"premium_usdz": 1}
+    assert asset["usd"]["path"].endswith(".usdz")
+    assert asset["material"] == {
+        "policy": "source_package_pbr",
+        "source_package": True,
+        "pbr_preserved": True,
+    }
+    assert asset["usd_stage"]["up_axis"] == "Z"
+    assert asset["source_bounds"]["coordinate_space"] == "usd_canonical_y_up_from_z_up"
+    output_root = tmp_path / "published"
+    catalog = tmp_path / "reference-library.v1.json"
+    result = library.write_reference_asset_library(
+        payload,
+        review_batch_root=output_root,
+        output_catalog=catalog,
+        candidate_assets=candidates,
+    )
+    assert result["materialized_premium_usdz_count"] == 1
+    assert (output_root / asset["usd"]["path"]).read_bytes() == premium.read_bytes()
+    assert (
+        output_root / asset["texture"]["path"]
+    ).read_bytes() == b"premium-base-color"
+
+
+def test_premium_usdz_requires_hash_bound_openusd_inspection(tmp_path: Path) -> None:
+    reference = _reference(
+        "febc96eb56d2_06_chalet_alpin",
+        "02_lot_2_services_et_habitat/06_chalet_alpin.png",
+    )
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 1,
+        "route_counts": {"hunyuan3d": 1},
+        "assets": [reference],
+    }
+    premium_root = tmp_path / "premium"
+    premium_root.mkdir()
+    premium = premium_root / "chalet+house+3d+model.usdz"
+    with zipfile.ZipFile(premium, "w") as archive:
+        archive.writestr("asset.usdc", b"premium-usdc")
+        archive.writestr("textures/premium_0.jpg", b"premium-base-color")
+    candidates = library.discover_candidate_assets(
+        manifest,
+        premium_usdz_root=premium_root,
+    )
+    assert candidates[reference["asset_id"]].tier == "premium_usdz"
+    with pytest.raises(
+        library.ReferenceAssetLibraryError,
+        match="bounds inspection is required",
+    ):
+        library.build_reference_asset_library(
+            manifest,
+            {"schema": "fireviewer.asset-library.v1", "assets": []},
+            candidate_assets=candidates,
+        )
+
+
+def test_metadata_selection_is_repeatable_and_does_not_consume_an_asset() -> None:
+    supermarket = _reference(
+        "aaaaaaaaaaaa_supermarket",
+        "Lot_06_batiments_commerciaux_du_quotidien/06_superette_de_quartier_plus_realiste.png",
+    )
+    farm = _reference(
+        "bbbbbbbbbbbb_farm",
+        "Lot_09_ferme_ancienne_renovee_et_habitat_agricole_realiste/01_corps_de_ferme_en_u_avec_cour_interieure.png",
+    )
+    tree = _reference("cccccccccccc_tree", "01_arbres/Lot 1/Tilleul.png")
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 3,
+        "route_counts": {"hunyuan3d": 3},
+        "assets": [supermarket, farm, tree],
+    }
+    payload = library.build_reference_asset_library(
+        manifest,
+        {
+            "schema": "fireviewer.asset-library.v1",
+            "assets": [
+                _reviewed(supermarket, "building"),
+                _reviewed(farm, "building"),
+                _reviewed(tree, "tree"),
+            ],
+        },
+    )
+    metadata = {
+        "context": "building",
+        "semantic_tags": ["commercial"],
+        "reference_terms": ["superette"],
+    }
+
+    first = library.select_asset_for_candidate(
+        payload,
+        category="building",
+        zone="FR-30",
+        candidate="building-a",
+        rule_version="building-v1",
+        usage="technical_pilot_non_final",
+        metadata=metadata,
+    )
+    second = library.select_asset_for_candidate(
+        payload,
+        category="building",
+        zone="FR-30",
+        candidate="building-b",
+        rule_version="building-v1",
+        usage="technical_pilot_non_final",
+        metadata=metadata,
+    )
+
+    assert first["asset_id"] == supermarket["asset_id"]
+    assert second["asset_id"] == supermarket["asset_id"]
+    assert first["repeatable"] is True
+    assert second["repeatable"] is True
+
+
+def test_writer_is_atomic_idempotent_and_tamper_evident(tmp_path: Path) -> None:
+    manifest, reviewed, _tree, building = _fixture()
+    payload = library.build_reference_asset_library(manifest, reviewed)
+    batch = tmp_path / "review-batch"
+    output = tmp_path / "reference-library.v1.json"
+
+    first = library.write_reference_asset_library(
+        payload, review_batch_root=batch, output_catalog=output
+    )
+    second = library.write_reference_asset_library(
+        payload, review_batch_root=batch, output_catalog=output
+    )
+    assert first == second
+    assert first["placeholder_usd_count"] == 0
+    assert not (batch / "placeholders").exists()
+    assert building["asset_id"] in {asset["asset_id"] for asset in payload["assets"]}
+    assert (
+        json.loads(output.read_text(encoding="utf-8"))["catalog_revision"]
+        == payload["catalog_revision"]
+    )
+
+    output.write_text("{}", encoding="utf-8")
+    with pytest.raises(
+        library.ReferenceAssetLibraryError,
+        match="existing catalogue is immutable and differs",
+    ):
+        library.write_reference_asset_library(
+            payload, review_batch_root=batch, output_catalog=output
+        )
+
+
+def test_current_reference_manifest_yields_294_usd_entries() -> None:
+    repository = Path(__file__).resolve().parents[2]
+    payload = library.build_reference_asset_library(
+        repository
+        / "fireviewer-sdg"
+        / "asset4sim"
+        / "generated_hunyuan3d_v2"
+        / "reference-manifest.json",
+        repository
+        / "fireviewer-work"
+        / "production"
+        / "fr-30-00001-pilot-v1"
+        / "shared"
+        / "assets"
+        / "asset-library.v1.json",
+    )
+    assert payload["asset_count"] == 294
+    assert payload["availability_counts"] == {"real_usd": 294}
+    assert payload["fallback_policy"]["direct_asset_count"] == 53
+    assert payload["fallback_policy"]["fallback_asset_count"] == 241
+    assert payload["fallback_policy"]["black_placeholder_forbidden"] is True
+    assert payload["category_counts"]["building"] == 148
+    assert payload["category_counts"]["tree"] == 30
+    assert all(
+        not asset["reference"]["path"].startswith("pack_dalles_terrain_2D")
+        for asset in payload["assets"]
+    )
+
+
+def test_current_added_assets_match_references_with_premium_precedence() -> None:
+    repository = Path(__file__).resolve().parents[2]
+    manifest = (
+        repository
+        / "fireviewer-sdg"
+        / "asset4sim"
+        / "generated_hunyuan3d_v2"
+        / "reference-manifest.json"
+    )
+    candidates = library.discover_candidate_assets(
+        manifest,
+        hunyuan_roots=[
+            repository
+            / "fireviewer-sdg"
+            / "asset4sim"
+            / "generated_hunyuan3d_v2"
+            / "production_batch_53_plus"
+        ],
+        premium_usdz_root=(
+            repository
+            / "fireviewer-sdg"
+            / "asset4sim"
+            / "generated_otherway_betterquality"
+        ),
+    )
+    assert len(candidates) == 69
+    assert sum(item.tier == "premium_usdz" for item in candidates.values()) == 26
+    assert sum(item.tier == "added_hunyuan" for item in candidates.values()) == 43
+    assert (
+        candidates["febc96eb56d2_06_chalet_alpin"].source_name
+        == "chalet+house+3d+model.usdz"
+    )
+
+
+def _materialize_reviewed(batch: Path, record: dict) -> None:
+    for role, content in (("usd", b"reviewed-usd"), ("texture", b"reviewed-texture")):
+        target = batch.joinpath(*record[role]["path"].split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+
+
+def _family(candidates: list[dict]) -> dict:
+    return {
+        "source_count": len(candidates),
+        "valid_count": len(candidates),
+        "ambiguous_count": 0,
+        "rejected_count": 0,
+        "placement_ready_count": len(candidates),
+        "placement_blocked_count": 0,
+        "instantiated_asset_count": 0,
+        "candidates": candidates,
+    }
+
+
+def _select(asset_id: str):
+    def selection(_library: object, **kwargs: object) -> dict:
+        return {
+            "asset_id": asset_id,
+            "category": kwargs["category"],
+            "selection_seed": 1,
+            "usage_status": "technical_pilot_non_final",
+            "metadata_match_score": 0,
+            "repeatable": True,
+        }
+
+    return selection
+
+
+def test_missing_selected_asset_packages_real_donor_usd(tmp_path: Path) -> None:
+    donor = _reference("aaaaaaaaaaaa_tilleul", "01_arbres/Lot 1/Tilleul.png")
+    missing = _reference("bbbbbbbbbbbb_pin", "01_arbres/Lot 1/Pin maritime.png")
+    building = _reference(
+        "cccccccccccc_house",
+        "02_batiments/01_petite_ville_rurale/House.png",
+    )
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 3,
+        "route_counts": {"hunyuan3d": 3},
+        "assets": [missing, donor, building],
+    }
+    reviewed_record = _reviewed(donor, "tree")
+    building_record = _reviewed(building, "building")
+    payload = library.build_reference_asset_library(
+        manifest,
+        {
+            "schema": "fireviewer.asset-library.v1",
+            "assets": [reviewed_record, building_record],
+        },
+    )
+    batch = tmp_path / "review-batch"
+    _materialize_reviewed(batch, reviewed_record)
+    _materialize_reviewed(batch, building_record)
+    catalog = tmp_path / "reference-library.v1.json"
+    library.write_reference_asset_library(
+        payload, review_batch_root=batch, output_catalog=catalog
+    )
+    terrain = tmp_path / "terrain.usda"
+    terrain.write_text('#usda 1.0\n(def Xform "Terrain")\n', encoding="utf-8")
+    inventory = {
+        "schema": "fireviewer.mns-mnt-placement-inventory.v1",
+        "build_id": _sha(b"inventory-build"),
+        "zone_id": "FR-30-test",
+        "crs": "EPSG:2154",
+        "grid": {"core_bounds_l93_m": [700_000, 6_600_000, 700_500, 6_600_500]},
+        "buildings": _family([]),
+        "trees": _family(
+            [
+                {
+                    "candidate_id": "tree-measured-1",
+                    "status": "valid",
+                    "reason_codes": [],
+                    "position_l93_m": [700_100.5, 6_600_100.5],
+                    "ground_elevation_mm": 100_000,
+                    "height_cm": 500,
+                    "equivalent_crown_radius_m": 2.0,
+                }
+            ]
+        ),
+    }
+    inventory["inventory_sha256"] = _sha(measured.canonical_json_bytes(inventory))
+
+    result = measured.build_measured_scene_usd(
+        measured.TerrainReference(terrain, (700_000.0, 6_600_000.0)),
+        inventory,
+        catalog,
+        tmp_path / "scene",
+        portable_root=tmp_path,
+        asset_roots={"review_batch": batch},
+        selection_api=_select(missing["asset_id"]),
+    )
+    receipt = measured.validate_measured_scene_package(result.output_root)
+    prototype = receipt["prototypes"][0]
+    source = result.output_root / "prototypes" / prototype["source_usd"]["path"]
+
+    assert receipt["placeholder_prototype_count"] == 0
+    assert receipt["placeholder_instance_count"] == 0
+    assert receipt["placement_policy"]["catalog_placeholder_usd_used"] is False
+    assert prototype["asset_id"] == missing["asset_id"]
+    assert prototype["availability"] == "real_usd"
+    assert prototype["fallback_resolution"]["used"] is True
+    assert prototype["fallback_resolution"]["donor_asset_id"] == donor["asset_id"]
+    assert source.read_bytes() == b"reviewed-usd"
+    assert b'def Cube "MissingAsset"' not in source.read_bytes()
+
+
+def test_compatible_equipment_usd_can_serve_multiple_instances(tmp_path: Path) -> None:
+    donor = _reference(
+        "aaaaaaaaaaaa_road_barrier",
+        "01_Lot_3D_T1_bordures_routieres_securite/08_barriere_pivotante.png",
+    )
+    missing = _reference(
+        "bbbbbbbbbbbb_sports_fence",
+        "06_Lot_3D_T6_sports_parkings_exterieurs/01_cloture_sportive.png",
+    )
+    tree = _reference("cccccccccccc_tree", "01_arbres/Lot 1/Tilleul.png")
+    building = _reference(
+        "dddddddddddd_house",
+        "02_batiments/01_petite_ville_rurale/House.png",
+    )
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 4,
+        "route_counts": {"hunyuan3d": 4},
+        "assets": [missing, donor, tree, building],
+    }
+    reviewed_record = _reviewed(donor, "road_equipment")
+    tree_record = _reviewed(tree, "tree")
+    building_record = _reviewed(building, "building")
+    payload = library.build_reference_asset_library(
+        manifest,
+        {
+            "schema": "fireviewer.asset-library.v1",
+            "assets": [reviewed_record, tree_record, building_record],
+        },
+    )
+    fallback = next(
+        asset for asset in payload["assets"] if asset["asset_id"] == missing["asset_id"]
+    )
+    assert fallback["fallback_resolution"]["compatibility_mode"] == (
+        "compatible_equipment"
+    )
+    batch = tmp_path / "review-batch"
+    _materialize_reviewed(batch, reviewed_record)
+    _materialize_reviewed(batch, tree_record)
+    _materialize_reviewed(batch, building_record)
+    catalog = tmp_path / "reference-library.v1.json"
+    library.write_reference_asset_library(
+        payload, review_batch_root=batch, output_catalog=catalog
+    )
+    terrain = tmp_path / "terrain.usda"
+    terrain.write_text('#usda 1.0\n(def Xform "Terrain")\n', encoding="utf-8")
+    context_candidates = [
+        {
+            "candidate_id": f"sports-feature-{index}",
+            "status": "valid",
+            "reason_codes": [],
+            "asset_category": "sports_equipment",
+            "selection_context": "sports_ground",
+            "context_role": "sports",
+            "source_ids": [f"SPORT-{index}"],
+            "source_properties": {"nature": "Terrain de sport"},
+            "position_l93_m": [700_100.0 + index * 20.0, 6_600_100.0],
+            "ground_elevation_mm": 100_000,
+            "yaw_rad": 0.0,
+        }
+        for index in range(2)
+    ]
+    inventory = {
+        "schema": "fireviewer.mns-mnt-placement-inventory.v1",
+        "build_id": _sha(b"context-inventory-build"),
+        "zone_id": "FR-30-test",
+        "crs": "EPSG:2154",
+        "grid": {"core_bounds_l93_m": [700_000, 6_600_000, 700_500, 6_600_500]},
+        "buildings": _family([]),
+        "trees": _family([]),
+        "context_assets": _family(context_candidates),
+    }
+    inventory["inventory_sha256"] = _sha(measured.canonical_json_bytes(inventory))
+
+    result = measured.build_measured_scene_usd(
+        measured.TerrainReference(terrain, (700_000.0, 6_600_000.0)),
+        inventory,
+        catalog,
+        tmp_path / "scene-context",
+        portable_root=tmp_path,
+        asset_roots={"review_batch": batch},
+        selection_api=_select(missing["asset_id"]),
+    )
+    receipt = measured.validate_measured_scene_package(result.output_root)
+
+    assert result.context_asset_instance_count == 2
+    assert receipt["prototype_count"] == 1
+    assert receipt["placeholder_prototype_count"] == 0
+    assert receipt["placeholder_instance_count"] == 0
+    assert receipt["reconciliation"]["context_assets"]["instance_count"] == 2
+    assert receipt["reconciliation"]["context_assets"]["asset_category_counts"] == {
+        "sports_equipment": 2
+    }
+    scene = result.scene.read_text(encoding="utf-8")
+    assert 'def PointInstancer "ContextAssets"' in scene

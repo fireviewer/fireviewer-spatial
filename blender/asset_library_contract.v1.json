@@ -1,0 +1,98 @@
+{
+  "schema": "fireviewer.asset-library-contract.v1",
+  "catalog_schema": "fireviewer.asset-library.v1",
+  "build_algorithm": "fireviewer.asset-library-53-builder.v1",
+  "expected_asset_count": 53,
+  "expected_category_counts": {
+    "building": 24,
+    "pasture_equipment": 1,
+    "road_equipment": 8,
+    "tree": 18,
+    "vehicle": 2
+  },
+  "expected_selection_pool_counts": {
+    "building": 24,
+    "tree": 18
+  },
+  "identity": {
+    "strategy": "artifact_stem+reference_manifest",
+    "invalid_reported_asset_ids": [
+      "glb"
+    ]
+  },
+  "category_rules": [
+    {
+      "category": "tree",
+      "source_prefix": "01_arbres/"
+    },
+    {
+      "category": "building",
+      "source_prefix": "02_batiments/"
+    },
+    {
+      "category": "road_equipment",
+      "source_prefix": "01_Lot_3D_T1_bordures_routieres_securite/"
+    },
+    {
+      "category": "vehicle",
+      "source_prefix": "04_vehicules/"
+    },
+    {
+      "category": "pasture_equipment",
+      "source_prefix": "05_Lot_3D_T5_parcelles_bocage_paturages/"
+    }
+  ],
+  "category_overrides": {
+    "01_lot_1_extension_initiale/01_chene_pedoncule.png": "tree",
+    "01_lot_1_extension_initiale/02_pin_maritime.png": "tree",
+    "01_lot_1_extension_initiale/03_eglise_rurale_avec_clocher.png": "building",
+    "01_lot_1_extension_initiale/04_mairie_de_village.png": "building",
+    "01_lot_1_extension_initiale/05_hangar_agricole_metallique_moderne.png": "building",
+    "01_lot_1_extension_initiale/06_chai_viticole.png": "building",
+    "01_lot_1_extension_initiale/07_tracteur_agricole_moderne.png": "vehicle",
+    "01_lot_1_extension_initiale/08_dash_8_bombardier_eau.png": "vehicle"
+  },
+  "usd_stage": {
+    "required_up_axis": "Y",
+    "require_default_prim_when_inspected": true
+  },
+  "normalization_policy": {
+    "bounds_are_physical_dimensions": false,
+    "final_scene_requires_accepted_normalization": true,
+    "source_stage_units_are_evidence_only": true,
+    "technical_pilot_status": "technical_pilot_non_final"
+  },
+  "qualification_defaults": {
+    "collision": {
+      "status": "pending"
+    },
+    "dimensions": {
+      "status": "pending",
+      "value_m": null
+    },
+    "forward_axis": {
+      "status": "pending",
+      "value": null
+    },
+    "ground_anchor": {
+      "offset_m": null,
+      "status": "pending"
+    },
+    "lod": {
+      "levels": [],
+      "status": "pending"
+    },
+    "scale": {
+      "status": "pending",
+      "uniform_scale": null
+    },
+    "visual": {
+      "accepted": false,
+      "status": "pending"
+    }
+  },
+  "eligibility_defaults": {
+    "final_scene": "blocked",
+    "technical_pilot": "allowed_non_final"
+  }
+}

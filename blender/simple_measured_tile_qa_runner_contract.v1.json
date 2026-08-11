@@ -1,0 +1,58 @@
+{
+  "schema": "fireviewer.simple-measured-tile-qa-runner-contract.v1",
+  "status": "locked",
+  "scope": {
+    "tile_count": 1,
+    "network": "forbidden",
+    "pbr": "forbidden",
+    "automatic_human_acceptance": false
+  },
+  "inputs": {
+    "package_receipt_schema": "fireviewer.simple-measured-tile-production.v1",
+    "scene_receipt_schema": "fireviewer.measured-scene-receipt.v1",
+    "blender_version": "4.5"
+  },
+  "layout": {
+    "job": "measured-scene-render-job.v1.json",
+    "captures": "qa/renders",
+    "technical_receipt": "measured-scene-technical-receipt.v1.json",
+    "link_receipt": "simple-measured-tile-qa-link.v1.json",
+    "runtime": "qa/runtime"
+  },
+  "blender": {
+    "arguments": [
+      "--background",
+      "--factory-startup",
+      "--disable-autoexec",
+      "--python-exit-code",
+      "1",
+      "--python",
+      "validate_measured_scene.py",
+      "--",
+      "--job"
+    ],
+    "temporary_environment_variables": [
+      "TEMP",
+      "TMP",
+      "PYTHONPYCACHEPREFIX",
+      "BLENDER_USER_CONFIG",
+      "BLENDER_USER_SCRIPTS",
+      "BLENDER_USER_DATAFILES",
+      "BLENDER_USER_EXTENSIONS"
+    ],
+    "temporary_drive": "D:"
+  },
+  "phases": [
+    "prepare",
+    "execute",
+    "verify"
+  ],
+  "integrity": {
+    "hash": "sha256",
+    "job_write": "atomic_same_bytes_or_reject",
+    "link_write": "atomic_same_bytes_or_reject",
+    "technical_receipt": "public_api_reverification_required",
+    "package_outputs": "rehash_all_declared_outputs",
+    "unknown_acceptance": "reject"
+  }
+}

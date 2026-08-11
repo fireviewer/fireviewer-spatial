@@ -1,0 +1,348 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireviewer.fr/contracts/terrain/v1/reference-asset-library.v1.schema.json",
+  "title": "FireViewer complete reference USD asset library",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "build_algorithm",
+    "asset_count",
+    "category_counts",
+    "availability_counts",
+    "source_precedence",
+    "source_counts",
+    "selection_pools",
+    "available_asset_pools",
+    "reference_manifest",
+    "fallback_policy",
+    "assets",
+    "catalog_revision"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fireviewer.reference-usd-asset-library.v1"
+    },
+    "status": {
+      "const": "catalogued_with_deterministic_real_usd_fallbacks"
+    },
+    "build_algorithm": {
+      "const": "fireviewer.reference-usd-asset-library-builder.v1"
+    },
+    "asset_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "category_counts": {
+      "$ref": "#/$defs/pools"
+    },
+    "availability_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "real_usd": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "source_precedence": {
+      "const": [
+        "premium_usdz",
+        "simready_normalized",
+        "added_hunyuan",
+        "reviewed_hunyuan"
+      ]
+    },
+    "source_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "premium_usdz": {"type": "integer", "minimum": 0},
+        "simready_normalized": {"type": "integer", "minimum": 0},
+        "added_hunyuan": {"type": "integer", "minimum": 0},
+        "reviewed_hunyuan": {"type": "integer", "minimum": 0}
+      }
+    },
+    "selection_pools": {
+      "$ref": "#/$defs/pools"
+    },
+    "available_asset_pools": {
+      "$ref": "#/$defs/pools"
+    },
+    "reference_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_count",
+        "route_counts",
+        "content_sha256",
+        "runtime_images_embedded"
+      ],
+      "properties": {
+        "asset_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "route_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "content_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runtime_images_embedded": {
+          "const": false
+        }
+      }
+    },
+    "fallback_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "black_placeholder_forbidden",
+        "strategy",
+        "compatibility_groups",
+        "direct_asset_count",
+        "fallback_asset_count",
+        "unique_real_usd_count"
+      ],
+      "properties": {
+        "black_placeholder_forbidden": {
+          "const": true
+        },
+        "strategy": {
+          "const": "exact_category_then_compatible_family_metadata_hash"
+        },
+        "compatibility_groups": {"$ref": "#/$defs/pools"},
+        "direct_asset_count": {"type": "integer", "minimum": 1},
+        "fallback_asset_count": {"type": "integer", "minimum": 0},
+        "unique_real_usd_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
+    },
+    "catalog_revision": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "portablePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$))[^\\\\]+$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "path", "byte_count", "sha256"],
+      "properties": {
+        "root": {
+          "const": "review_batch"
+        },
+        "path": {
+          "$ref": "#/$defs/portablePath"
+        },
+        "byte_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "pools": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": ["array", "integer"],
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minimum": 0,
+        "uniqueItems": true
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id",
+        "category",
+        "availability",
+        "source_selection",
+        "material",
+        "placement",
+        "reference",
+        "usd",
+        "texture",
+        "source_bounds",
+        "usd_stage",
+        "qualification",
+        "replacement",
+        "fallback_resolution"
+      ],
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "availability": {"const": "real_usd"},
+        "source_selection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tier",
+            "priority",
+            "source_name",
+            "source_sha256",
+            "inspection_sha256"
+          ],
+          "properties": {
+            "tier": {
+              "enum": [
+                "premium_usdz",
+                "simready_normalized",
+                "added_hunyuan",
+                "reviewed_hunyuan"
+              ]
+            },
+            "priority": {"type": "integer", "minimum": 1, "maximum": 3},
+            "source_name": {"type": "string", "minLength": 1},
+            "source_sha256": {"$ref": "#/$defs/sha256"},
+            "inspection_sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+          }
+        },
+        "material": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policy", "source_package", "pbr_preserved"],
+          "properties": {
+            "policy": {
+              "enum": [
+                "fireviewer_color_override",
+                "source_package_color_override",
+                "source_package_pbr",
+                "scoped_source_pbr"
+              ]
+            },
+            "source_package": {"type": "boolean"},
+            "pbr_preserved": {"type": "boolean"}
+          }
+        },
+        "placement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repeatable",
+            "contexts",
+            "semantic_tags",
+            "reference_terms",
+            "selection",
+            "quantity_authority"
+          ],
+          "properties": {
+            "repeatable": {"const": true},
+            "contexts": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "semantic_tags": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "reference_terms": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "selection": {
+              "const": "deterministic_best_metadata_match_then_stable_hash"
+            },
+            "quantity_authority": {
+              "const": "one_or_more_independent_measured_or_SIG_candidates;catalogue_entries_are_never_consumed"
+            }
+          }
+        },
+        "reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "byte_count", "sha256", "runtime_embedded"],
+          "properties": {
+            "path": {"$ref": "#/$defs/portablePath"},
+            "byte_count": {"type": "integer", "minimum": 1},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "runtime_embedded": {"const": false}
+          }
+        },
+        "usd": {"$ref": "#/$defs/artifact"},
+        "texture": {"$ref": "#/$defs/artifact"},
+        "source_bounds": {"type": "object"},
+        "usd_stage": {"type": "object"},
+        "qualification": {"type": "object"},
+        "replacement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key", "policy"],
+          "properties": {
+            "key": {"type": "string", "minLength": 1},
+            "policy": {"type": "string", "minLength": 1}
+          }
+        },
+        "fallback_resolution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "used",
+            "donor_asset_id",
+            "donor_category",
+            "donor_source_tier",
+            "compatibility_mode",
+            "metadata_match_score",
+            "resolution_sha256"
+          ],
+          "properties": {
+            "used": {"type": "boolean"},
+            "donor_asset_id": {"type": "string", "minLength": 1},
+            "donor_category": {"type": "string", "minLength": 1},
+            "donor_source_tier": {
+              "enum": ["premium_usdz", "simready_normalized", "added_hunyuan", "reviewed_hunyuan"]
+            },
+            "compatibility_mode": {
+              "enum": [
+                "direct",
+                "exact_category",
+                "compatible_equipment",
+                "compatible_woody_vegetation"
+              ]
+            },
+            "metadata_match_score": {"type": "integer", "minimum": 0},
+            "resolution_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      }
+    }
+  }
+}

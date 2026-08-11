@@ -1,0 +1,64 @@
+{
+  "schema": "fireviewer.reference-usd-asset-library-contract.v1",
+  "catalog_schema": "fireviewer.reference-usd-asset-library.v1",
+  "algorithm": "fireviewer.reference-usd-asset-library-builder.v1",
+  "reference_source": {
+    "format": "PNG files present below asset4sim/reference",
+    "included_route": "hunyuan3d",
+    "excluded_routes": [
+      "terrain_2d",
+      "documentation"
+    ],
+    "runtime_image_embedding": "forbidden"
+  },
+  "identity": {
+    "asset_id": "sha256(lowercase_relative_posix_path)[0:12] + slug",
+    "replacement_key": "asset_id",
+    "automatic_rebuild": true
+  },
+  "source_precedence": [
+    "premium_usdz",
+    "simready_normalized",
+    "added_hunyuan",
+    "reviewed_hunyuan"
+  ],
+  "premium_usdz": {
+    "matching": "normalized reference filename with one explicit chalet alias",
+    "archive": "one confined root USD layer plus embedded textures",
+    "material": "preserve scoped package PBR; otherwise deterministic base-color override",
+    "inspection": "Blender OpenUSD bounds, Y-up, metersPerUnit, defaultPrim and material scope"
+  },
+  "simready_normalized": {
+    "status": "validated_omniverse_minimal_placeable_visual",
+    "scale": "uniform physical target scale only",
+    "stage": "Z-up, metersPerUnit 1.0, zero root rotation",
+    "material": "scoped PreviewSurface with relative 2048 PNG texture",
+    "rejections": "seven user-rejected identities are barred from older Hunyuan tiers"
+  },
+  "placement": {
+    "repeatability": "one catalogue asset may be instanced by any number of independent candidates",
+    "selection": "best compatible context and semantic metadata score then stable hash",
+    "quantity_source": "MNS_MNT candidates or stable SIG features; never catalogue quotas",
+    "missing_usd": "resolve deterministically to a compatible real USD while retaining the requested asset identity"
+  },
+  "missing_asset": {
+    "artifact": "an existing compatible real USD selected from direct catalogue sources",
+    "primitive_placeholder": "forbidden",
+    "selection": "exact category first, then compatible family, metadata score, stable target-donor hash",
+    "receipt": "target identity, donor identity, compatibility mode, source tier and resolution hash",
+    "production_blocking": false,
+    "receipt_required": true
+  },
+  "available_asset": {
+    "required_artifacts": [
+      "USD",
+      "PNG or JPEG color texture, or textures embedded in a USDZ package"
+    ],
+    "selection": "same asset_id replaces a deterministic donor alias when its own source is added"
+  },
+  "publication": {
+    "catalog": "immutable canonical JSON",
+    "unique_real_sources_only": "immutable idempotent directories; fallback records share donor artifacts",
+    "storage_drive_windows": "D"
+  }
+}
