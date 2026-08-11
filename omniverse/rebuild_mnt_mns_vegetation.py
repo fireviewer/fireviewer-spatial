@@ -21,7 +21,7 @@ from pathlib import Path
 import shutil
 import sys
 import urllib.request
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import rasterio

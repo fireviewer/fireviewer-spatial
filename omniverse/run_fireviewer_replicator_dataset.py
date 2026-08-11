@@ -2165,7 +2165,10 @@ def project_truth_masks(
     import numpy as np
 
     width, height = int(resolution[0]), int(resolution[1])
-    empty = lambda: np.zeros((height, width), dtype=np.uint8)
+
+    def empty() -> Any:
+        return np.zeros((height, width), dtype=np.uint8)
+
     if not bool(view.get("expected_fire_visible")):
         arrays = {
             "fire_front": empty(),
@@ -3184,7 +3187,7 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps({"status": "usd_ready"}, sort_keys=True), flush=True)
 
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from fireviewer_replicator_writer import FireViewerWriter, register
+        from fireviewer_replicator_writer import register
         print(json.dumps({"status": "writer_module_ready"}, sort_keys=True), flush=True)
 
         require_flow_extension(app)
