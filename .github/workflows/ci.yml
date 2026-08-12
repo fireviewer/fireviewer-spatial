@@ -11,8 +11,6 @@ permissions:
 jobs:
   validate-simple-production:
     runs-on: ubuntu-latest
-    env:
-      FIREVIEWER_TEST_ROOT: ${{ runner.temp }}/fireviewer-spatial-tests
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,6 +48,8 @@ jobs:
           omniverse/fixed_terrain_usd.py
           scene_consumer_contract.py
       - name: Test active production contracts
+        env:
+          FIREVIEWER_TEST_ROOT: ${{ runner.temp }}/fireviewer-spatial-tests
         run: >-
           python -m pytest -q
           blender/test_accept_simple_measured_tile_review.py
