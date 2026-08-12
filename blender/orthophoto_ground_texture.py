@@ -7,20 +7,20 @@ payload is serialized for runtime use.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
-from io import BytesIO
 import json
 import math
 import os
-from pathlib import Path
 import re
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from io import BytesIO
+from pathlib import Path
+from typing import Any
 
-from affine import Affine
 import numpy as np
+from affine import Affine
 from PIL import Image
-
 
 CONTRACT_SCHEMA = "fireviewer.orthophoto-ground-texture-contract.v1"
 OUTPUT_SCHEMA = "fireviewer.orthophoto-ground-texture-tile.v1"

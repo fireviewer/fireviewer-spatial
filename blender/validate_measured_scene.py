@@ -20,18 +20,18 @@ renderers so their fail-closed behaviour can be tested without Blender.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import struct
 import sys
-from typing import Any, Callable, Mapping, Sequence
 import zlib
-
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 sys.dont_write_bytecode = True
 
@@ -942,9 +942,9 @@ if __name__ == "__main__":  # pragma: no cover - Blender entry point
 __all__ = [
     "CONTRACT_SCHEMA",
     "JOB_SCHEMA",
-    "MeasuredSceneQaError",
     "RECEIPT_SCHEMA",
     "TECHNICAL_STATUS",
+    "MeasuredSceneQaError",
     "analyze_ground_texture",
     "build_job",
     "canonical_sha256",

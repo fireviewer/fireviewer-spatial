@@ -11,12 +11,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from pathlib import Path
 import re
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
 
 from pyproj import Transformer
-
 
 REQUEST_SCHEMA = "fireviewer.fixed-asset-placement-request.v1"
 PROJECTED_SCHEMA = "fireviewer.projected-fixed-asset-placement.v1"
@@ -116,7 +116,7 @@ def _asset_index(asset_library: Mapping[str, Any]) -> dict[str, str]:
 
 
 def asset_choices(asset_library: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """Return stable Gradio labels without changing exact asset IDs."""
+    """Return stable display labels without changing exact asset IDs."""
 
     indexed = _asset_index(asset_library)
     by_id = {
@@ -428,10 +428,10 @@ EMPTY_REQUEST = {"schema": REQUEST_SCHEMA, "crs": SOURCE_CRS, "placements": []}
 
 __all__ = [
     "EMPTY_REQUEST",
-    "FixedAssetPlacementError",
     "PROJECTED_SCHEMA",
     "REQUEST_SCHEMA",
     "SOURCE_CRS",
+    "FixedAssetPlacementError",
     "add_manual_placement",
     "asset_choices",
     "canonical_json_bytes",

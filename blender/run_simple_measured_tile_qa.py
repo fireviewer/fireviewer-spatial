@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import hashlib
 import json
 import os
-from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import subprocess
 import sys
-from typing import Any, Callable, Mapping, Sequence
-
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path, PureWindowsPath
+from typing import Any
 
 BLENDER_ROOT = Path(__file__).resolve().parent
 OMNIVERSE_ROOT = BLENDER_ROOT.parent / "omniverse"
@@ -21,11 +21,10 @@ for _module_root in (BLENDER_ROOT, OMNIVERSE_ROOT):
     if str(_module_root) not in sys.path:
         sys.path.insert(0, str(_module_root))
 
-import validate_measured_scene as measured_qa  # noqa: E402
-from build_measured_scene_usd import (  # noqa: E402
+import validate_measured_scene as measured_qa
+from build_measured_scene_usd import (
     validate_measured_scene_package,
 )
-
 
 CONTRACT_SCHEMA = "fireviewer.simple-measured-tile-qa-runner-contract.v1"
 LINK_SCHEMA = "fireviewer.simple-measured-tile-qa-link.v1"
@@ -656,8 +655,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "CONTRACT_SCHEMA",
-    "LINK_SCHEMA",
     "LINK_RECEIPT_NAME",
+    "LINK_SCHEMA",
     "ProcessResult",
     "SimpleMeasuredTileQaRunnerError",
     "execute_qa",

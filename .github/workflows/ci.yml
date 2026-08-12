@@ -41,7 +41,7 @@ jobs:
           blender/render_simple_zone_gallery.py
           blender/run_simple_measured_tile_qa.py
           blender/simple_production_api.py
-          blender/simple_production_gradio.py
+          blender/simple_production_engine.py
           blender/spatial_data.py
           blender/validate_measured_scene.py
           omniverse/build_measured_scene_usd.py
@@ -66,6 +66,7 @@ jobs:
           blender/test_produce_simple_measured_tile.py
           blender/test_render_simple_zone_gallery.py
           blender/test_run_simple_measured_tile_qa.py
+          blender/test_simple_production_engine.py
           blender/test_simple_production_api.py
           blender/test_spatial_data.py
           blender/test_validate_measured_scene.py

@@ -8,28 +8,21 @@ the USD fixed layers and JSON timeline remain authoritative.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from io import BytesIO
 import hashlib
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath, PureWindowsPath
 import shutil
 import struct
 import tempfile
-from typing import Any, Mapping
 import zipfile
+from collections.abc import Mapping
+from dataclasses import dataclass
+from io import BytesIO
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 
 import numpy as np
-from PIL import Image
-from pyproj import Transformer
-from shapely import constrained_delaunay_triangles
-from shapely.geometry import box, shape
-from shapely.geometry.base import BaseGeometry
-from shapely.geometry.polygon import orient
-from shapely.ops import transform
-
 from fixed_terrain_grid import (
     FixedTerrainTile,
     decode_fixed_terrain,
@@ -42,7 +35,13 @@ from geographic_perimeter_layer import (
     TIMELINE_NAME,
     validate_perimeter_layer_package,
 )
-
+from PIL import Image
+from pyproj import Transformer
+from shapely import constrained_delaunay_triangles
+from shapely.geometry import box, shape
+from shapely.geometry.base import BaseGeometry
+from shapely.geometry.polygon import orient
+from shapely.ops import transform
 
 VIEWER_SCHEMA = "fireviewer.geographic-perimeter-timeline-viewer.v1"
 PLAN_SCHEMA = "fireviewer.simple-measured-zone-plan.v1"
@@ -358,8 +357,8 @@ class _HeightSampler:
             raise GeographicPerimeterViewerError("périmètre sur une tuile absente")
         column = min(250.0, max(0.0, (x_l93 - tile_x) / 2.0))
         row = min(250.0, max(0.0, (y_l93 - tile_y) / 2.0))
-        x0 = int(math.floor(column))
-        y0 = int(math.floor(row))
+        x0 = math.floor(column)
+        y0 = math.floor(row)
         x1 = min(250, x0 + 1)
         y1 = min(250, y0 + 1)
         tx = column - x0
@@ -771,9 +770,9 @@ def build_perimeter_timeline_viewer(
 
 
 __all__ = [
+    "VIEWER_SCHEMA",
     "GeographicPerimeterViewerError",
     "PerimeterViewerProduct",
-    "VIEWER_SCHEMA",
     "ViewerFrame",
     "build_perimeter_timeline_viewer",
 ]

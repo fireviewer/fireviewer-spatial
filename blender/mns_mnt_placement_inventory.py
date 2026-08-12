@@ -13,18 +13,28 @@ sample in EPSG:2154.  The tile origin is the south-west corner of the core.
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
-from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
+from collections import defaultdict
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path, PureWindowsPath
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 import rasterio
-from rasterio.features import rasterize, shapes as raster_shapes
+from fixed_asset_placement import (
+    FixedAssetPlacementError,
+    validate_projected_placements,
+)
+from fixed_asset_placement import (
+    canonical_json_bytes as canonical_fixed_asset_bytes,
+)
+from rasterio.features import rasterize
+from rasterio.features import shapes as raster_shapes
 from rasterio.transform import from_origin
 from scipy.ndimage import (
     binary_erosion,
@@ -37,13 +47,6 @@ from scipy.ndimage import (
 from shapely.geometry import box, mapping, shape
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
-
-from fixed_asset_placement import (
-    FixedAssetPlacementError,
-    canonical_json_bytes as canonical_fixed_asset_bytes,
-    validate_projected_placements,
-)
-
 
 SCHEMA = "fireviewer.mns-mnt-placement-inventory.v1"
 CONTRACT_SCHEMA = "fireviewer.mns-mnt-placement-contract.v1"
@@ -159,7 +162,7 @@ def _origin(value: Sequence[float]) -> tuple[int, int]:
     coordinates = tuple(float(component) for component in value)
     if not all(math.isfinite(component) for component in coordinates):
         raise PlacementInventoryError("tile origin must contain finite values")
-    rounded = tuple(int(round(component)) for component in coordinates)
+    rounded = tuple(round(component) for component in coordinates)
     if any(
         not math.isclose(component, integer, abs_tol=1e-9)
         for component, integer in zip(coordinates, rounded)
@@ -463,7 +466,7 @@ def _geometry_segments(
     result: list[tuple[float, float, float, float]] = []
     for coordinates in sequences:
         points = list(coordinates)
-        for first, second in zip(points, points[1:]):
+        for first, second in pairwise(points):
             result.append(
                 (float(first[0]), float(first[1]), float(second[0]), float(second[1]))
             )
@@ -498,8 +501,8 @@ def _geometry_anchor(geometry: BaseGeometry) -> tuple[float, float]:
 def _ground_at(
     mnt_mm: np.ndarray, *, x_m: float, y_m: float, west: int, south: int
 ) -> int:
-    column = int(math.floor(x_m - (west - HALO_M)))
-    row = int(math.floor((south + TILE_SIZE_M + HALO_M) - y_m))
+    column = math.floor(x_m - (west - HALO_M))
+    row = math.floor((south + TILE_SIZE_M + HALO_M) - y_m)
     if not (0 <= row < PROCESSING_SIZE and 0 <= column < PROCESSING_SIZE):
         raise PlacementInventoryError("context candidate lies outside MNT/MNS window")
     return int(mnt_mm[row, column])
@@ -813,7 +816,7 @@ def _confirmed_building_candidate(
     """Measure one semantically confirmed building only from its HAG pixels."""
 
     rows, columns = np.nonzero(component_mask)
-    area_m2 = int(len(rows))
+    area_m2 = len(rows)
     centroid_row = float(np.mean(rows))
     centroid_column = float(np.mean(columns))
     anchor_choice = min(
@@ -1040,7 +1043,7 @@ def _autodetect_building_inventory(
         local_rows, local_columns = np.nonzero(local_component)
         rows = local_rows + row_offset
         columns = local_columns + column_offset
-        area_m2 = int(len(rows))
+        area_m2 = len(rows)
         if area_m2 == 0:
             continue
         centroid_row = float(np.mean(rows))
@@ -2293,19 +2296,19 @@ __all__ = [
     "ALGORITHM",
     "CONTRACT_SCHEMA",
     "CRS",
-    "GeoPackageUnavailableError",
     "HAG_SCHEMA",
     "MAX_HAG_CM",
     "NODATA_UINT16",
+    "SCHEMA",
+    "GeoPackageUnavailableError",
     "PlacementInventoryError",
     "PlacementResult",
-    "SCHEMA",
     "assert_d_storage_path",
     "build_placement_inventory",
     "canonical_json_bytes",
     "gpkg_supported",
-    "merge_tree_inventories",
     "main",
+    "merge_tree_inventories",
     "read_hag_1m",
     "validate_inventory",
     "write_hag_1m",

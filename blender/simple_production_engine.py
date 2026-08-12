@@ -1,4 +1,4 @@
-"""One-screen Gradio launcher for portable measured FireViewer zones.
+"""Headless production engine for portable measured FireViewer zones.
 
 The pod owns no database.  A job is a deterministic directory below ``/work``:
 one JSON plan, one WFS context snapshot, sequential 500 m tile packages, one
@@ -7,27 +7,53 @@ shared prototype bundle, one unified ``zone.usda`` and one downloadable ZIP.
 
 from __future__ import annotations
 
-import argparse
-from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath, PureWindowsPath
 import queue
 import shutil
 import subprocess
 import threading
 import time
-from typing import Any, Callable, Iterator, Mapping, Sequence
 import zipfile
-
-from pyproj import Transformer
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, replace
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 
 from build_asset_library_53 import validate_asset_library
 from build_reference_usd_asset_library import (
     SCHEMA as REFERENCE_ASSET_LIBRARY_SCHEMA,
+)
+from build_reference_usd_asset_library import (
     validate_reference_asset_library,
+)
+from fixed_asset_placement import (
+    EMPTY_REQUEST as EMPTY_FIXED_ASSET_REQUEST,
+)
+from fixed_asset_placement import (
+    FixedAssetPlacementError,
+    asset_choices,
+)
+from fixed_asset_placement import (
+    normalize_request as normalize_fixed_asset_request,
+)
+from fixed_asset_placement import (
+    project_request as project_fixed_asset_request,
+)
+from fixed_asset_placement import (
+    request_sha256 as fixed_asset_request_sha256,
+)
+from fixed_asset_placement import (
+    schema_path as fixed_asset_schema_path,
+)
+from fixed_asset_placement import (
+    template_path as fixed_asset_template_path,
+)
+from portable_scene_package import (
+    seal_map_upload_package,
+    validate_map_upload_package,
 )
 from prepare_simple_measured_tile_sources import PreparedSources, prepare_sources
 from prepare_simple_measured_zone_context import ZoneContext, prepare_zone_context
@@ -36,40 +62,17 @@ from produce_simple_measured_tile import (
     produce_simple_measured_tile,
     validate_simple_measured_tile_package,
 )
+from pyproj import Transformer
 from render_simple_zone_gallery import (
     BLEND_NAME,
     CAPTURE_COUNT,
-    RECEIPT_PATH as GALLERY_RECEIPT_PATH,
     verify_gallery,
 )
-from geographic_perimeter_layer import (
-    PerimeterLayerProduct,
-    produce_perimeter_layer,
-)
-from geographic_perimeter_viewer import (
-    PerimeterViewerProduct,
-    build_perimeter_timeline_viewer,
-)
-from portable_scene_package import (
-    seal_map_upload_package,
-    validate_map_upload_package,
-)
-from fixed_asset_placement import (
-    EMPTY_REQUEST as EMPTY_FIXED_ASSET_REQUEST,
-    FixedAssetPlacementError,
-    add_manual_placement,
-    asset_choices,
-    load_request as load_fixed_asset_request,
-    normalize_request as normalize_fixed_asset_request,
-    project_request as project_fixed_asset_request,
-    request_sha256 as fixed_asset_request_sha256,
-    rows_for_ui as fixed_asset_rows_for_ui,
-    schema_path as fixed_asset_schema_path,
-    template_path as fixed_asset_template_path,
+from render_simple_zone_gallery import (
+    RECEIPT_PATH as GALLERY_RECEIPT_PATH,
 )
 
-
-SCHEMA = "fireviewer.simple-production-gradio.v1"
+SCHEMA = "fireviewer.simple-production-engine.v1"
 PLAN_SCHEMA = "fireviewer.simple-measured-zone-plan.v1"
 ZONE_RECEIPT_SCHEMA = "fireviewer.simple-measured-zone-production.v1"
 TILE_SIZE_M = 500
@@ -84,47 +87,8 @@ DATASET_ENTRY_NAME = "dataset-entry.json"
 DATASET_PUBLICATION_NAME = "dataset-publication.json"
 FIXED_ASSET_REQUEST_NAME = "fixed-asset-placements.v1.json"
 
-UI_CSS = """
-footer { display: none !important; }
-.gradio-container { max-width: 1180px !important; margin: 0 auto !important; }
-#zone-preview { margin: 0.35rem 0 0.75rem; }
-#elapsed { min-height: 1.6rem; color: var(--body-text-color-subdued); }
-#status { border-left: 5px solid var(--border-color-primary); border-radius: 8px; }
-#status.status-running { border-left-color: #2563eb; }
-#status.status-success { border-left-color: #16a34a; }
-#status.status-error { border-left-color: #dc2626; }
-#status textarea { font-weight: 600; }
-#launch { min-height: 3rem; }
-.download-help, .gallery-help { color: var(--body-text-color-subdued); }
-@media (max-width: 720px) {
-  .gradio-container { padding-left: 0.65rem !important; padding-right: 0.65rem !important; }
-  #launch { width: 100%; }
-}
-"""
 
-UI_JS = """
-() => {
-  const classify = () => {
-    const panel = document.querySelector('#status');
-    const field = panel?.querySelector('textarea');
-    if (!panel || !field) return;
-    const value = field.value.trim();
-    panel.classList.remove('status-running', 'status-success', 'status-error');
-    if (value.startsWith('Terminé') || value.startsWith('Déjà produit')) {
-      panel.classList.add('status-success');
-    } else if (value.startsWith('Échec')) {
-      panel.classList.add('status-error');
-    } else if (value && !value.startsWith('Prêt')) {
-      panel.classList.add('status-running');
-    }
-  };
-  classify();
-  window.setInterval(classify, 250);
-}
-"""
-
-
-class SimpleProductionUiError(RuntimeError):
+class SimpleProductionError(RuntimeError):
     """The pod configuration or requested zone cannot be produced safely."""
 
 
@@ -143,7 +107,7 @@ class ProductionConfig:
     dataset_id: str | None = None
 
     @classmethod
-    def from_environment(cls) -> "ProductionConfig":
+    def from_environment(cls) -> ProductionConfig:
         return cls(
             work_root=Path(os.environ.get("FIREVIEWER_WORK_ROOT", "/work")),
             portable_root=Path(os.environ.get("FIREVIEWER_PORTABLE_ROOT", "/")),
@@ -201,10 +165,6 @@ ProgressCallback = Callable[[float, str], None]
 GalleryProgress = Callable[[int, str], None]
 GalleryItems = list[tuple[str, str]]
 RenderGallery = Callable[[Path, bool, GalleryProgress | None], GalleryItems]
-ProducePerimeterLayer = Callable[[Path | str, Path | str], PerimeterLayerProduct]
-BuildPerimeterViewer = Callable[
-    [Path | str, Path | str, Path | str], PerimeterViewerProduct
-]
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -236,28 +196,21 @@ def _load_json(path: Path, label: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise SimpleProductionUiError(f"{label} JSON invalide: {error}") from error
+        raise SimpleProductionError(f"{label} JSON invalide: {error}") from error
     if not isinstance(value, dict):
-        raise SimpleProductionUiError(f"{label} doit être un objet JSON")
+        raise SimpleProductionError(f"{label} doit être un objet JSON")
     return value
 
 
 def _contract_path() -> Path:
-    return Path(__file__).with_name("simple_production_gradio_contract.v1.json")
+    return Path(__file__).with_name("simple_production_engine_contract.v1.json")
 
 
 def _load_contract() -> dict[str, Any]:
-    payload = _load_json(_contract_path(), "contrat Gradio")
+    payload = _load_json(_contract_path(), "contrat du moteur de production")
     if (
         payload.get("schema") != SCHEMA
         or payload.get("status") != "locked"
-        or payload.get("interface")
-        != {
-            "framework": "gradio",
-            "screens": 1,
-            "menus": 0,
-            "database": "forbidden",
-        }
         or payload.get("production", {}).get("tile_size_m") != TILE_SIZE_M
         or payload.get("output", {}).get("entry_stage") != ENTRY_STAGE
         or payload.get("output", {}).get("portable_zip") is not True
@@ -276,24 +229,22 @@ def _load_contract() -> dict[str, Any]:
         != "bypassed_for_fixed_asset_id"
         or payload.get("acceptance", {}).get("automatic_human_acceptance") is not False
     ):
-        raise SimpleProductionUiError(
-            "Contrat Gradio absent, modifié ou non verrouillé"
-        )
+        raise SimpleProductionError("Contrat moteur absent, modifié ou non verrouillé")
     return payload
 
 
 def _absolute(path: Path | str, label: str, *, exists: bool) -> Path:
     lexical = PureWindowsPath(str(path))
     if lexical.drive and lexical.drive.upper() != "D:":
-        raise SimpleProductionUiError(f"{label} doit rester sur D: sous Windows")
+        raise SimpleProductionError(f"{label} doit rester sur D: sous Windows")
     try:
         resolved = Path(path).resolve(strict=exists)
     except OSError as error:
-        raise SimpleProductionUiError(f"{label} introuvable: {path}") from error
+        raise SimpleProductionError(f"{label} introuvable: {path}") from error
     if os.name == "nt" and resolved.drive.upper() != "D:":
-        raise SimpleProductionUiError(f"{label} doit rester sur D: sous Windows")
+        raise SimpleProductionError(f"{label} doit rester sur D: sous Windows")
     if exists and not resolved.exists():
-        raise SimpleProductionUiError(f"{label} introuvable: {resolved}")
+        raise SimpleProductionError(f"{label} introuvable: {resolved}")
     return resolved
 
 
@@ -301,7 +252,7 @@ def _inside(root: Path, child: Path, label: str) -> Path:
     try:
         child.relative_to(root)
     except ValueError as error:
-        raise SimpleProductionUiError(f"{label} sort du volume portable") from error
+        raise SimpleProductionError(f"{label} sort du volume portable") from error
     return child
 
 
@@ -328,7 +279,7 @@ def validate_embedded_assets(config: ProductionConfig) -> dict[str, Any]:
             .get("hunyuan3d")
         )
         if summary.get("asset_count") != reference_count:
-            raise SimpleProductionUiError(
+            raise SimpleProductionError(
                 "Le catalogue USD ne couvre pas toutes les références 3D"
             )
     else:
@@ -338,7 +289,7 @@ def validate_embedded_assets(config: ProductionConfig) -> dict[str, Any]:
             or summary.get("category_counts", {}).get("building") != 24
             or summary.get("category_counts", {}).get("tree") != 18
         ):
-            raise SimpleProductionUiError(
+            raise SimpleProductionError(
                 "Le catalogue embarqué historique n'est pas le lot pilote 53/53"
             )
     checked = 0
@@ -346,7 +297,7 @@ def validate_embedded_assets(config: ProductionConfig) -> dict[str, Any]:
         for role in ("usd", "texture"):
             record = asset.get(role)
             if not isinstance(record, Mapping) or record.get("root") != "review_batch":
-                raise SimpleProductionUiError(
+                raise SimpleProductionError(
                     f"Asset embarqué invalide: {asset.get('asset_id')}.{role}"
                 )
             relative = record.get("path")
@@ -357,7 +308,7 @@ def validate_embedded_assets(config: ProductionConfig) -> dict[str, Any]:
                 or PurePosixPath(relative).is_absolute()
                 or ".." in PurePosixPath(relative).parts
             ):
-                raise SimpleProductionUiError("Chemin d'asset embarqué invalide")
+                raise SimpleProductionError("Chemin d'asset embarqué invalide")
             target = review_batch.joinpath(*PurePosixPath(relative).parts).resolve()
             _inside(review_batch, target, "asset embarqué")
             if (
@@ -365,7 +316,7 @@ def validate_embedded_assets(config: ProductionConfig) -> dict[str, Any]:
                 or target.stat().st_size != record.get("byte_count")
                 or _sha256_file(target) != record.get("sha256")
             ):
-                raise SimpleProductionUiError(
+                raise SimpleProductionError(
                     f"Asset embarqué absent ou altéré: {asset['asset_id']}.{role}"
                 )
             checked += 1
@@ -394,7 +345,7 @@ def validate_embedded_runtime(config: ProductionConfig) -> dict[str, Any]:
 
     blender = _absolute(config.blender, "Blender embarqué", exists=True)
     if not blender.is_file():
-        raise SimpleProductionUiError("Blender embarqué est absent")
+        raise SimpleProductionError("Blender embarqué est absent")
     required = (
         Path(__file__),
         Path(__file__).with_name("prepare_simple_measured_zone_context.py"),
@@ -415,7 +366,7 @@ def validate_embedded_runtime(config: ProductionConfig) -> dict[str, Any]:
     )
     missing = [str(path) for path in required if not path.resolve().is_file()]
     if missing:
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             "Scripts de production embarqués absents: " + ", ".join(missing)
         )
     expression = (
@@ -438,12 +389,12 @@ def validate_embedded_runtime(config: ProductionConfig) -> dict[str, Any]:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             f"Blender/OpenUSD embarqué ne démarre pas: {error}"
         ) from error
     output = f"{result.stdout}\n{result.stderr}"
     if result.returncode != 0 or "FIREVIEWER_BLENDER_USD=PASS" not in output:
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             "Le smoke embarqué Blender/OpenUSD a échoué: " + output[-1000:]
         )
     version_line = next(
@@ -451,7 +402,7 @@ def validate_embedded_runtime(config: ProductionConfig) -> dict[str, Any]:
         "",
     )
     if not version_line.startswith("Blender 4.5"):
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             f"Blender embarqué doit être en version 4.5; reçu {version_line!r}"
         )
     return {
@@ -464,7 +415,7 @@ def validate_embedded_runtime(config: ProductionConfig) -> dict[str, Any]:
 
 
 def validate_config(config: ProductionConfig) -> dict[str, Any]:
-    """Validate the legacy Gradio surface and the shared production runtime."""
+    """Validate the headless engine contract and shared production runtime."""
 
     _load_contract()
     return validate_production_config(config)
@@ -474,7 +425,7 @@ def validate_production_config(config: ProductionConfig) -> dict[str, Any]:
     """Validate only the headless production runtime shared by every frontend."""
 
     if config.max_side_m < TILE_SIZE_M or config.max_tiles < 1:
-        raise SimpleProductionUiError("Limites du pod invalides")
+        raise SimpleProductionError("Limites du pod invalides")
     portable = _absolute(config.portable_root, "racine portable", exists=True)
     work = _absolute(config.work_root, "volume de travail", exists=False)
     _inside(portable, work, "volume de travail")
@@ -485,7 +436,7 @@ def validate_production_config(config: ProductionConfig) -> dict[str, Any]:
         ("révision contexte", config.context_revision),
     ):
         if not revision or revision != revision.strip():
-            raise SimpleProductionUiError(f"{label} invalide")
+            raise SimpleProductionError(f"{label} invalide")
     return {
         **validate_embedded_assets(config),
         **validate_embedded_runtime(config),
@@ -505,19 +456,17 @@ def plan_zone(
 
     values = (float(latitude), float(longitude), float(side_km))
     if any(not math.isfinite(value) for value in values):
-        raise SimpleProductionUiError(
-            "Latitude, longitude et taille doivent être finies"
-        )
+        raise SimpleProductionError("Latitude, longitude et taille doivent être finies")
     latitude, longitude, side_km = values
     if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
-        raise SimpleProductionUiError("Coordonnées GPS invalides")
+        raise SimpleProductionError("Coordonnées GPS invalides")
     side_m_float = side_km * 1_000.0
     if side_m_float < TILE_SIZE_M or side_m_float > max_side_m:
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             f"La taille doit être comprise entre 0,5 et {max_side_m / 1000:g} km"
         )
     if not side_m_float.is_integer():
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             "La taille doit correspondre à un nombre entier de mètres"
         )
     side_m = int(side_m_float)
@@ -529,7 +478,7 @@ def plan_zone(
         or not -100_000 <= center_x <= 1_500_000
         or not 5_900_000 <= center_y <= 7_300_000
     ):
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             "Le centre doit être couvert par la projection Lambert-93"
         )
     half = side_m / 2.0
@@ -562,7 +511,7 @@ def plan_zone(
         for x in range(west, east, TILE_SIZE_M)
     )
     if not origins or len(origins) > max_tiles:
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             f"La zone demande {len(origins)} tuiles; limite du pod: {max_tiles}"
         )
     identity = {
@@ -683,7 +632,7 @@ def _copy_provenance(sources: PreparedSources, target: Path) -> None:
     for name in names:
         source = sources.root / name
         if not source.is_file():
-            raise SimpleProductionUiError(f"Provenance de tuile absente: {name}")
+            raise SimpleProductionError(f"Provenance de tuile absente: {name}")
         shutil.copyfile(source, target / name)
 
 
@@ -693,9 +642,9 @@ def _remove_sources(job_root: Path, source_root: Path) -> None:
     try:
         resolved.relative_to(expected_root)
     except ValueError as error:
-        raise SimpleProductionUiError("Nettoyage source hors du job refusé") from error
+        raise SimpleProductionError("Nettoyage source hors du job refusé") from error
     if resolved == expected_root:
-        raise SimpleProductionUiError("Nettoyage global des sources refusé")
+        raise SimpleProductionError("Nettoyage global des sources refusé")
     shutil.rmtree(resolved)
 
 
@@ -703,7 +652,7 @@ def _scene_counts(package_root: Path) -> tuple[int, int, int, int]:
     receipt = _load_json(package_root / "scene" / "scene.done.json", "reçu scène")
     reconciliation = receipt.get("reconciliation")
     if not isinstance(reconciliation, Mapping):
-        raise SimpleProductionUiError("Reçu scène sans réconciliation")
+        raise SimpleProductionError("Reçu scène sans réconciliation")
     values: list[int] = []
     for family in ("buildings", "trees", "context_assets"):
         record = reconciliation.get(family)
@@ -715,11 +664,11 @@ def _scene_counts(package_root: Path) -> tuple[int, int, int, int]:
             else None
         )
         if not isinstance(count, int) or count < 0:
-            raise SimpleProductionUiError(f"Comptage {family} invalide")
+            raise SimpleProductionError(f"Comptage {family} invalide")
         values.append(count)
     placeholder_count = receipt.get("placeholder_instance_count", 0)
     if not isinstance(placeholder_count, int) or placeholder_count < 0:
-        raise SimpleProductionUiError("Comptage des placeholders invalide")
+        raise SimpleProductionError("Comptage des placeholders invalide")
     return values[0], values[1], values[2], placeholder_count
 
 
@@ -740,7 +689,7 @@ def _expected_request_from_receipt(
     )
     request = receipt.get("request")
     if not isinstance(request, Mapping):
-        raise SimpleProductionUiError("Reçu de tuile sans requête scellée")
+        raise SimpleProductionError("Reçu de tuile sans requête scellée")
     expected_fixed = {
         "schema": "fireviewer.simple-measured-tile-request.v1",
         "algorithm": "fireviewer.simple-measured-tile-algorithm.v1",
@@ -768,14 +717,14 @@ def _expected_request_from_receipt(
         key for key, value in expected_fixed.items() if request.get(key) != value
     ]
     if changed:
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             "La requête scellée de la tuile diffère du job courant: "
             + ", ".join(changed)
         )
     if not isinstance(request.get("sources"), Mapping) or not isinstance(
         request.get("pipeline_files"), Mapping
     ):
-        raise SimpleProductionUiError("Requête scellée de tuile incomplète")
+        raise SimpleProductionError("Requête scellée de tuile incomplète")
     return dict(request)
 
 
@@ -962,7 +911,7 @@ def _gallery_items(job_root: Path) -> GalleryItems:
             )
         )
     if len(items) != CAPTURE_COUNT:
-        raise SimpleProductionUiError("La galerie validée ne contient pas 20 images")
+        raise SimpleProductionError("La galerie validée ne contient pas 20 images")
     return items
 
 
@@ -1015,7 +964,7 @@ def _render_zone_gallery(
     )
     if process.stdout is None:  # pragma: no cover - Popen invariant
         process.kill()
-        raise SimpleProductionUiError("Blender ne fournit aucun journal de rendu")
+        raise SimpleProductionError("Blender ne fournit aucun journal de rendu")
     messages: queue.Queue[str | None] = queue.Queue()
 
     def read_output() -> None:
@@ -1032,7 +981,7 @@ def _render_zone_gallery(
     while not stream_done:
         if time.monotonic() > deadline:
             process.kill()
-            raise SimpleProductionUiError("Le rendu des 20 captures dépasse 45 minutes")
+            raise SimpleProductionError("Le rendu des 20 captures dépasse 45 minutes")
         try:
             line = messages.get(timeout=1.0)
         except queue.Empty:
@@ -1053,7 +1002,7 @@ def _render_zone_gallery(
     return_code = process.wait(timeout=30)
     reader.join(timeout=5)
     if return_code != 0:
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             "Le rendu Blender des 20 captures a échoué:\n"
             + "\n".join(output_tail[-30:])
         )
@@ -1074,15 +1023,15 @@ def _publish_dataset_entry(
         return None
     token = os.environ.get("HF_TOKEN", "").strip()
     if not token:
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             "HF_TOKEN absent: publication dans la dataset privée impossible"
         )
     with zipfile.ZipFile(archive) as bundle:
         if bundle.testzip() is not None:
-            raise SimpleProductionUiError("Le ZIP est altéré avant publication dataset")
+            raise SimpleProductionError("Le ZIP est altéré avant publication dataset")
     build_id = receipt.get("build_id")
     if not isinstance(build_id, str) or len(build_id) != 64:
-        raise SimpleProductionUiError("Build ID de zone invalide avant publication")
+        raise SimpleProductionError("Build ID de zone invalide avant publication")
     archive_record = {
         "file": ZIP_NAME,
         "byte_count": archive.stat().st_size,
@@ -1128,7 +1077,7 @@ def _publish_dataset_entry(
             or publication.get("archive_sha256") != archive_record["sha256"]
             or publication.get("entry_sha256") != entry["entry_sha256"]
         ):
-            raise SimpleProductionUiError(
+            raise SimpleProductionError(
                 "Le reçu de publication dataset existant est incohérent"
             )
         return publication
@@ -1139,7 +1088,7 @@ def _publish_dataset_entry(
         api = HfApi(token=token)
         info = api.repo_info(repo_id=config.dataset_id, repo_type="dataset")
         if info.private is not True:
-            raise SimpleProductionUiError(
+            raise SimpleProductionError(
                 "La dataset cible doit être privée avant toute publication"
             )
         remote_root = f"zones/{plan.zone_id}/{build_id}"
@@ -1162,10 +1111,10 @@ def _publish_dataset_entry(
                 ),
             ],
         )
-    except SimpleProductionUiError:
+    except SimpleProductionError:
         raise
     except Exception as error:
-        raise SimpleProductionUiError(
+        raise SimpleProductionError(
             f"Publication dataset privée échouée: {error}"
         ) from error
     publication = {
@@ -1184,7 +1133,7 @@ def _publish_dataset_entry(
 
 
 class ProductionEngine:
-    """Sequential, one-job-at-a-time production engine used by Gradio."""
+    """Sequential, one-job-at-a-time production engine used by the headless API."""
 
     def __init__(
         self,
@@ -1234,7 +1183,7 @@ class ProductionEngine:
                     config.asset_library, "catalogue des assets de test"
                 )
                 choices = tuple(asset_choices(payload))
-            except (OSError, SimpleProductionUiError, FixedAssetPlacementError):
+            except (OSError, SimpleProductionError, FixedAssetPlacementError):
                 payload = {}
                 choices = ()
             self.asset_library_payload = payload
@@ -1250,7 +1199,7 @@ class ProductionEngine:
         fixed_asset_placements: Mapping[str, Any] | None = None,
     ) -> Iterator[tuple[str, str | None, GalleryItems]]:
         if not self._lock.acquire(blocking=False):
-            raise SimpleProductionUiError("Une production est déjà en cours sur ce pod")
+            raise SimpleProductionError("Une production est déjà en cours sur ce pod")
         try:
             yield from self._run(
                 latitude,
@@ -1315,7 +1264,7 @@ class ProductionEngine:
                 if _load_json(fixed_request_path, "placements fixes existants") != dict(
                     fixed_asset_placements
                 ):
-                    raise SimpleProductionUiError(
+                    raise SimpleProductionError(
                         "Les placements fixes existants diffèrent de la requête"
                     )
             else:
@@ -1359,7 +1308,7 @@ class ProductionEngine:
         )
         if plan_path.exists():
             if _load_json(plan_path, "plan existant") != plan_payload:
-                raise SimpleProductionUiError(
+                raise SimpleProductionError(
                     "Un job différent utilise déjà cet identifiant"
                 )
         else:
@@ -1385,12 +1334,12 @@ class ProductionEngine:
                 or receipt.get("entry_stage", {}).get("sha256")
                 != _sha256_file(existing_stage)
             ):
-                raise SimpleProductionUiError("La production existante est incohérente")
+                raise SimpleProductionError("La production existante est incohérente")
             validate_map_upload_package(job_root)
             with zipfile.ZipFile(existing_archive) as archive:
                 expected = f"fireviewer-{plan.zone_id}/{ENTRY_STAGE}"
                 if expected not in archive.namelist() or archive.testzip() is not None:
-                    raise SimpleProductionUiError("Le ZIP existant est altéré")
+                    raise SimpleProductionError("Le ZIP existant est altéré")
             gallery = self.render_gallery_fn(job_root, False, None)
             if self.config.dataset_id is not None:
                 report(
@@ -1406,11 +1355,14 @@ class ProductionEngine:
                     receipt=receipt,
                     archive=existing_archive,
                 )
-            yield (
+            completed_message = (
                 f"Déjà produit — {receipt['tile_count']} terrains, "
                 f"{receipt['building_count']} bâtiments, {receipt['tree_count']} arbres, "
                 f"{receipt.get('context_asset_count', 0)} équipements contextuels, "
-                "20 captures revalidées.",
+                "20 captures revalidées."
+            )
+            yield (
+                completed_message,
                 str(existing_archive),
                 gallery,
             )
@@ -1474,6 +1426,10 @@ class ProductionEngine:
                 details: Mapping[str, Any],
                 *,
                 table: Mapping[str, tuple[float, str]],
+                current_tile_index: int = tile_index,
+                current_tile_base: float = tile_base,
+                current_tile_span: float = tile_span,
+                completed_before_tile: int = completed,
             ) -> None:
                 local, label = table.get(phase, (0.0, phase))
                 suffixes: list[str] = []
@@ -1486,14 +1442,14 @@ class ProductionEngine:
                 ):
                     if isinstance(details.get(key), int):
                         suffixes.append(f"{details[key]} {label_key}")
-                message = f"Tuile {tile_index + 1}/{total} — {label}"
+                message = f"Tuile {current_tile_index + 1}/{total} — {label}"
                 if suffixes:
                     message += " — " + ", ".join(suffixes)
                 report(
-                    tile_base + local * tile_span,
+                    current_tile_base + local * current_tile_span,
                     phase,
                     message,
-                    completed_tiles=completed,
+                    completed_tiles=completed_before_tile,
                     details=details,
                 )
 
@@ -1657,684 +1613,31 @@ class ProductionEngine:
         dataset_suffix = (
             f" Publié dans {publication['dataset_id']}." if publication else ""
         )
-        yield (
+        completed_message = (
             f"Terminé — {completed} terrains, {receipt['building_count']} bâtiments, "
             f"{receipt['tree_count']} arbres, "
             f"{receipt.get('context_asset_count', 0)} équipements contextuels, "
             f"20 captures.{dataset_suffix} "
-            f"Ouvrir {BLEND_NAME} ou {ENTRY_STAGE} après extraction.",
+            f"Ouvrir {BLEND_NAME} ou {ENTRY_STAGE} après extraction."
+        )
+        yield (
+            completed_message,
             str(archive),
             gallery,
         )
 
 
-def _zone_preview(
-    latitude: float | None,
-    longitude: float | None,
-    side_km: float | None,
-    *,
-    max_side_m: int,
-    max_tiles: int,
-) -> str:
-    """Return a read-only, exact preview using the production planner."""
-
-    if latitude is None or longitude is None or side_km is None:
-        return "ℹ️ Renseignez le centre GPS pour calculer l’emprise réelle."
-    try:
-        plan = plan_zone(
-            latitude,
-            longitude,
-            side_km,
-            max_side_m=max_side_m,
-            max_tiles=max_tiles,
-        )
-    except (SimpleProductionUiError, TypeError, ValueError) as error:
-        return f"⚠️ {error}"
-    west, south, east, north = plan.production_bounds_l93_m
-    requested_area_km2 = (plan.side_m * plan.side_m) / 1_000_000
-    covered_area_km2 = ((east - west) * (north - south)) / 1_000_000
-    return (
-        f"✅ **Zone valide** — {plan.side_m / 1000:g} × {plan.side_m / 1000:g} km "
-        f"demandés ({requested_area_km2:g} km²) · **{len(plan.tiles)} tuiles** de 500 m · "
-        f"emprise produite {covered_area_km2:g} km² · `{plan.zone_id}`"
-    )
-
-
-def _elapsed_label(started_at: float | None, *, now: float | None = None) -> str:
-    """Format a stable elapsed-time label for the UI timer."""
-
-    if started_at is None or started_at <= 0:
-        return "Temps écoulé : 00:00"
-    elapsed = max(0, int((time.monotonic() if now is None else now) - started_at))
-    hours, remainder = divmod(elapsed, 3_600)
-    minutes, seconds = divmod(remainder, 60)
-    if hours:
-        return f"Temps écoulé : {hours:02d}:{minutes:02d}:{seconds:02d}"
-    return f"Temps écoulé : {minutes:02d}:{seconds:02d}"
-
-
-def build_app(
-    engine: ProductionEngine,
-    *,
-    perimeter_producer: ProducePerimeterLayer | None = None,
-    perimeter_viewer: BuildPerimeterViewer | None = None,
-) -> Any:
-    """Build the single-screen Gradio UI.  Import Gradio only in the pod UI path."""
-
-    import gradio as gr
-
-    selected_perimeter_producer = perimeter_producer or produce_perimeter_layer
-    selected_perimeter_viewer = perimeter_viewer or build_perimeter_timeline_viewer
-
-    def launch(
-        latitude: float,
-        longitude: float,
-        side_km: float,
-        progress: gr.Progress = gr.Progress(track_tqdm=False),
-    ) -> Iterator[tuple[str, str | None, GalleryItems]]:
-        try:
-
-            def update_progress(fraction: float, description: str) -> None:
-                progress(fraction, desc=description)
-
-            for status, archive, gallery in engine.run(
-                latitude,
-                longitude,
-                side_km,
-                progress_callback=update_progress,
-            ):
-                yield status, archive, gallery
-        except Exception as error:
-            yield f"Échec : {error}", None, []
-
-    def launch_with_fixed_assets(
-        latitude: float,
-        longitude: float,
-        side_km: float,
-        fixed_request: Mapping[str, Any] | None,
-        progress: gr.Progress = gr.Progress(track_tqdm=False),
-    ) -> Iterator[tuple[str, str | None, GalleryItems]]:
-        try:
-
-            def update_progress(fraction: float, description: str) -> None:
-                progress(fraction, desc=description)
-
-            request = fixed_request or dict(EMPTY_FIXED_ASSET_REQUEST)
-            for status, archive, gallery in engine.run(
-                latitude,
-                longitude,
-                side_km,
-                progress_callback=update_progress,
-                fixed_asset_placements=request,
-            ):
-                yield status, archive, gallery
-        except Exception as error:
-            yield f"Échec : {error}", None, []
-
-    def add_fixed_asset(
-        latitude: float | None,
-        longitude: float | None,
-        asset_id: str | None,
-        current: Mapping[str, Any] | None,
-    ) -> tuple[dict[str, Any], list[list[Any]], str]:
-        request = current or dict(EMPTY_FIXED_ASSET_REQUEST)
-        try:
-            updated = add_manual_placement(
-                request,
-                engine.asset_library_payload,
-                latitude=latitude,
-                longitude=longitude,
-                asset_id=asset_id,
-                yaw_deg=0,
-            )
-            return (
-                updated,
-                fixed_asset_rows_for_ui(updated),
-                f"✅ {len(updated['placements'])} placement(s) fixe(s) verrouillé(s).",
-            )
-        except Exception as error:
-            return (
-                dict(request),
-                fixed_asset_rows_for_ui(request),
-                f"⚠️ {error}",
-            )
-
-    def import_fixed_assets(
-        source_file: str | None,
-        current: Mapping[str, Any] | None,
-    ) -> tuple[dict[str, Any], list[list[Any]], str]:
-        request = current or dict(EMPTY_FIXED_ASSET_REQUEST)
-        if not source_file:
-            return (
-                dict(request),
-                fixed_asset_rows_for_ui(request),
-                "ℹ️ Aucun JSON importé.",
-            )
-        try:
-            updated = load_fixed_asset_request(
-                Path(source_file), engine.asset_library_payload
-            )
-            return (
-                updated,
-                fixed_asset_rows_for_ui(updated),
-                f"✅ JSON validé — {len(updated['placements'])} placement(s) chargé(s).",
-            )
-        except Exception as error:
-            return (
-                dict(request),
-                fixed_asset_rows_for_ui(request),
-                f"⚠️ JSON refusé : {error}",
-            )
-
-    def clear_fixed_assets() -> tuple[dict[str, Any], list[list[Any]], str]:
-        empty = {
-            "schema": EMPTY_FIXED_ASSET_REQUEST["schema"],
-            "crs": EMPTY_FIXED_ASSET_REQUEST["crs"],
-            "placements": [],
-        }
-        return empty, [], "ℹ️ Aucun placement fixe."
-
-    def preview_zone(
-        latitude: float | None,
-        longitude: float | None,
-        side_km: float | None,
-    ) -> str:
-        return _zone_preview(
-            latitude,
-            longitude,
-            side_km,
-            max_side_m=engine.config.max_side_m,
-            max_tiles=engine.config.max_tiles,
-        )
-
-    def generate_perimeter_layer(
-        source_file: str | None,
-        map_archive: str | None,
-        progress: gr.Progress = gr.Progress(track_tqdm=False),
-    ) -> tuple[str, str | None]:
-        if not source_file:
-            return "Échec : importez un fichier JSON ou GeoJSON", None
-        try:
-            progress(0.1, desc="Validation des observations")
-            product = selected_perimeter_producer(
-                Path(source_file), engine.config.work_root
-            )
-            manifest = product.manifest
-            progress(1.0, desc="Calques et timeline compilés")
-            return (
-                "Terminé — "
-                f"{manifest['frame_count']} observations, "
-                f"{manifest['fixed_layer_count']} calques fixes. "
-                "La timeline conserve uniquement les temps réels observés, sans interpolation.",
-                str(product.archive),
-            )
-        except Exception as error:
-            return f"Échec : {error}", None
-
-    def prepare_perimeter_viewer(
-        source_file: str | None,
-        map_archive: str | None,
-    ) -> tuple[list[tuple[str, str]], Any, Any, str]:
-        if not source_file:
-            return (
-                [],
-                gr.update(value=0, maximum=0, visible=False),
-                gr.update(value=None, visible=False),
-                "Viewer indisponible : observations absentes.",
-            )
-        if not map_archive:
-            return (
-                [],
-                gr.update(value=0, maximum=0, visible=False),
-                gr.update(value=None, visible=False),
-                "Calques produits. Importez le ZIP autonome d’une carte pour vérifier la timeline en 3D.",
-            )
-        try:
-            layer_product = selected_perimeter_producer(
-                Path(source_file), engine.config.work_root
-            )
-            viewer_product = selected_perimeter_viewer(
-                Path(map_archive), layer_product.package_root, engine.config.work_root
-            )
-            frames = [
-                (str(frame.model), frame.caption) for frame in viewer_product.frames
-            ]
-            if not frames:
-                raise SimpleProductionUiError("viewer sans observation")
-            return (
-                frames,
-                gr.update(value=0, maximum=len(frames) - 1, visible=True),
-                gr.update(value=frames[0][0], visible=True),
-                f"Observation 1/{len(frames)} — {frames[0][1]}",
-            )
-        except Exception as error:
-            return (
-                [],
-                gr.update(value=0, maximum=0, visible=False),
-                gr.update(value=None, visible=False),
-                f"Échec du viewer : {error}",
-            )
-
-    def select_perimeter_frame(
-        frame_index: float | int,
-        frames: Sequence[Sequence[str]],
-    ) -> tuple[Any, str]:
-        if not frames:
-            return gr.update(value=None, visible=False), "Timeline non chargée."
-        index = min(len(frames) - 1, max(0, int(round(float(frame_index)))))
-        path, caption = frames[index]
-        return (
-            gr.update(value=path, visible=True),
-            f"Observation {index + 1}/{len(frames)} — {caption}",
-        )
-
-    def begin_ui() -> tuple[Any, Any, float, str]:
-        started_at = time.monotonic()
-        return (
-            gr.update(value="Production en cours…", interactive=False),
-            gr.update(active=True),
-            started_at,
-            _elapsed_label(started_at, now=started_at),
-        )
-
-    def finish_ui() -> tuple[Any, Any]:
-        return (
-            gr.update(value="Lancer la production", interactive=True),
-            gr.update(active=False),
-        )
-
-    with gr.Blocks(title="FireViewer — produire une zone") as app:
-        gr.Markdown(
-            "# Produire une zone FireViewer\n"
-            "Entrez le centre GPS et la taille du carré. Le pod produit la scène puis fournit un ZIP autonome."
-        )
-        with gr.Row(equal_height=True):
-            latitude = gr.Number(
-                label="Latitude du centre",
-                placeholder="43.90349754",
-                info="WGS84 · de −90 à 90",
-                precision=8,
-                minimum=-90,
-                maximum=90,
-                step=0.00000001,
-                scale=1,
-            )
-            longitude = gr.Number(
-                label="Longitude du centre",
-                placeholder="4.49681631",
-                info="WGS84 · de −180 à 180",
-                precision=8,
-                minimum=-180,
-                maximum=180,
-                step=0.00000001,
-                scale=1,
-            )
-            side_km = gr.Number(
-                label="Taille d’un côté (km)",
-                value=1.5,
-                info="Carré centré sur la position GPS",
-                minimum=0.5,
-                maximum=engine.config.max_side_m / 1000,
-                step=0.5,
-                scale=1,
-            )
-        zone_preview = gr.Markdown(
-            "ℹ️ Renseignez le centre GPS pour calculer l’emprise réelle.",
-            elem_id="zone-preview",
-        )
-        gr.Markdown(
-            "### Placements fixes (optionnel)\n"
-            "Choisissez un asset exact et sa position GPS. Le sol fournit automatiquement "
-            "l’altitude ; aucune échelle ni hauteur manuelle n’est appliquée."
-        )
-        fixed_request_state = gr.JSON(
-            value=dict(EMPTY_FIXED_ASSET_REQUEST),
-            visible=False,
-            label="Requête contractuelle de placements fixes",
-        )
-        with gr.Row(equal_height=True):
-            fixed_latitude = gr.Number(
-                label="Latitude de l’asset",
-                info="WGS84 · position fixe",
-                precision=8,
-                minimum=-90,
-                maximum=90,
-                step=0.00000001,
-                scale=1,
-            )
-            fixed_longitude = gr.Number(
-                label="Longitude de l’asset",
-                info="WGS84 · position fixe",
-                precision=8,
-                minimum=-180,
-                maximum=180,
-                step=0.00000001,
-                scale=1,
-            )
-            fixed_asset = gr.Dropdown(
-                choices=list(engine.fixed_asset_choices),
-                value=None,
-                label="Asset exact à placer",
-                info="Recherche par type, nom ou identifiant",
-                filterable=True,
-                allow_custom_value=False,
-                scale=2,
-            )
-        with gr.Row(equal_height=True):
-            add_fixed_button = gr.Button(
-                "Ajouter et verrouiller",
-                variant="secondary",
-                elem_id="add-fixed-asset",
-            )
-            clear_fixed_button = gr.Button(
-                "Vider les placements",
-                variant="secondary",
-                elem_id="clear-fixed-assets",
-            )
-            fixed_json_upload = gr.File(
-                label="Charger la liste JSON contractuelle",
-                file_types=[".json"],
-                file_count="single",
-                type="filepath",
-            )
-            gr.DownloadButton(
-                "Télécharger le modèle JSON",
-                value=str(fixed_asset_template_path()),
-                variant="secondary",
-            )
-        fixed_status = gr.Markdown(
-            "ℹ️ Aucun placement fixe. Le modèle JSON accepte uniquement "
-            "`placement_id`, `asset_id`, `latitude`, `longitude` et `yaw_deg`."
-        )
-        fixed_table = gr.Dataframe(
-            headers=[
-                "placement_id",
-                "asset_id",
-                "latitude",
-                "longitude",
-                "yaw_deg",
-            ],
-            datatype=["str", "str", "number", "number", "number"],
-            value=[],
-            type="array",
-            interactive=False,
-            wrap=True,
-            label="Assets verrouillés pour cette production",
-        )
-        button = gr.Button("Lancer la production", variant="primary", elem_id="launch")
-        legacy_api_button = gr.Button("API launch", visible=False)
-        elapsed_started_at = gr.State(None)
-        elapsed_timer = gr.Timer(value=1, active=False)
-        elapsed = gr.Markdown(
-            "Temps écoulé : 00:00",
-            elem_id="elapsed",
-        )
-        status = gr.Textbox(
-            label="État détaillé",
-            value=(
-                "Prêt — Blender "
-                f"{engine.asset_summary['blender_version']}, OpenUSD et "
-                f"{engine.asset_summary['asset_count']} assets USD vérifiés "
-                f"({engine.asset_summary.get('fallback_usd_assets', 0)} substitutions "
-                "USD déterministes)"
-            ),
-            interactive=False,
-            lines=3,
-            elem_id="status",
-        )
-        download = gr.File(
-            label="Scène autonome et pack complet",
-            interactive=False,
-        )
-        gr.Markdown(
-            "Après téléchargement, extrayez le ZIP puis ouvrez `zone.blend` dans Blender "
-            "ou `zone.usda` dans un lecteur OpenUSD.",
-            elem_classes="download-help",
-        )
-        gr.Markdown(
-            "Les **4 premières captures** sont les vues générales et prioritaires ; "
-            "les **16 suivantes** couvrent la zone en détail.",
-            elem_classes="gallery-help",
-        )
-        gallery = gr.Gallery(
-            label="20 captures de validation",
-            columns=4,
-            rows=5,
-            height="auto",
-            object_fit="contain",
-            interactive=False,
-            allow_preview=True,
-            buttons=["fullscreen", "download"],
-        )
-
-        gr.Markdown(
-            "---\n"
-            "## Produire les calques de périmètres\n"
-            "Importez une chronologie JSON/GeoJSON contenant les zones **touchées** et "
-            "**actives**. Chaque observation ou plage temporelle explicite devient un "
-            "calque USD fixe ; le même paquet contient la timeline de progression fondée "
-            "exclusivement sur les temps réels fournis."
-        )
-        with gr.Row(equal_height=True):
-            perimeter_source = gr.File(
-                label="Observations de périmètres (.json ou .geojson)",
-                file_types=[".json", ".geojson"],
-                file_count="single",
-                type="filepath",
-                scale=1,
-            )
-            perimeter_map = gr.File(
-                label="Carte FireViewer autonome (.zip) pour le viewer",
-                file_types=[".zip"],
-                file_count="single",
-                type="filepath",
-                scale=1,
-            )
-        perimeter_button = gr.Button(
-            "Générer les calques et charger la timeline",
-            variant="secondary",
-            elem_id="generate-perimeter-layer",
-        )
-        perimeter_status = gr.Textbox(
-            label="État du calque",
-            value="Prêt — aucune propagation n’est inventée entre deux observations.",
-            interactive=False,
-            lines=2,
-        )
-        perimeter_download = gr.File(
-            label="Calques fixes USD et timeline de simulation",
-            interactive=False,
-        )
-        gr.Markdown(
-            "Le ZIP contient `geographic-perimeters.usda`, "
-            "`fire-progression-timeline.json`, la source normalisée et le manifest hashé."
-        )
-        viewer_frames = gr.State([])
-        timeline_slider = gr.Slider(
-            minimum=0,
-            maximum=0,
-            value=0,
-            step=1,
-            precision=0,
-            label="Observation ou plage temporelle de la timeline",
-            visible=False,
-        )
-        timeline_caption = gr.Markdown(
-            "Importez une carte pour matérialiser les observations sur le terrain."
-        )
-        perimeter_model = gr.Model3D(
-            label="Viewer 3D dérivé des calques USD",
-            display_mode="solid",
-            clear_color=(0.035, 0.043, 0.055, 1.0),
-            height=560,
-            interactive=False,
-            visible=False,
-        )
-        gr.Markdown(
-            "Le GLB affiché est uniquement un aperçu navigateur dérivé : les calques USD "
-            "fixes et la timeline JSON restent les données autoritatives."
-        )
-
-        for component in (latitude, longitude, side_km):
-            component.input(
-                preview_zone,
-                inputs=[latitude, longitude, side_km],
-                outputs=zone_preview,
-                queue=False,
-                show_progress="hidden",
-                api_visibility="private",
-            )
-        add_fixed_button.click(
-            add_fixed_asset,
-            inputs=[
-                fixed_latitude,
-                fixed_longitude,
-                fixed_asset,
-                fixed_request_state,
-            ],
-            outputs=[fixed_request_state, fixed_table, fixed_status],
-            queue=False,
-            show_progress="hidden",
-            api_visibility="private",
-        )
-        clear_fixed_button.click(
-            clear_fixed_assets,
-            outputs=[fixed_request_state, fixed_table, fixed_status],
-            queue=False,
-            show_progress="hidden",
-            api_visibility="private",
-        )
-        fixed_json_upload.upload(
-            import_fixed_assets,
-            inputs=[fixed_json_upload, fixed_request_state],
-            outputs=[fixed_request_state, fixed_table, fixed_status],
-            queue=False,
-            show_progress="hidden",
-            api_visibility="private",
-        )
-        elapsed_timer.tick(
-            _elapsed_label,
-            inputs=elapsed_started_at,
-            outputs=elapsed,
-            queue=False,
-            show_progress="hidden",
-            api_visibility="private",
-        )
-        start_event = button.click(
-            begin_ui,
-            outputs=[button, elapsed_timer, elapsed_started_at, elapsed],
-            queue=False,
-            show_progress="hidden",
-            api_visibility="private",
-        )
-        production_event = start_event.then(
-            launch_with_fixed_assets,
-            inputs=[latitude, longitude, side_km, fixed_request_state],
-            outputs=[status, download, gallery],
-            concurrency_limit=1,
-            concurrency_id="fireviewer-production",
-            show_progress="full",
-            api_name="launch_with_fixed_assets",
-            api_visibility="public",
-        )
-        production_event.then(
-            finish_ui,
-            outputs=[button, elapsed_timer],
-            queue=False,
-            show_progress="hidden",
-            api_visibility="private",
-        )
-        legacy_api_button.click(
-            launch,
-            inputs=[latitude, longitude, side_km],
-            outputs=[status, download, gallery],
-            concurrency_limit=1,
-            concurrency_id="fireviewer-production",
-            show_progress="full",
-            api_name="launch",
-            api_visibility="public",
-        )
-        perimeter_event = perimeter_button.click(
-            generate_perimeter_layer,
-            inputs=[perimeter_source, perimeter_map],
-            outputs=[perimeter_status, perimeter_download],
-            concurrency_limit=1,
-            concurrency_id="fireviewer-production",
-            show_progress="full",
-            api_name="generate_perimeter_layer",
-            api_visibility="public",
-        )
-        perimeter_event.then(
-            prepare_perimeter_viewer,
-            inputs=[perimeter_source, perimeter_map],
-            outputs=[
-                viewer_frames,
-                timeline_slider,
-                perimeter_model,
-                timeline_caption,
-            ],
-            concurrency_limit=1,
-            concurrency_id="fireviewer-production",
-            show_progress="full",
-            api_visibility="private",
-        )
-        timeline_slider.change(
-            select_perimeter_frame,
-            inputs=[timeline_slider, viewer_frames],
-            outputs=[perimeter_model, timeline_caption],
-            queue=False,
-            show_progress="hidden",
-            api_visibility="private",
-        )
-    return app
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=7860)
-    parser.add_argument("--verify-assets-only", action="store_true")
-    parser.add_argument("--verify-runtime-only", action="store_true")
-    options = parser.parse_args(argv)
-    config = ProductionConfig.from_environment()
-    if options.verify_assets_only:
-        summary = validate_config(config)
-        print(json.dumps(summary, allow_nan=False, sort_keys=True))
-        return 0
-    if options.verify_runtime_only:
-        summary = validate_embedded_runtime(config)
-        print(json.dumps(summary, allow_nan=False, sort_keys=True))
-        return 0
-    engine = ProductionEngine(config)
-    app = build_app(engine)
-    app.queue(default_concurrency_limit=1, max_size=1).launch(
-        server_name=options.host,
-        server_port=options.port,
-        share=False,
-        show_error=True,
-        allowed_paths=[str(config.work_root.resolve())],
-        css=UI_CSS,
-        js=UI_JS,
-    )
-    return 0
-
-
 __all__ = [
     "ENTRY_STAGE",
+    "SCHEMA",
     "ProductionConfig",
     "ProductionEngine",
-    "SCHEMA",
-    "SimpleProductionUiError",
+    "SimpleProductionError",
     "TilePlan",
     "ZonePlan",
-    "build_app",
-    "main",
     "plan_zone",
     "validate_config",
-    "validate_production_config",
     "validate_embedded_assets",
+    "validate_embedded_runtime",
+    "validate_production_config",
 ]
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

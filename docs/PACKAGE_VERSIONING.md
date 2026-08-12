@@ -42,9 +42,9 @@ Les simulations, datasets et replays utilisent
 `fireviewer.scene-consumer-input.v1`. Le contrat référence les identités et
 hashes immuables ; le consommateur ne peut recalculer ni terrain ni périmètres.
 
-Les anciens packages FVTQ/PBR, Unity ou catalogues de tuiles ne sont pas des
-sorties admissibles du pipeline actif. Ils restent des archives historiques
-tant que leur retrait n'a pas été validé séparément.
+Les anciens packages adaptatifs, atlas de sol et catalogues Unity ne sont plus
+des sorties admissibles et leur code a été retiré. Une archive externe de ces
+formats ne peut être importée comme carte active.
 
 ## Publication et retrait
 

@@ -12,11 +12,11 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path, PureWindowsPath
 import struct
 import sys
-from typing import Any, Mapping, Sequence
-
+from collections.abc import Mapping, Sequence
+from pathlib import Path, PureWindowsPath
+from typing import Any
 
 SCHEMA = "fireviewer.simple-zone-gallery-receipt.v1"
 STATUS = "rendered_pending_human_review"
@@ -212,10 +212,10 @@ def _with_building_focus(
         if any(not math.isfinite(value) for value in values) or values[3] < 0.0:
             raise SimpleZoneGalleryError("Building focus sample is invalid")
         normalized.append(values)
-    selected = sorted(
+    selected = min(
         normalized,
         key=lambda value: (-value[3], value[0], value[1], value[2]),
-    )[0]
+    )
     for index, capture in enumerate(plan):
         if capture.get("capture_id") != BUILDING_FOCUS_CAPTURE_ID:
             continue

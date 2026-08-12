@@ -13,16 +13,15 @@ part of the terrain core, collision, or simulation surface.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import hashlib
 import json
 import math
-from pathlib import Path
 import struct
-from typing import Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
-
 
 CONTRACT_SCHEMA = "fireviewer.terrain-fixed-grid-contract.v1"
 FVTG_SCHEMA = "fireviewer.terrain-fixed-grid.v1"
@@ -147,7 +146,7 @@ def load_contract(path: Path | None = None) -> tuple[dict[str, object], bytes]:
     observed_lods = []
     for item in lods:
         if not isinstance(item, dict):
-            raise ValueError("Fixed terrain LOD entries must be objects")
+            raise TypeError("Fixed terrain LOD entries must be objects")
         observed_lods.append(
             {
                 "lod": item.get("lod"),
@@ -216,9 +215,9 @@ def _metres_to_mm(value: float) -> int:
         raise ValueError("Metric coordinates and heights must be finite")
     scaled = value * 1_000.0
     if scaled >= 0.0:
-        result = int(math.floor(scaled + 0.5))
+        result = math.floor(scaled + 0.5)
     else:
-        result = int(math.ceil(scaled - 0.5))
+        result = math.ceil(scaled - 0.5)
     if result < np.iinfo("int64").min or result > np.iinfo("int64").max:
         raise ValueError("Metric coordinate exceeds signed int64 millimetres")
     return result
@@ -988,12 +987,12 @@ __all__ = [
     "FVTG_MAGIC",
     "FVTG_SCHEMA",
     "FVTG_VERSION",
-    "FixedLodMesh",
-    "FixedTerrainTile",
     "LOD_SPECS",
     "NORMAL_HALO_SAMPLE_COUNT",
     "SKIRT_DEPTH_MM",
     "SOURCE_SAMPLE_COUNT",
+    "FixedLodMesh",
+    "FixedTerrainTile",
     "compile_fixed_terrain",
     "compile_fixed_terrain_from_canonical_mm",
     "compile_fixed_terrain_from_normal_halo",
@@ -1002,13 +1001,13 @@ __all__ = [
     "encode_fixed_terrain",
     "load_contract",
     "lod_absolute_heights_mm",
+    "main",
     "quantize_heights_mm",
     "quantize_source_halo_mm",
     "read_fixed_terrain",
     "source_grid_mm",
     "validate_fixed_terrain",
     "write_fixed_terrain",
-    "main",
 ]
 
 

@@ -19,19 +19,19 @@ published.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import hashlib
 import importlib
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import sys
-from typing import Any, Callable, Iterable, Mapping, Sequence
 import unicodedata
-
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 
 CONTRACT_SCHEMA = "fireviewer.measured-scene-usd-contract.v1"
 ALGORITHM = "fireviewer.measured-scene-usd-builder.v1"
@@ -518,15 +518,8 @@ def _fixed_selection_seed(
 ) -> int:
     return int.from_bytes(
         hashlib.sha256(
-            "\x00".join(
-                (
-                    "fireviewer.fixed-asset-selection.v1",
-                    zone_id,
-                    candidate_id,
-                    asset_id,
-                    rule_version,
-                )
-            ).encode("utf-8")
+            f"fireviewer.fixed-asset-selection.v1\x00{zone_id}\x00{candidate_id}"
+            f"\x00{asset_id}\x00{rule_version}".encode()
         ).digest()[:8],
         "big",
     )
@@ -830,7 +823,7 @@ def Xform "Prototype" (
     custom string fireviewer:material_policy = "scoped_source_pbr"
 {source_child}
 }}
-""".encode("utf-8")
+""".encode()
 
 
 def _plan_prototype_bundle(
@@ -848,7 +841,7 @@ def _plan_prototype_bundle(
     asset_id = _bundle_asset_id(
         _require_nonempty_string(asset.get("asset_id"), "asset id")
     )
-    source, source_catalog_path, source_hash, source_bytes = _catalog_artifact_target(
+    source, _source_catalog_path, source_hash, source_bytes = _catalog_artifact_target(
         asset,
         role="usd",
         asset_roots=asset_roots,
@@ -1353,9 +1346,7 @@ def _identifier(value: str) -> str:
 
 
 def _stable_instance_id(family: str, candidate_id: str) -> int:
-    raw = hashlib.sha256(
-        f"{ALGORITHM}\x00{family}\x00{candidate_id}".encode("utf-8")
-    ).digest()
+    raw = hashlib.sha256(f"{ALGORITHM}\x00{family}\x00{candidate_id}".encode()).digest()
     return int.from_bytes(raw[:8], "big") & ((1 << 63) - 1)
 
 
@@ -2481,10 +2472,10 @@ if __name__ == "__main__":  # pragma: no cover
 __all__ = [
     "ALGORITHM",
     "CONTRACT_SCHEMA",
-    "MeasuredSceneError",
-    "MeasuredScenePackage",
     "RECEIPT_SCHEMA",
     "SCENE_SCHEMA",
+    "MeasuredSceneError",
+    "MeasuredScenePackage",
     "TerrainReference",
     "build_measured_scene_usd",
     "canonical_json_bytes",

@@ -9,15 +9,16 @@ source imagery file.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import sys
-from typing import Any, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from PIL import Image
 
@@ -904,8 +905,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "CONTRACT_SCHEMA",
-    "FixedTerrainUsdError",
-    "FixedTerrainUsdPackage",
     "GROUND_COLOR_FILE_NAME",
     "GROUND_COLOR_MANIFEST_NAME",
     "LOD_FILE_NAMES",
@@ -913,6 +912,8 @@ __all__ = [
     "PACKAGE_SCHEMA",
     "ROOT_FILE_NAME",
     "TERRAIN_FILE_NAME",
+    "FixedTerrainUsdError",
+    "FixedTerrainUsdPackage",
     "author_fixed_lod_usda",
     "author_fixed_root_usda",
     "export_fixed_terrain_usd",

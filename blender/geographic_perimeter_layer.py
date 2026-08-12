@@ -8,18 +8,19 @@ it never interpolates or predicts fire propagation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
 import os
-from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import tempfile
-from typing import Any, Iterable, Mapping, Sequence
 import zipfile
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path, PureWindowsPath
+from typing import Any
 
 from pyproj import Transformer
 from shapely import constrained_delaunay_triangles
@@ -28,7 +29,6 @@ from shapely.geometry.base import BaseGeometry
 from shapely.geometry.polygon import orient
 from shapely.ops import transform, unary_union
 from shapely.validation import explain_validity
-
 
 CONTRACT_SCHEMA = "fireviewer.geographic-perimeter-layer-contract.v1"
 NORMALIZED_SCHEMA = "fireviewer.geographic-perimeter-observations.v1"
@@ -270,9 +270,11 @@ def _geometry_from_value(value: Any, label: str) -> BaseGeometry | None:
     if value is None:
         return None
     if isinstance(value, Mapping):
-        if value.get("type") == "Feature":
-            value = value.get("geometry")
-        elif "geometry" in value and not value.get("type"):
+        if (
+            value.get("type") == "Feature"
+            or "geometry" in value
+            and not value.get("type")
+        ):
             value = value.get("geometry")
         elif "polygons" in value:
             value = value.get("polygons")
@@ -1040,11 +1042,11 @@ def produce_perimeter_layer(
 
 __all__ = [
     "ARCHIVE_NAME",
+    "MANIFEST_SCHEMA",
+    "TIMELINE_SCHEMA",
     "CompiledPerimeterLayer",
     "GeographicPerimeterError",
-    "MANIFEST_SCHEMA",
     "PerimeterLayerProduct",
-    "TIMELINE_SCHEMA",
     "compile_perimeter_layer",
     "produce_perimeter_layer",
     "validate_perimeter_layer_package",

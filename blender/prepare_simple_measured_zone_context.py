@@ -8,20 +8,20 @@ MNT/MNS still determine the measured positions and heights.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
-from pathlib import Path, PureWindowsPath
 import shutil
-from typing import Any, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path, PureWindowsPath
+from typing import Any
 from urllib.parse import urlencode
 
 import requests
 from shapely import make_valid
 from shapely.geometry import mapping, shape
-
 
 SCHEMA = "fireviewer.simple-measured-zone-context.v1"
 STATUS = "downloaded_verified"

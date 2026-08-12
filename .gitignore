@@ -16,12 +16,6 @@ productions/
 site-upload/
 .tmp-placement-tests/
 bin/
-Library/
-Logs/
-Temp/
-UserSettings/
-Obj/
-Build/
 omniverse/assets/environments/*.hdr
 *.blend
 *.cog

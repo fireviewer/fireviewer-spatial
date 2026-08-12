@@ -3,19 +3,19 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from pathlib import Path
 import sys
 import zipfile
+from pathlib import Path
 
-import pytest
-import jsonschema
-
+import build_asset_library_53 as reviewed_library
 import build_reference_usd_asset_library as library
+import jsonschema
+import pytest
 
 OMNIVERSE_ROOT = Path(__file__).resolve().parents[1] / "omniverse"
 if str(OMNIVERSE_ROOT) not in sys.path:
     sys.path.insert(0, str(OMNIVERSE_ROOT))
-import build_measured_scene_usd as measured  # noqa: E402
+import build_measured_scene_usd as measured
 
 
 def _sha(value: bytes) -> str:
@@ -720,19 +720,16 @@ def test_writer_is_atomic_idempotent_and_tamper_evident(tmp_path: Path) -> None:
 
 def test_current_reference_manifest_yields_294_usd_entries() -> None:
     repository = Path(__file__).resolve().parents[2]
+    generated_root = (
+        repository / "fireviewer-sdg" / "asset4sim" / "generated_hunyuan3d_v2"
+    )
+    reviewed = reviewed_library.build_asset_library(
+        generated_root / "reference-manifest.json",
+        generated_root / "review_batch_53",
+    )
     payload = library.build_reference_asset_library(
-        repository
-        / "fireviewer-sdg"
-        / "asset4sim"
-        / "generated_hunyuan3d_v2"
-        / "reference-manifest.json",
-        repository
-        / "fireviewer-work"
-        / "production"
-        / "fr-30-00001-pilot-v1"
-        / "shared"
-        / "assets"
-        / "asset-library.v1.json",
+        generated_root / "reference-manifest.json",
+        reviewed,
     )
     assert payload["asset_count"] == 294
     assert payload["availability_counts"] == {"real_usd": 294}

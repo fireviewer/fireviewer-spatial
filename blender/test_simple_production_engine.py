@@ -1,21 +1,20 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
-from types import SimpleNamespace
 import zipfile
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
-from pyproj import Transformer
 import pytest
-
-import simple_production_gradio as ui
 import render_simple_zone_gallery as zone_gallery
+import simple_production_engine as production
 from fixed_terrain_grid import (
     compile_fixed_terrain_from_canonical_mm,
     write_fixed_terrain,
 )
+from pyproj import Transformer
 
 
 def _pilot_gps() -> tuple[float, float]:
@@ -27,7 +26,7 @@ def _pilot_gps() -> tuple[float, float]:
 
 def test_pilot_center_and_1_5_km_produce_the_exact_validated_3x3() -> None:
     latitude, longitude = _pilot_gps()
-    plan = ui.plan_zone(latitude, longitude, 1.5)
+    plan = production.plan_zone(latitude, longitude, 1.5)
     assert plan.production_bounds_l93_m == (819500, 6312000, 821000, 6313500)
     assert len(plan.tiles) == 9
     assert [tile.origin_l93_m for tile in plan.tiles] == [
@@ -45,8 +44,8 @@ def test_pilot_center_and_1_5_km_produce_the_exact_validated_3x3() -> None:
 
 def test_zone_stage_is_one_portable_entry_over_all_tiles(tmp_path: Path) -> None:
     latitude, longitude = _pilot_gps()
-    plan = ui.plan_zone(latitude, longitude, 1.5)
-    stage = ui._write_zone_stage(tmp_path, plan)
+    plan = production.plan_zone(latitude, longitude, 1.5)
+    stage = production._write_zone_stage(tmp_path, plan)
     text = stage.read_text(encoding="utf-8")
     assert 'defaultPrim = "FireViewerZone"' in text
     assert text.count("prepend references") == 9
@@ -86,7 +85,7 @@ def _fake_sources(root: Path) -> SimpleNamespace:
 def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config = ui.ProductionConfig(
+    config = production.ProductionConfig(
         work_root=tmp_path / "work",
         portable_root=tmp_path,
         asset_library=tmp_path / "assets" / "asset-library.v1.json",
@@ -173,7 +172,9 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
                 origin[1] + 500,
             ],
             "sources": {"test": "source"},
-            "asset_library_sha256": ui._sha256_file(Path(kwargs["asset_library"])),
+            "asset_library_sha256": production._sha256_file(
+                Path(kwargs["asset_library"])
+            ),
             "asset_root_names": sorted(kwargs["asset_roots"]),
             "usage": "technical_pilot_non_final",
             "pipeline_files": {"test": "pipeline"},
@@ -204,10 +205,10 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
         job_root: Path, render: bool, callback: object
     ) -> list[tuple[str, str]]:
         assert render is True
-        (job_root / ui.BLEND_NAME).write_bytes(b"blend")
+        (job_root / production.BLEND_NAME).write_bytes(b"blend")
         gallery_root = job_root / "qa" / "gallery"
         gallery_root.mkdir(parents=True)
-        receipt = job_root / ui.GALLERY_RECEIPT_PATH
+        receipt = job_root / production.GALLERY_RECEIPT_PATH
         receipt.parent.mkdir(parents=True, exist_ok=True)
         items: list[tuple[str, str]] = []
         records: list[dict[str, object]] = []
@@ -235,7 +236,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
                 job_root / "zone.done.json", job_root
             ),
             "standalone_blend": zone_gallery._artifact(
-                job_root / ui.BLEND_NAME, job_root
+                job_root / production.BLEND_NAME, job_root
             ),
             "scene_bounds_m": {"minimum": [0, 0, 0], "maximum": [500, 500, 1]},
             "instance_counts": {"buildings": 2, "trees": 7},
@@ -251,8 +252,10 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
         zone_gallery._write_json(receipt, gallery_receipt)
         return items
 
-    monkeypatch.setattr(ui, "validate_simple_measured_tile_package", fake_validate)
-    engine = ui.ProductionEngine(
+    monkeypatch.setattr(
+        production, "validate_simple_measured_tile_package", fake_validate
+    )
+    engine = production.ProductionEngine(
         config,
         prepare_context_fn=fake_context,
         prepare_sources_fn=fake_prepare,
@@ -299,7 +302,9 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     assert not (job_root / "sources").exists() or not any(
         (job_root / "sources").iterdir()
     )
-    receipt = json.loads((job_root / ui.ZONE_RECEIPT_NAME).read_text(encoding="utf-8"))
+    receipt = json.loads(
+        (job_root / production.ZONE_RECEIPT_NAME).read_text(encoding="utf-8")
+    )
     assert receipt["tile_count"] == 1
     assert receipt["building_count"] == 2
     assert receipt["tree_count"] == 7
@@ -310,7 +315,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     assert prefix + "zone.usda" in names
     assert prefix + "zone.done.json" in names
     assert prefix + "zone.blend" in names
-    assert prefix + ui.FIXED_ASSET_REQUEST_NAME in names
+    assert prefix + production.FIXED_ASSET_REQUEST_NAME in names
     assert (
         len([name for name in names if name.startswith(prefix + "qa/gallery/")]) == 20
     )
@@ -333,7 +338,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
 
 def test_expected_request_rejects_a_package_from_another_tile(tmp_path: Path) -> None:
     latitude, longitude = _pilot_gps()
-    plan = ui.plan_zone(latitude, longitude, 0.5)
+    plan = production.plan_zone(latitude, longitude, 0.5)
     tile = plan.tiles[0]
     library = tmp_path / "asset-library.json"
     library.write_text("{}", encoding="utf-8")
@@ -352,7 +357,7 @@ def test_expected_request_rejects_a_package_from_another_tile(tmp_path: Path) ->
         "tile_origin_l93_m": [0, 0],
         "core_bounds_l93_m": [0, 0, 500, 500],
         "sources": {},
-        "asset_library_sha256": ui._sha256_file(library),
+        "asset_library_sha256": production._sha256_file(library),
         "asset_root_names": ["review_batch"],
         "usage": "technical_pilot_non_final",
         "pipeline_files": {},
@@ -364,8 +369,10 @@ def test_expected_request_rejects_a_package_from_another_tile(tmp_path: Path) ->
     (package / "simple-measured-tile-receipt.v1.json").write_text(
         json.dumps({"request": request}), encoding="utf-8"
     )
-    with pytest.raises(ui.SimpleProductionUiError, match="diffère du job courant"):
-        ui._expected_request_from_receipt(
+    with pytest.raises(
+        production.SimpleProductionError, match="diffère du job courant"
+    ):
+        production._expected_request_from_receipt(
             package,
             plan=plan,
             tile=tile,
@@ -380,8 +387,8 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     latitude, longitude = _pilot_gps()
-    plan = ui.plan_zone(latitude, longitude, 0.5)
-    config = ui.ProductionConfig(
+    plan = production.plan_zone(latitude, longitude, 0.5)
+    config = production.ProductionConfig(
         work_root=tmp_path,
         portable_root=tmp_path,
         asset_library=tmp_path / "asset-library.json",
@@ -397,8 +404,8 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
         "building_count": 2,
         "tree_count": 7,
     }
-    ui._write_json(tmp_path / ui.ZONE_RECEIPT_NAME, receipt)
-    archive = tmp_path / ui.ZIP_NAME
+    production._write_json(tmp_path / production.ZONE_RECEIPT_NAME, receipt)
+    archive = tmp_path / production.ZIP_NAME
     with zipfile.ZipFile(archive, "w") as bundle:
         bundle.writestr("fireviewer-zone/zone.usda", "#usda 1.0\n")
 
@@ -427,14 +434,14 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
         "huggingface_hub",
         SimpleNamespace(CommitOperationAdd=FakeOperation, HfApi=FakeApi),
     )
-    first = ui._publish_dataset_entry(
+    first = production._publish_dataset_entry(
         config,
         job_root=tmp_path,
         plan=plan,
         receipt=receipt,
         archive=archive,
     )
-    second = ui._publish_dataset_entry(
+    second = production._publish_dataset_entry(
         config,
         job_root=tmp_path,
         plan=plan,
@@ -456,374 +463,6 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
             assert b"secret-not-for-files" not in path.read_bytes()
 
 
-def test_gradio_app_has_one_screen_without_menu(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config = ui.ProductionConfig(
-        work_root=tmp_path / "work",
-        portable_root=tmp_path,
-        asset_library=tmp_path / "asset-library.json",
-        review_batch=tmp_path / "review-batch",
-        elevation_revision="e",
-        orthophoto_revision="o",
-        context_revision="c",
-    )
-    engine = ui.ProductionEngine(config, validate_assets=False)
-    engine.asset_library_payload = {
-        "asset_count": 1,
-        "assets": [
-            {
-                "asset_id": "church_village_01",
-                "category": "building",
-                "reference": {"path": "buildings/church_village_01.png"},
-            }
-        ],
-    }
-    engine.fixed_asset_choices = tuple(ui.asset_choices(engine.asset_library_payload))
-    perimeter_archive = tmp_path / "perimeters.zip"
-    perimeter_archive.write_bytes(b"zip")
-    perimeter_package = tmp_path / "perimeter-package"
-    perimeter_package.mkdir()
-    map_archive = tmp_path / "map.zip"
-    map_archive.write_bytes(b"map")
-    frame_models = [tmp_path / "frame-0000.glb", tmp_path / "frame-0001.glb"]
-    for model in frame_models:
-        model.write_bytes(b"glb")
-
-    def fake_perimeter_producer(source: Path, work_root: Path) -> SimpleNamespace:
-        assert source == tmp_path / "perimeters.json"
-        assert work_root == config.work_root
-        return SimpleNamespace(
-            archive=perimeter_archive,
-            package_root=perimeter_package,
-            manifest={"frame_count": 2, "fixed_layer_count": 3},
-        )
-
-    def fake_perimeter_viewer(
-        source_map: Path, package_root: Path, work_root: Path
-    ) -> SimpleNamespace:
-        assert source_map == map_archive
-        assert package_root == perimeter_package
-        assert work_root == config.work_root
-        return SimpleNamespace(
-            frames=(
-                SimpleNamespace(model=frame_models[0], caption="Jour 1"),
-                SimpleNamespace(model=frame_models[1], caption="Jour 2"),
-            )
-        )
-
-    app = ui.build_app(
-        engine,
-        perimeter_producer=fake_perimeter_producer,
-        perimeter_viewer=fake_perimeter_viewer,
-    )
-    components = app.get_config_file()["components"]
-    types = [component["type"] for component in components]
-    assert types.count("number") == 5
-    assert types.count("button") == 5
-    assert types.count("file") == 5
-    assert types.count("gallery") == 1
-    assert types.count("dropdown") == 1
-    assert types.count("dataframe") == 1
-    assert types.count("json") == 1
-    assert types.count("downloadbutton") == 1
-    assert types.count("timer") == 1
-    assert types.count("model3d") == 1
-    assert types.count("slider") == 1
-    assert "tabs" not in types
-    assert "navbar" not in types
-
-    numbers = [component for component in components if component["type"] == "number"]
-    assert [component["props"]["minimum"] for component in numbers] == [
-        -90,
-        -180,
-        0.5,
-        -90,
-        -180,
-    ]
-    assert [component["props"]["maximum"] for component in numbers] == [
-        90,
-        180,
-        15.0,
-        90,
-        180,
-    ]
-    assert numbers[0]["props"]["placeholder"] == "43.90349754"
-    assert numbers[1]["props"]["placeholder"] == "4.49681631"
-    fixed_dropdown = next(
-        component for component in components if component["type"] == "dropdown"
-    )
-    assert fixed_dropdown["props"]["choices"][0][1] == "church_village_01"
-    fixed_upload = next(
-        component
-        for component in components
-        if component["type"] == "file"
-        and component["props"]["label"] == "Charger la liste JSON contractuelle"
-    )
-    assert fixed_upload["props"]["file_types"] == [".json"]
-
-    download = next(
-        component
-        for component in components
-        if component["type"] == "file"
-        and component["props"]["label"] == "Scène autonome et pack complet"
-    )
-    assert download["props"]["label"] == "Scène autonome et pack complet"
-    perimeter_source = next(
-        component
-        for component in components
-        if component["type"] == "file"
-        and component["props"]["label"].startswith("Observations de périmètres")
-    )
-    assert perimeter_source["props"]["file_types"] == [".json", ".geojson"]
-    perimeter_map = next(
-        component
-        for component in components
-        if component["type"] == "file"
-        and component["props"]["label"].startswith("Carte FireViewer autonome")
-    )
-    assert perimeter_map["props"]["file_types"] == [".zip"]
-    perimeter_download = next(
-        component
-        for component in components
-        if component["type"] == "file"
-        and component["props"]["label"] == "Calques fixes USD et timeline de simulation"
-    )
-    assert perimeter_download["props"]["interactive"] is False
-    gallery = next(
-        component for component in components if component["type"] == "gallery"
-    )
-    assert gallery["props"]["columns"] == 4
-    assert gallery["props"]["rows"] == 5
-    assert gallery["props"]["allow_preview"] is True
-    assert gallery["props"]["buttons"] == ["fullscreen", "download"]
-
-    dependencies = app.get_config_file()["dependencies"]
-    public = [
-        dependency
-        for dependency in dependencies
-        if dependency["api_visibility"] == "public"
-    ]
-    assert {dependency["api_name"] for dependency in public} == {
-        "launch",
-        "launch_with_fixed_assets",
-        "generate_perimeter_layer",
-    }
-    launch_dependency = next(
-        dependency for dependency in public if dependency["api_name"] == "launch"
-    )
-    assert len(launch_dependency["inputs"]) == 3
-    assert len(launch_dependency["outputs"]) == 3
-    fixed_launch_dependency = next(
-        dependency
-        for dependency in public
-        if dependency["api_name"] == "launch_with_fixed_assets"
-    )
-    assert len(fixed_launch_dependency["inputs"]) == 4
-    assert len(fixed_launch_dependency["outputs"]) == 3
-    perimeter_dependency = next(
-        dependency
-        for dependency in public
-        if dependency["api_name"] == "generate_perimeter_layer"
-    )
-    assert len(perimeter_dependency["inputs"]) == 2
-    assert len(perimeter_dependency["outputs"]) == 2
-    assert all(
-        dependency["api_visibility"] == "private"
-        for dependency in dependencies
-        if dependency not in public
-    )
-
-    begin_ui = next(
-        function.fn
-        for function in app.fns.values()
-        if function.fn.__name__ == "begin_ui"
-    )
-    button_start, timer_start, started_at, elapsed = begin_ui()
-    assert button_start["interactive"] is False
-    assert button_start["value"] == "Production en cours…"
-    assert timer_start["active"] is True
-    assert started_at > 0
-    assert elapsed == "Temps écoulé : 00:00"
-
-    finish_ui = next(
-        function.fn
-        for function in app.fns.values()
-        if function.fn.__name__ == "finish_ui"
-    )
-    button_end, timer_end = finish_ui()
-    assert button_end["interactive"] is True
-    assert button_end["value"] == "Lancer la production"
-    assert timer_end["active"] is False
-
-    def fail_run(*_args: object, **_kwargs: object):
-        raise RuntimeError("panne simulée")
-        yield
-
-    monkeypatch.setattr(engine, "run", fail_run)
-    launch = next(
-        function.fn for function in app.fns.values() if function.fn.__name__ == "launch"
-    )
-    assert list(launch(43.9, 4.5, 1.5)) == [("Échec : panne simulée", None, [])]
-    launch_with_fixed_assets = next(
-        function.fn
-        for function in app.fns.values()
-        if function.fn.__name__ == "launch_with_fixed_assets"
-    )
-    assert list(
-        launch_with_fixed_assets(43.9, 4.5, 1.5, ui.EMPTY_FIXED_ASSET_REQUEST)
-    ) == [("Échec : panne simulée", None, [])]
-
-    add_fixed_asset = next(
-        function.fn
-        for function in app.fns.values()
-        if function.fn.__name__ == "add_fixed_asset"
-    )
-    fixed_state, fixed_rows, fixed_message = add_fixed_asset(
-        43.9,
-        4.5,
-        "church_village_01",
-        ui.EMPTY_FIXED_ASSET_REQUEST,
-    )
-    assert len(fixed_state["placements"]) == 1
-    assert fixed_rows[0][1] == "church_village_01"
-    assert fixed_message.startswith("✅ 1 placement")
-
-    imported_path = tmp_path / "fixed-assets.json"
-    imported_path.write_text(json.dumps(fixed_state), encoding="utf-8")
-    import_fixed_assets = next(
-        function.fn
-        for function in app.fns.values()
-        if function.fn.__name__ == "import_fixed_assets"
-    )
-    imported_state, imported_rows, imported_message = import_fixed_assets(
-        str(imported_path), ui.EMPTY_FIXED_ASSET_REQUEST
-    )
-    assert imported_state == fixed_state
-    assert imported_rows == fixed_rows
-    assert imported_message.startswith("✅ JSON validé")
-
-    clear_fixed_assets = next(
-        function.fn
-        for function in app.fns.values()
-        if function.fn.__name__ == "clear_fixed_assets"
-    )
-    empty_state, empty_rows, empty_message = clear_fixed_assets()
-    assert empty_state == ui.EMPTY_FIXED_ASSET_REQUEST
-    assert empty_rows == []
-    assert empty_message.startswith("ℹ️")
-
-    perimeter_source_path = tmp_path / "perimeters.json"
-    perimeter_source_path.write_text("{}", encoding="utf-8")
-    generate_perimeter_layer = next(
-        function.fn
-        for function in app.fns.values()
-        if function.fn.__name__ == "generate_perimeter_layer"
-    )
-    perimeter_status, perimeter_file = generate_perimeter_layer(
-        str(perimeter_source_path), str(map_archive)
-    )
-    assert perimeter_status.startswith("Terminé — 2 observations, 3 calques fixes")
-    assert perimeter_file == str(perimeter_archive)
-    assert generate_perimeter_layer(None, None) == (
-        "Échec : importez un fichier JSON ou GeoJSON",
-        None,
-    )
-
-    prepare_perimeter_viewer = next(
-        function.fn
-        for function in app.fns.values()
-        if function.fn.__name__ == "prepare_perimeter_viewer"
-    )
-    frames, slider_update, model_update, caption = prepare_perimeter_viewer(
-        str(perimeter_source_path), str(map_archive)
-    )
-    assert frames == [
-        (str(frame_models[0]), "Jour 1"),
-        (str(frame_models[1]), "Jour 2"),
-    ]
-    assert slider_update["maximum"] == 1
-    assert slider_update["visible"] is True
-    assert model_update["value"] == str(frame_models[0])
-    assert model_update["visible"] is True
-    assert caption == "Observation 1/2 — Jour 1"
-
-    select_perimeter_frame = next(
-        function.fn
-        for function in app.fns.values()
-        if function.fn.__name__ == "select_perimeter_frame"
-    )
-    selected_model, selected_caption = select_perimeter_frame(1, frames)
-    assert selected_model["value"] == str(frame_models[1])
-    assert selected_caption == "Observation 2/2 — Jour 2"
-
-    no_frames, hidden_slider, hidden_model, no_map_caption = prepare_perimeter_viewer(
-        str(perimeter_source_path), None
-    )
-    assert no_frames == []
-    assert hidden_slider["visible"] is False
-    assert hidden_model["visible"] is False
-    assert "Importez le ZIP autonome" in no_map_caption
-
-
-def test_zone_preview_uses_the_exact_production_grid() -> None:
-    aligned = ui._zone_preview(
-        43.903497538,
-        4.49681631,
-        1.5,
-        max_side_m=15_000,
-        max_tiles=900,
-    )
-    assert "2.25 km²" in aligned
-    assert "**9 tuiles**" in aligned
-    assert "emprise produite 2.25 km²" in aligned
-    assert "GPS-75A895C259FA2E84" in aligned
-
-    non_aligned = ui._zone_preview(
-        43.9,
-        4.5,
-        1.5,
-        max_side_m=15_000,
-        max_tiles=900,
-    )
-    assert "**16 tuiles**" in non_aligned
-    assert "emprise produite 4 km²" in non_aligned
-
-
-def test_zone_preview_reports_input_and_projection_errors() -> None:
-    missing = ui._zone_preview(
-        None,
-        None,
-        1.5,
-        max_side_m=15_000,
-        max_tiles=900,
-    )
-    assert missing.startswith("ℹ️")
-    invalid_gps = ui._zone_preview(
-        91,
-        4,
-        1.5,
-        max_side_m=15_000,
-        max_tiles=900,
-    )
-    assert invalid_gps == "⚠️ Coordonnées GPS invalides"
-    outside_l93 = ui._zone_preview(
-        0,
-        0,
-        1.5,
-        max_side_m=15_000,
-        max_tiles=900,
-    )
-    assert outside_l93 == "⚠️ Le centre doit être couvert par la projection Lambert-93"
-
-
-def test_elapsed_label_is_deterministic() -> None:
-    assert ui._elapsed_label(None, now=100) == "Temps écoulé : 00:00"
-    assert ui._elapsed_label(100, now=100) == "Temps écoulé : 00:00"
-    assert ui._elapsed_label(100, now=161) == "Temps écoulé : 01:01"
-    assert ui._elapsed_label(100, now=3_801) == "Temps écoulé : 01:01:41"
-
-
 def test_gallery_items_preserve_overview_then_detail_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -842,36 +481,10 @@ def test_gallery_items_preserve_overview_then_detail_order(
         }
         for index in range(4, 20)
     ]
-    monkeypatch.setattr(ui, "verify_gallery", lambda _root: {"captures": captures})
-    items = ui._gallery_items(tmp_path)
+    monkeypatch.setattr(
+        production, "verify_gallery", lambda _root: {"captures": captures}
+    )
+    items = production._gallery_items(tmp_path)
     assert len(items) == 20
     assert all("overview" in caption for _path, caption in items[:4])
     assert all("detail_coverage" in caption for _path, caption in items[4:])
-
-
-def test_current_embedded_asset_inputs_are_complete(tmp_path: Path) -> None:
-    repository = Path(__file__).resolve().parents[2]
-    config = ui.ProductionConfig(
-        work_root=tmp_path / "work",
-        portable_root=repository,
-        asset_library=repository
-        / "fireviewer-work"
-        / "production"
-        / "fr-30-00001-pilot-v1"
-        / "shared"
-        / "assets"
-        / "asset-library.v1.json",
-        review_batch=repository
-        / "fireviewer-sdg"
-        / "asset4sim"
-        / "generated_hunyuan3d_v2"
-        / "review_batch_53",
-        elevation_revision="e",
-        orthophoto_revision="o",
-        context_revision="c",
-    )
-    summary = ui.validate_embedded_assets(config)
-    assert summary["asset_count"] == 53
-    assert summary["checked_artifacts"] == 106
-    assert summary["building_assets"] == 24
-    assert summary["tree_assets"] == 18

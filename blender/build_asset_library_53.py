@@ -11,17 +11,17 @@ or instantiate anything in a terrain or scene.
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 import copy
 import hashlib
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath
 import re
 import subprocess
-from typing import Any, Mapping, Sequence
-
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 CATALOG_SCHEMA = "fireviewer.asset-library.v1"
 CATALOG_STATUS = "catalogued_pending_simready_qualification"
@@ -97,7 +97,7 @@ def selection_seed(
             raise AssetLibraryBuildError(f"{label} must not contain NUL")
     if SHA256_PATTERN.fullmatch(catalog_revision) is None:
         raise AssetLibraryBuildError("catalog_revision must be a lowercase SHA-256")
-    payload = "\x00".join((zone, candidate, catalog_revision, rule_version))
+    payload = f"{zone}\x00{candidate}\x00{catalog_revision}\x00{rule_version}"
     return int.from_bytes(hashlib.sha256(payload.encode("utf-8")).digest()[:8], "big")
 
 

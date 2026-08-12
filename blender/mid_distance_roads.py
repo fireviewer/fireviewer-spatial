@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_left, bisect_right
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from itertools import pairwise
+from typing import Any
 
 from spatial_data import LineFeature, numeric_property, positive_numeric_property
-
 
 Mesh = dict[str, list[list[float]] | list[list[int]]]
 WidthResolver = Callable[[Mapping[str, Any]], tuple[float, str]]
@@ -118,7 +119,7 @@ def road_importance_rank(properties: Mapping[str, Any]) -> int | None:
     value = numeric_property(properties, ("importance", "classement", "road_class"))
     if value is None:
         return None
-    rank = int(round(value))
+    rank = round(value)
     return rank if 1 <= rank <= 7 else None
 
 
@@ -176,8 +177,8 @@ class _TerrainSampler:
             self.clamped_sample_count += 1
         column, row = clamped_column, clamped_row
 
-        column_0 = int(math.floor(column))
-        row_0 = int(math.floor(row))
+        column_0 = math.floor(column)
+        row_0 = math.floor(row)
         column_1 = min(column_0 + 1, max_column)
         row_1 = min(row_0 + 1, max_row)
         column_fraction = column - column_0
@@ -229,7 +230,7 @@ def _densify_points(
     maximum_subdivisions = 1
     maximum_realized_length = 0.0
     length_m = 0.0
-    for start, end in zip(points, points[1:]):
+    for start, end in pairwise(points):
         delta_x, delta_y = end[0] - start[0], end[1] - start[1]
         segment_length = math.hypot(delta_x, delta_y)
         if segment_length < config.minimum_segment_length_m:
@@ -237,7 +238,7 @@ def _densify_points(
         source_segment_count += 1
         length_m += segment_length
         requested = max(
-            1, int(math.ceil(segment_length / config.max_drape_segment_length_m))
+            1, math.ceil(segment_length / config.max_drape_segment_length_m)
         )
         subdivisions = min(requested, config.max_subdivisions_per_source_segment)
         if requested > subdivisions:
@@ -267,7 +268,7 @@ def _offset_points(
     if abs(offset_m) <= 1e-12:
         return list(points)
     directions: list[tuple[float, float]] = []
-    for start, end in zip(points, points[1:]):
+    for start, end in pairwise(points):
         delta_x, delta_y = end[0] - start[0], end[1] - start[1]
         length = math.hypot(delta_x, delta_y)
         directions.append((delta_x / length, delta_y / length))
@@ -351,7 +352,7 @@ def _append_ribbon(
 
 def _cumulative_lengths(points: Sequence[tuple[float, float]]) -> list[float]:
     values = [0.0]
-    for start, end in zip(points, points[1:]):
+    for start, end in pairwise(points):
         values.append(values[-1] + math.hypot(end[0] - start[0], end[1] - start[1]))
     return values
 

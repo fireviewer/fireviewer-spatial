@@ -136,9 +136,9 @@ Blender/Omniverse, ni un pod. Ces gates sont rapportés séparément.
 
 ## Données et licences
 
-Ce lot actif n'ajoute aucune carte, orthophoto, scène générée, archive, asset
-3D, modèle, token ou dataset de production. Les payloads et reçus historiques
-déjà suivis restent intacts jusqu'à une décision de nettoyage séparée. Le code
-est sous AGPL-3.0-or-later ; la documentation est sous CC BY 4.0. Les données
-IGN et les autres sources externes conservent leurs licences et attributions
-propres.
+Ce dépôt Git n'embarque aucune carte, orthophoto, scène générée, archive, asset
+3D, modèle, token ou dataset de production. Les sorties de l'ancien pipeline
+ont été retirées localement ; `ground-context` et les ressources du pipeline
+définitif restent des dépendances externes hashées. Le code est sous
+AGPL-3.0-or-later ; la documentation est sous CC BY 4.0. Les données IGN et les
+autres sources externes conservent leurs licences et attributions propres.

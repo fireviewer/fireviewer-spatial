@@ -6,27 +6,34 @@ production engine through hash-stable jobs below ``FIREVIEWER_WORK_ROOT``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
 import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import threading
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field
-
 from fixed_asset_placement import (
     EMPTY_REQUEST as EMPTY_FIXED_ASSET_REQUEST,
+)
+from fixed_asset_placement import (
     FixedAssetPlacementError,
+)
+from fixed_asset_placement import (
     normalize_request as normalize_fixed_asset_request,
+)
+from fixed_asset_placement import (
     project_request as project_fixed_asset_request,
+)
+from fixed_asset_placement import (
     request_sha256 as fixed_asset_request_sha256,
 )
 from geographic_perimeter_layer import (
@@ -41,16 +48,16 @@ from portable_scene_package import (
     materialize_perimeter_upload_package,
     read_map_reference_from_archive,
 )
-from simple_production_gradio import (
+from pydantic import BaseModel, ConfigDict, Field
+from simple_production_engine import (
     CAPTURE_COUNT,
     ProductionConfig,
     ProductionEngine,
-    SimpleProductionUiError,
+    SimpleProductionError,
     plan_zone,
     validate_embedded_assets,
     validate_embedded_runtime,
 )
-
 
 API_SCHEMA = "fireviewer.simple-production-api.v1"
 CONTRACT_SCHEMA = "fireviewer.simple-production-api-contract.v1"
@@ -284,7 +291,7 @@ def _run_map_job(
             record.phase = "completed"
             record.progress = 1.0
             record.finished_at = _now()
-    except Exception as error:  # the worker must persist a readable failure state
+    except Exception as error:  # noqa: BLE001 - persist any worker failure
         with state.lock:
             record.state = "failed"
             record.phase = "failed"
@@ -351,7 +358,7 @@ def _run_perimeter_job(
             record.phase = "completed"
             record.progress = 1.0
             record.finished_at = _now()
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - persist any worker failure
         with state.lock:
             record.state = "failed"
             record.phase = "failed"
@@ -440,7 +447,9 @@ def create_app(
         return {"status": "ok", "schema": API_SCHEMA}
 
     @application.get("/v1/config", dependencies=[Depends(authorize)])
-    def get_config(state: ApiState = Depends(current_state)) -> dict[str, Any]:
+    def get_config(
+        state: ApiState = Depends(current_state),  # noqa: B008
+    ) -> dict[str, Any]:
         selected = state.production_engine()
         return {
             "schema": API_SCHEMA,
@@ -470,7 +479,8 @@ def create_app(
 
     @application.post("/v1/plan", dependencies=[Depends(authorize)])
     def create_plan(
-        body: ZoneRequest, state: ApiState = Depends(current_state)
+        body: ZoneRequest,
+        state: ApiState = Depends(current_state),  # noqa: B008
     ) -> dict[str, Any]:
         try:
             plan = plan_zone(
@@ -481,12 +491,13 @@ def create_app(
                 max_tiles=state.config.max_tiles,
             )
             return _plan_payload(plan)
-        except (SimpleProductionUiError, TypeError, ValueError) as error:
+        except (SimpleProductionError, TypeError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
     @application.post("/v1/fixed-assets/validate", dependencies=[Depends(authorize)])
     def validate_fixed_assets(
-        body: FixedAssetRequest, state: ApiState = Depends(current_state)
+        body: FixedAssetRequest,
+        state: ApiState = Depends(current_state),  # noqa: B008
     ) -> dict[str, Any]:
         selected = state.production_engine()
         try:
@@ -514,7 +525,7 @@ def create_app(
                 "placement_count": len(normalized["placements"]),
                 "projected": list(projected),
             }
-        except (FixedAssetPlacementError, SimpleProductionUiError, ValueError) as error:
+        except (FixedAssetPlacementError, SimpleProductionError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
     @application.post(
@@ -523,7 +534,8 @@ def create_app(
         dependencies=[Depends(authorize)],
     )
     def create_job(
-        body: ProductionRequest, state: ApiState = Depends(current_state)
+        body: ProductionRequest,
+        state: ApiState = Depends(current_state),  # noqa: B008
     ) -> dict[str, Any]:
         selected = state.production_engine()
         try:
@@ -550,7 +562,7 @@ def create_app(
                         f"{plan.zone_id}-fixed-{fixed_asset_request_sha256(fixed)[:12]}"
                     ),
                 )
-        except (FixedAssetPlacementError, SimpleProductionUiError, ValueError) as error:
+        except (FixedAssetPlacementError, SimpleProductionError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         request_payload = {
             "latitude": body.latitude,
@@ -587,9 +599,9 @@ def create_app(
         dependencies=[Depends(authorize)],
     )
     async def create_perimeter_job(
-        source: UploadFile = File(...),
-        map_archive: UploadFile | None = File(None),
-        state: ApiState = Depends(current_state),
+        source: UploadFile = File(...),  # noqa: B008
+        map_archive: UploadFile | None = File(None),  # noqa: B008
+        state: ApiState = Depends(current_state),  # noqa: B008
     ) -> dict[str, Any]:
         suffix = Path(source.filename or "").suffix.casefold()
         if suffix not in {".json", ".geojson"}:
@@ -639,7 +651,8 @@ def create_app(
 
     @application.get("/v1/jobs/{job_id}", dependencies=[Depends(authorize)])
     def get_job(
-        job_id: str, state: ApiState = Depends(current_state)
+        job_id: str,
+        state: ApiState = Depends(current_state),  # noqa: B008
     ) -> dict[str, Any]:
         with state.lock:
             record = state.jobs.get(job_id)
@@ -649,7 +662,8 @@ def create_app(
 
     @application.get("/v1/jobs/{job_id}/archive", dependencies=[Depends(authorize)])
     def get_archive(
-        job_id: str, state: ApiState = Depends(current_state)
+        job_id: str,
+        state: ApiState = Depends(current_state),  # noqa: B008
     ) -> FileResponse:
         with state.lock:
             record = state.jobs.get(job_id)
@@ -667,7 +681,9 @@ def create_app(
         "/v1/jobs/{job_id}/captures/{index}", dependencies=[Depends(authorize)]
     )
     def get_capture(
-        job_id: str, index: int, state: ApiState = Depends(current_state)
+        job_id: str,
+        index: int,
+        state: ApiState = Depends(current_state),  # noqa: B008
     ) -> FileResponse:
         with state.lock:
             record = state.jobs.get(job_id)

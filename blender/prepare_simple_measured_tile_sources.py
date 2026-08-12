@@ -3,37 +3,40 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import hashlib
-from io import BytesIO
 import json
 import math
 import os
-from pathlib import Path, PureWindowsPath
 import shutil
-from typing import Any, Callable, Mapping, Sequence
-from urllib.parse import urlencode
 import warnings
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from io import BytesIO
+from pathlib import Path, PureWindowsPath
+from typing import Any
+from urllib.parse import urlencode
 
-from affine import Affine
 import numpy as np
-from PIL import Image
 import pyogrio.raw
 import rasterio
-from rasterio.io import MemoryFile
 import requests
-from shapely import from_wkb
-from shapely.geometry import box, mapping, shape
-
-from mid_distance_roads import resolve_road_width_m
-from prepare_simple_measured_zone_context import load_zone_context
+from affine import Affine
 from fixed_asset_placement import (
     FixedAssetPlacementError,
-    canonical_json_bytes as canonical_fixed_asset_bytes,
-    schema_sha256 as fixed_asset_schema_sha256,
     validate_projected_placements,
 )
-
+from fixed_asset_placement import (
+    canonical_json_bytes as canonical_fixed_asset_bytes,
+)
+from fixed_asset_placement import (
+    schema_sha256 as fixed_asset_schema_sha256,
+)
+from mid_distance_roads import resolve_road_width_m
+from PIL import Image
+from prepare_simple_measured_zone_context import load_zone_context
+from rasterio.io import MemoryFile
+from shapely import from_wkb
+from shapely.geometry import box, mapping, shape
 
 SCHEMA = "fireviewer.simple-measured-tile-source-bundle.v1"
 CRS = "EPSG:2154"

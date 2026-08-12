@@ -10,22 +10,22 @@ pipeline.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import sys
-from typing import Any, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 
-from affine import Affine
 import numpy as np
-from PIL import Image
 import rasterio
-
+from affine import Affine
+from PIL import Image
 
 BLENDER_ROOT = Path(__file__).resolve().parent
 OMNIVERSE_ROOT = BLENDER_ROOT.parent / "omniverse"
@@ -33,37 +33,36 @@ for _module_root in (BLENDER_ROOT, OMNIVERSE_ROOT):
     if str(_module_root) not in sys.path:
         sys.path.insert(0, str(_module_root))
 
-from fixed_terrain_grid import (  # noqa: E402
+from build_measured_scene_usd import (
+    TerrainReference,
+    build_measured_scene_usd,
+    validate_measured_scene_package,
+)
+from fixed_asset_placement import (
+    FixedAssetPlacementError,
+    validate_projected_placements,
+)
+from fixed_terrain_grid import (
     FixedTerrainTile,
     compile_fixed_terrain_from_canonical_mm,
     read_fixed_terrain,
     write_fixed_terrain,
 )
-from fixed_asset_placement import (  # noqa: E402
-    FixedAssetPlacementError,
-    validate_projected_placements,
+from fixed_terrain_usd import (
+    export_fixed_terrain_usd,
+    validate_fixed_terrain_usd_package,
 )
-from mns_mnt_placement_inventory import (  # noqa: E402
+from mns_mnt_placement_inventory import (
     build_placement_inventory,
     read_hag_1m,
     validate_inventory,
     write_placement_outputs,
 )
-from orthophoto_ground_texture import (  # noqa: E402
+from orthophoto_ground_texture import (
     compile_aligned_window,
     slice_tile,
     write_tile_outputs,
 )
-from build_measured_scene_usd import (  # noqa: E402
-    TerrainReference,
-    build_measured_scene_usd,
-    validate_measured_scene_package,
-)
-from fixed_terrain_usd import (  # noqa: E402
-    export_fixed_terrain_usd,
-    validate_fixed_terrain_usd_package,
-)
-
 
 CONTRACT_SCHEMA = "fireviewer.simple-measured-tile-contract.v1"
 RECEIPT_SCHEMA = "fireviewer.simple-measured-tile-production.v1"

@@ -1,19 +1,9 @@
 # Contrats de composition Omniverse V2
 
-Ces contrats remplacent les contrats de scènes et de simulation V1. Leur couche
-de composition reste `blocked_pending_usd_assets` jusqu'à réception des 295
-assets USD refaits. Ce blocage ne s'applique pas à la production préalable des
-six terrains 3D et sols 2D sans orthophoto. Le relief provient du MNT/MNS ; les
-sols utilisent en plus des couches de contexte approuvées pour distinguer les
-surfaces naturelles, champs, routes, chemins, berges et plateformes
-ferroviaires.
-
-Les images rapprochées ne sont jamais utilisées comme tuiles territoriales :
-21 sources de micro-détail hors ligne sont empaquetées dans quatre atlases PBR
-runtime. Soixante-douze profils procéduraux couvrent les variations naturelles,
-brûlées, agricoles, routières, chemins, cours d’eau, plateformes ferroviaires
-et parois rocheuses. Leurs variations méso et macro sont déterministes et ne
-créent aucune texture importée supplémentaire.
+Ces contrats décrivent uniquement la composition aval des assets Omniverse.
+Ils ne produisent pas de carte. Toute scène ou simulation doit désormais
+référencer une carte FVTG/OpenUSD immuable et, si nécessaire, une timeline de
+périmètres via `fireviewer.scene-consumer-input.v1`.
 
 ## Frontière définitive
 

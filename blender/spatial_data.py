@@ -10,11 +10,10 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
-from pathlib import PurePosixPath, PureWindowsPath
-from typing import Any, Iterable, Iterator, Mapping, Sequence
-
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 
 TARGET_CRS = "EPSG:2154"
 
@@ -93,9 +92,10 @@ def find_absolute_local_paths(value: Any, location: str = "root") -> list[str]:
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         for index, member in enumerate(value):
             matches.extend(find_absolute_local_paths(member, f"{location}[{index}]"))
-    elif isinstance(value, str):
-        if PureWindowsPath(value).is_absolute() or PurePosixPath(value).is_absolute():
-            matches.append(location)
+    elif isinstance(value, str) and (
+        PureWindowsPath(value).is_absolute() or PurePosixPath(value).is_absolute()
+    ):
+        matches.append(location)
     return matches
 
 

@@ -7,16 +7,17 @@ and the backend import.  It never changes the authored OpenUSD scene.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath
 import shutil
 import tempfile
-from typing import Any, Iterable, Mapping
 import zipfile
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 try:
     from fixed_terrain_grid import lod_absolute_heights_mm, read_fixed_terrain
@@ -1043,10 +1044,10 @@ __all__ = [
     "MAP_CONTRACT_PATH",
     "MAP_CONTRACT_SCHEMA",
     "MAP_MANIFEST_SCHEMA",
-    "MapPackageReference",
     "PERIMETER_CONTRACT_PATH",
     "PERIMETER_CONTRACT_SCHEMA",
     "PERIMETER_MANIFEST_SCHEMA",
+    "MapPackageReference",
     "PortableScenePackageError",
     "materialize_perimeter_upload_package",
     "read_map_reference_from_archive",

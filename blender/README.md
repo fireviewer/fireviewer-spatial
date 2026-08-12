@@ -9,7 +9,7 @@ livrable.
 | Module | Rôle |
 | --- | --- |
 | `simple_production_api.py` | API FastAPI des jobs carte et périmètres, état fichier, reprise et téléchargement |
-| `simple_production_gradio.py` | planification de zone et orchestration historique conservée comme bibliothèque Python, sans UI Gradio active |
+| `simple_production_engine.py` | planification et orchestration headless du pipeline mesuré, consommées par l’API admin |
 | `prepare_simple_measured_zone_context.py` | contexte géographique hashé de la zone |
 | `prepare_simple_measured_tile_sources.py` | acquisition temporaire MNT/MNS/orthophoto d'une tuile |
 | `fixed_terrain_grid.py` | relief FVTG fixe, trois LOD et codec déterministe |

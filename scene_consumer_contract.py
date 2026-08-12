@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from jsonschema import Draft202012Validator
-
 
 ROOT = Path(__file__).resolve().parent
 SCHEMA_PATH = ROOT / "contracts" / "spatial" / "v1" / "scene-consumer-input.schema.json"

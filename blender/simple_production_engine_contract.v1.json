@@ -1,12 +1,6 @@
 {
-  "schema": "fireviewer.simple-production-gradio.v1",
+  "schema": "fireviewer.simple-production-engine.v1",
   "status": "locked",
-  "interface": {
-    "framework": "gradio",
-    "screens": 1,
-    "menus": 0,
-    "database": "forbidden"
-  },
   "input": {
     "coordinate_crs": "EPSG:4326",
     "coordinate_role": "square_center",
@@ -55,7 +49,6 @@
     "entry_stage": "zone.usda",
     "standalone_blend": "zone.blend_with_packed_textures",
     "visual_gallery": "exactly_20_png_512x512_pending_human_review",
-    "gradio_gallery": "display_all_20_after_render",
     "scene": "unified_relative_references",
     "independent_after_extraction": true,
     "dataset_publication": "optional_private_hugging_face_after_zip_validation",
@@ -100,8 +93,8 @@
     "scale": "catalog_native_never_user_authored",
     "tile_ownership": "single_half_open_500m_tile",
     "automatic_catalog_selection": "bypassed_for_fixed_asset_id",
-    "legacy_launch_endpoint": "launch(latitude,longitude,side_km)",
-    "fixed_launch_endpoint": "launch_with_fixed_assets(latitude,longitude,side_km,fixed_request)"
+    "map_api": "POST_/v1/maps",
+    "fixed_asset_api": "POST_/v1/fixed-assets/validate"
   },
   "acceptance": {
     "technical_production": true,

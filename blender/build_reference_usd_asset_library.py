@@ -11,19 +11,19 @@ forbidden.
 from __future__ import annotations
 
 import argparse
-from collections import Counter
-from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
-from typing import Any, Mapping, Sequence
 import unicodedata
 import zipfile
-
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 
 SCHEMA = "fireviewer.reference-usd-asset-library.v1"
 STATUS = "catalogued_with_deterministic_real_usd_fallbacks"
@@ -724,7 +724,7 @@ def _select_fallback_donor(
     finalists = [asset for score, asset in scored if score == maximum]
     finalists.sort(
         key=lambda asset: hashlib.sha256(
-            f"{target_asset_id}\x1f{asset['asset_id']}".encode("utf-8")
+            f"{target_asset_id}\x1f{asset['asset_id']}".encode()
         ).hexdigest()
     )
     donor = finalists[0]
@@ -2112,10 +2112,10 @@ if __name__ == "__main__":
 
 __all__ = [
     "ALGORITHM",
+    "SCHEMA",
     "CandidateAsset",
     "DiscoveredCandidates",
     "ReferenceAssetLibraryError",
-    "SCHEMA",
     "build_reference_asset_library",
     "discover_candidate_assets",
     "select_asset_for_candidate",

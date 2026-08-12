@@ -36,8 +36,8 @@ dataset ou un replay à une carte immuable et, si nécessaire, à sa timeline de
 périmètres. Les GLB servent au contrôle web et ne remplacent jamais la timeline
 JSON ni l'USD.
 
-## Compatibilité
+## Frontière active
 
-Les anciens schémas terrainctl, FVTQ, PBR et streaming ne sont pas des contrats
-d'écriture du pipeline actif. Ils ne doivent être invoqués que pour l'audit
-d'archives historiques jusqu'à leur retrait approuvé.
+Les anciens schémas terrainctl, FVTQ, atlas de sol et streaming ont été retirés
+du dépôt. Aucun lecteur ni writer actif ne doit les recréer. Les archives déjà
+publiées restent des données externes, sans valeur de contrat pour ce pipeline.

@@ -7,10 +7,10 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path, PureWindowsPath
 import sys
-from typing import Any, Sequence
-
+from collections.abc import Sequence
+from pathlib import Path, PureWindowsPath
+from typing import Any
 
 SCHEMA = "fireviewer.usd-candidate-inspection.v1"
 
@@ -183,8 +183,8 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "CandidateInspectionError",
     "SCHEMA",
+    "CandidateInspectionError",
     "inspect_candidates",
     "main",
     "write_inspection",

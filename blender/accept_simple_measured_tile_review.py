@@ -5,13 +5,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path, PureWindowsPath
 import re
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from pathlib import Path, PureWindowsPath
+from typing import Any
 
 import run_simple_measured_tile_qa as tile_qa
 import validate_measured_scene as measured_qa
-
 
 CONTRACT_SCHEMA = "fireviewer.simple-measured-tile-human-acceptance-contract.v1"
 ACCEPTANCE_SCHEMA = "fireviewer.simple-measured-tile-human-acceptance.v1"
