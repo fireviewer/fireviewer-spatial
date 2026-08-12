@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
@@ -21,8 +22,14 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import build_measured_scene_usd as measured  # noqa: E402
 
 
-D_TEST_ROOT = Path(
-    "D:/Dev/project/fireviewer-repositories/fireviewer-work/temp/pytest-measured-scene"
+D_TEST_ROOT = (
+    Path(
+        os.environ.get(
+            "FIREVIEWER_TEST_ROOT",
+            "D:/Dev/project/fireviewer-repositories/fireviewer-work/temp/pytest",
+        )
+    )
+    / "measured-scene"
 )
 
 

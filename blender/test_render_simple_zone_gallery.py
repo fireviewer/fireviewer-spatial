@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
@@ -13,8 +14,14 @@ import pytest
 import render_simple_zone_gallery as gallery
 
 
-TEST_ROOT = Path(
-    "D:/Dev/project/fireviewer-repositories/fireviewer-work/temp/pytest/simple-zone-gallery"
+TEST_ROOT = (
+    Path(
+        os.environ.get(
+            "FIREVIEWER_TEST_ROOT",
+            "D:/Dev/project/fireviewer-repositories/fireviewer-work/temp/pytest",
+        )
+    )
+    / "simple-zone-gallery"
 )
 
 

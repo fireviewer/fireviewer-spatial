@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -902,7 +903,7 @@ def read_fixed_terrain(
 
 def _require_d_output(path: Path) -> Path:
     resolved = path.resolve(strict=False)
-    if resolved.drive.upper() != "D:":
+    if os.name == "nt" and resolved.drive.upper() != "D:":
         raise ValueError(f"Fixed terrain output must stay on D:, got {resolved}")
     return resolved
 

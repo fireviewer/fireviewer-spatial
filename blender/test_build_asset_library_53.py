@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import jsonschema
@@ -165,7 +166,8 @@ def _write_fixture(root: Path) -> tuple[Path, Path, dict[str, dict[str, object]]
 def test_builds_exact_53_catalogue_and_rejects_glb_report_identity(
     tmp_path: Path,
 ) -> None:
-    assert tmp_path.drive.casefold() == "d:"
+    if os.name == "nt":
+        assert tmp_path.drive.casefold() == "d:"
     reference_manifest, batch_root, metadata = _write_fixture(tmp_path)
 
     first = builder.build_asset_library(
@@ -227,7 +229,8 @@ def test_builds_exact_53_catalogue_and_rejects_glb_report_identity(
 
 
 def test_selection_is_stable_and_final_usage_is_fail_closed(tmp_path: Path) -> None:
-    assert tmp_path.drive.casefold() == "d:"
+    if os.name == "nt":
+        assert tmp_path.drive.casefold() == "d:"
     reference_manifest, batch_root, metadata = _write_fixture(tmp_path)
     library = builder.build_asset_library(
         reference_manifest,
@@ -277,7 +280,8 @@ def test_selection_is_stable_and_final_usage_is_fail_closed(tmp_path: Path) -> N
 
 
 def test_identity_mismatch_tamper_and_overwrite_fail_closed(tmp_path: Path) -> None:
-    assert tmp_path.drive.casefold() == "d:"
+    if os.name == "nt":
+        assert tmp_path.drive.casefold() == "d:"
     reference_manifest, batch_root, metadata = _write_fixture(tmp_path)
     library = builder.build_asset_library(
         reference_manifest,
@@ -335,6 +339,7 @@ def test_real_reviewed_batch_is_catalogued_53_of_53() -> None:
     ).validate(library)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows D-only storage policy")
 def test_rejects_c_drive_inputs() -> None:
     with pytest.raises(builder.AssetLibraryBuildError, match="stored on D"):
         builder.build_asset_library(

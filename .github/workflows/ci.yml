@@ -11,6 +11,8 @@ permissions:
 jobs:
   validate-simple-production:
     runs-on: ubuntu-latest
+    env:
+      FIREVIEWER_TEST_ROOT: ${{ runner.temp }}/fireviewer-spatial-tests
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

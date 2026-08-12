@@ -25,8 +25,14 @@ from orthophoto_ground_texture import (
 CORE_BOUNDS = (700_000, 6_300_000, 700_500, 6_300_500)
 BATCH_BOUNDS = (700_000, 6_300_000, 701_000, 6_300_500)
 HALO = 10
-TEST_ROOT = Path(
-    "D:/Dev/project/fireviewer-repositories/fireviewer-work/temp/pytest/orthophoto-ground"
+TEST_ROOT = (
+    Path(
+        os.environ.get(
+            "FIREVIEWER_TEST_ROOT",
+            "D:/Dev/project/fireviewer-repositories/fireviewer-work/temp/pytest",
+        )
+    )
+    / "orthophoto-ground"
 )
 
 

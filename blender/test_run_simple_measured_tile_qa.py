@@ -229,7 +229,10 @@ class FakeBlender:
         for name in tile_qa.ENVIRONMENT_PATHS:
             assert name in env
             path = Path(env[name])
-            assert path.drive.upper() == "D:"
+            if os.name == "nt":
+                assert path.drive.upper() == "D:"
+            else:
+                assert path.is_absolute()
             assert path.is_dir()
         if argv[1:] == ("--version",):
             return tile_qa.ProcessResult(0, f"Blender {self.version}\n", "")

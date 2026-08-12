@@ -15,7 +15,7 @@ import pytest
 OMNIVERSE_ROOT = Path(__file__).resolve().parents[1] / "omniverse"
 if str(OMNIVERSE_ROOT) not in sys.path:
     sys.path.insert(0, str(OMNIVERSE_ROOT))
-import build_measured_scene_usd as measured
+import build_measured_scene_usd as measured  # noqa: E402
 
 
 def _sha(value: bytes) -> str:
@@ -718,6 +718,16 @@ def test_writer_is_atomic_idempotent_and_tamper_evident(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.skipif(
+    not (
+        Path(__file__).resolve().parents[2]
+        / "fireviewer-sdg"
+        / "asset4sim"
+        / "generated_hunyuan3d_v2"
+        / "reference-manifest.json"
+    ).is_file(),
+    reason="The sibling 294-reference source catalogue is not available",
+)
 def test_current_reference_manifest_yields_294_usd_entries() -> None:
     repository = Path(__file__).resolve().parents[2]
     generated_root = (
@@ -744,6 +754,16 @@ def test_current_reference_manifest_yields_294_usd_entries() -> None:
     )
 
 
+@pytest.mark.skipif(
+    not (
+        Path(__file__).resolve().parents[2]
+        / "fireviewer-sdg"
+        / "asset4sim"
+        / "generated_hunyuan3d_v2"
+        / "reference-manifest.json"
+    ).is_file(),
+    reason="The sibling 294-reference source catalogue is not available",
+)
 def test_current_added_assets_match_references_with_premium_precedence() -> None:
     repository = Path(__file__).resolve().parents[2]
     manifest = (

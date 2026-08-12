@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -37,8 +38,14 @@ from fixed_terrain_usd import (  # noqa: E402
 
 ORIGIN = (700_000, 6_300_000)
 BOUNDS = (*ORIGIN, ORIGIN[0] + 500, ORIGIN[1] + 500)
-TEST_ROOT = Path(
-    "D:/Dev/project/fireviewer-repositories/fireviewer-work/temp/pytest/fixed-terrain-usd"
+TEST_ROOT = (
+    Path(
+        os.environ.get(
+            "FIREVIEWER_TEST_ROOT",
+            "D:/Dev/project/fireviewer-repositories/fireviewer-work/temp/pytest",
+        )
+    )
+    / "fixed-terrain-usd"
 )
 FORBIDDEN = (
     "atlas",
