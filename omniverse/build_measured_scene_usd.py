@@ -958,6 +958,29 @@ def _plan_prototype_bundle(
     )
 
 
+def _prototype_material_receipt(material_policy: str) -> dict[str, str]:
+    if material_policy == "source_package_pbr":
+        return {
+            "implementation": "source_package_pbr",
+            "binding_strength": "authored_below_default_prim",
+            "texture_role": "embedded_usdz",
+            "source_color_space": "authored",
+        }
+    if material_policy == "scoped_source_pbr":
+        return {
+            "implementation": "scoped_source_pbr",
+            "binding_strength": "authored_below_default_prim",
+            "texture_role": "source_usd_dependency",
+            "source_color_space": "authored",
+        }
+    return {
+        "implementation": "UsdPreviewSurface",
+        "binding_strength": "strongerThanDescendants",
+        "texture_role": "color",
+        "source_color_space": "sRGB",
+    }
+
+
 def _geometry_points(geometry: Any) -> list[tuple[float, float]]:
     if not isinstance(geometry, Mapping):
         raise MeasuredSceneError("building footprint geometry is invalid")
@@ -1872,21 +1895,7 @@ def build_measured_scene_usd(
                 "sha256": sha256_bytes(prototype.wrapper_bytes),
                 "byte_count": len(prototype.wrapper_bytes),
             },
-            "material": (
-                {
-                    "implementation": "source_package_pbr",
-                    "binding_strength": "authored_below_default_prim",
-                    "texture_role": "embedded_usdz",
-                    "source_color_space": "authored",
-                }
-                if prototype.material_policy == "source_package_pbr"
-                else {
-                    "implementation": "UsdPreviewSurface",
-                    "binding_strength": "strongerThanDescendants",
-                    "texture_role": "color",
-                    "source_color_space": "sRGB",
-                }
-            ),
+            "material": _prototype_material_receipt(prototype.material_policy),
             "qualification_blockers": list(prototype.qualification_blockers),
         }
         for _key, prototype in sorted(prototypes.items())
@@ -2168,12 +2177,8 @@ def _validate_prototype_bundle(
         if source_path.suffix.casefold() not in {".usd", ".usda", ".usdc", ".usdz"}:
             raise MeasuredSceneError(f"prototype {asset_id} source is not USD")
         material = record.get("material")
-        direct_pbr = material == {
-            "implementation": "source_package_pbr",
-            "binding_strength": "authored_below_default_prim",
-            "texture_role": "embedded_usdz",
-            "source_color_space": "authored",
-        }
+        direct_pbr = material == _prototype_material_receipt("source_package_pbr")
+        scoped_pbr = material == _prototype_material_receipt("scoped_source_pbr")
         texture_relative: str | None
         if direct_pbr:
             if (
@@ -2190,12 +2195,9 @@ def _validate_prototype_bundle(
                 source_up_axis=source_up_axis,
             )
         else:
-            if material != {
-                "implementation": "UsdPreviewSurface",
-                "binding_strength": "strongerThanDescendants",
-                "texture_role": "color",
-                "source_color_space": "sRGB",
-            }:
+            if not scoped_pbr and material != _prototype_material_receipt(
+                "fireviewer_color_override"
+            ):
                 raise MeasuredSceneError(
                     f"prototype {asset_id} material override differs"
                 )
@@ -2209,14 +2211,21 @@ def _validate_prototype_bundle(
                 raise MeasuredSceneError(
                     f"prototype {asset_id} colour texture format differs"
                 )
-            expected_wrapper = _render_prototype_wrapper(
-                asset_id=asset_id,
-                source_file_name=source_path.name,
-                texture_reference=(
-                    PurePosixPath("textures") / texture_path.name
-                ).as_posix(),
-                source_up_axis=source_up_axis,
-            )
+            if scoped_pbr:
+                expected_wrapper = _render_scoped_source_wrapper(
+                    asset_id=asset_id,
+                    source_file_name=source_path.name,
+                    source_up_axis=source_up_axis,
+                )
+            else:
+                expected_wrapper = _render_prototype_wrapper(
+                    asset_id=asset_id,
+                    source_file_name=source_path.name,
+                    texture_reference=(
+                        PurePosixPath("textures") / texture_path.name
+                    ).as_posix(),
+                    source_up_axis=source_up_axis,
+                )
         if wrapper_path.read_bytes() != expected_wrapper:
             raise MeasuredSceneError(
                 f"prototype {asset_id} local material wrapper differs"

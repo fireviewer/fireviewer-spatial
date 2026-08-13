@@ -82,14 +82,28 @@
     "source_material_dependencies_outside_bundle": "overridden"
   },
   "prototype_material": {
-    "implementation": "UsdPreviewSurface",
-    "texture_role": "color",
-    "source_color_space": "sRGB",
-    "roughness": 0.75,
-    "metallic": 0,
-    "opacity": "texture_alpha",
-    "binding": "wrapper_ancestor",
-    "binding_strength": "strongerThanDescendants",
+    "implementations": {
+      "source_package_pbr": {
+        "binding_strength": "authored_below_default_prim",
+        "texture_role": "embedded_usdz",
+        "source_color_space": "authored"
+      },
+      "scoped_source_pbr": {
+        "binding_strength": "authored_below_default_prim",
+        "texture_role": "source_usd_dependency",
+        "source_color_space": "authored"
+      },
+      "fallback": {
+        "implementation": "UsdPreviewSurface",
+        "texture_role": "color",
+        "source_color_space": "sRGB",
+        "roughness": 0.75,
+        "metallic": 0,
+        "opacity": "texture_alpha",
+        "binding": "wrapper_ancestor",
+        "binding_strength": "strongerThanDescendants"
+      }
+    },
     "pbr_atlas": "forbidden"
   },
   "normalization": {

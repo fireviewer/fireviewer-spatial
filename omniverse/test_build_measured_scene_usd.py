@@ -358,6 +358,43 @@ def test_normalized_usd_keeps_scoped_pbr_texture_and_upright_transform(
     assert b"xformOp:rotateX = -90" in prototype.wrapper_bytes
 
 
+def test_scoped_source_pbr_receipt_revalidates_the_exact_wrapper(
+    fixture_root,
+) -> None:
+    root, terrain, prototype = fixture_root
+    library = _library(_hash_bytes(prototype.read_bytes()))
+    for asset in library["assets"]:
+        asset["material"] = {
+            "policy": "scoped_source_pbr",
+            "source_package": False,
+            "pbr_preserved": True,
+        }
+        asset["usd_stage"] = {
+            "status": "inspected",
+            "up_axis": "Y",
+            "meters_per_unit": 0.001,
+            "default_prim": "/Asset",
+        }
+
+    package = _build(root, terrain, prototype, "scene-scoped-pbr", library=library)
+    receipt = measured.validate_measured_scene_package(package.output_root)
+
+    assert receipt["prototype_count"] > 0
+    assert {
+        record["material"]["implementation"] for record in receipt["prototypes"]
+    } == {"scoped_source_pbr"}
+    for record in receipt["prototypes"]:
+        assert record["material"] == measured._prototype_material_receipt(
+            "scoped_source_pbr"
+        )
+        wrapper = (
+            package.output_root
+            / receipt["prototype_bundle"]["root_reference"]
+            / record["wrapper"]["path"]
+        )
+        assert b"scoped_source_pbr" in wrapper.read_bytes()
+
+
 def _selector(calls: list | None = None):
     def select(library, *, category, zone, candidate, rule_version, usage):
         if calls is not None:
@@ -697,10 +734,14 @@ def test_contract_locks_measured_sources_and_quantity_preservation() -> None:
     assert contract["placement"]["fallback_primitive"] == "forbidden"
     assert contract["outputs"]["storage_drive"] == "D"
     assert contract["prototype_bundle"]["scope"] == "selected_assets_only"
-    assert contract["prototype_material"]["implementation"] == "UsdPreviewSurface"
-    assert (
-        contract["prototype_material"]["binding_strength"] == "strongerThanDescendants"
-    )
+    implementations = contract["prototype_material"]["implementations"]
+    assert implementations["fallback"]["implementation"] == "UsdPreviewSurface"
+    assert implementations["scoped_source_pbr"] == {
+        "binding_strength": "authored_below_default_prim",
+        "texture_role": "source_usd_dependency",
+        "source_color_space": "authored",
+    }
+    assert implementations["fallback"]["binding_strength"] == "strongerThanDescendants"
     assert contract["prototype_material"]["pbr_atlas"] == "forbidden"
     assert contract["acceptance"]["builder_never_grants_final_acceptance"] is True
 
