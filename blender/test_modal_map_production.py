@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import modal_map_production as production
 import pytest
+from fastapi.testclient import TestClient
 
 
 def test_request_identity_and_public_status_have_no_captures() -> None:
@@ -32,6 +33,20 @@ def test_completed_status_exposes_only_the_zip() -> None:
     public = production.public_job_status(status)
     assert public["archive_url"] == f"/v1/map-jobs/{job_id}/download-link"
     assert public["captures"] == []
+
+
+def test_asgi_submit_accepts_the_request_as_the_json_body() -> None:
+    web = production.api.local()
+    operation = web.openapi()["paths"]["/v1/map-jobs"]["post"]
+    assert operation["requestBody"]["required"] is True
+    assert [parameter["name"] for parameter in operation.get("parameters", [])] == [
+        "authorization"
+    ]
+    response = TestClient(web).post(
+        "/v1/map-jobs",
+        json={"latitude": 44.73, "longitude": 5.33, "side_km": 2},
+    )
+    assert response.status_code == 401
 
 
 @pytest.mark.parametrize(

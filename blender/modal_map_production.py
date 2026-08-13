@@ -309,7 +309,7 @@ def _signed_download(status: dict[str, Any]) -> str:
 )
 @modal.asgi_app()
 def api():
-    from fastapi import FastAPI, Header, HTTPException, Request
+    from fastapi import FastAPI, Header, HTTPException
 
     web = FastAPI(
         title="FireViewer Modal map production", docs_url=None, redoc_url=None
@@ -322,7 +322,6 @@ def api():
     @web.post("/v1/map-jobs", status_code=202)
     def submit(
         request: dict[str, Any],
-        raw: Request,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _authorize(authorization)
