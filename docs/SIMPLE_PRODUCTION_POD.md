@@ -66,7 +66,7 @@ Depuis `fireviewer-repositories` :
 
 ```powershell
 docker build -f fireviewer-spatial/deploy/Dockerfile.simple-production-base -t fireviewer-map-base:pilot-v1-20260811-r12 .
-docker build -f fireviewer-spatial/deploy/Dockerfile.runpod-map-production -t charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260813-r13-runpod .
+docker build -f fireviewer-spatial/deploy/Dockerfile.runpod-map-production -t charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260813-r14-runpod .
 ```
 
 Le build dérive de l'image runtime validée et ne télécharge aucune donnée
