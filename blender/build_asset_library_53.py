@@ -239,6 +239,41 @@ def _contained_file(root: Path, path: Path | str, label: str) -> Path:
     return candidate
 
 
+def _contained_batch_file(
+    batch_root: Path,
+    value: Any,
+    label: str,
+    *,
+    folder: tuple[str, ...],
+) -> Path:
+    """Resolve a signed batch artifact after a host-to-container relocation.
+
+    Historical validation receipts store absolute Windows paths.  The bytes are
+    copied under the same canonical ``glb``/``usd`` layout in the image build,
+    so only that exact trailing layout may be rebased.  Hash and size checks
+    below remain authoritative.
+    """
+
+    if not isinstance(value, str) or not value:
+        raise AssetLibraryBuildError(f"{label} path is invalid")
+    direct = Path(value)
+    if direct.is_file():
+        return _contained_file(batch_root, direct, label)
+    parts = PurePosixPath(value.replace("\\", "/")).parts
+    matches = [
+        index
+        for index in range(len(parts) - len(folder) + 1)
+        if tuple(part.casefold() for part in parts[index : index + len(folder)])
+        == tuple(part.casefold() for part in folder)
+    ]
+    if not matches:
+        raise AssetLibraryBuildError(f"{label} has no canonical batch suffix")
+    suffix = parts[matches[-1] :]
+    if any(part in {"", ".", ".."} for part in suffix):
+        raise AssetLibraryBuildError(f"{label} has an unsafe batch suffix")
+    return _contained_file(batch_root, batch_root.joinpath(*suffix), label)
+
+
 def _artifact(
     *,
     logical_root: str,
@@ -431,12 +466,18 @@ def _index_conversion_results(
             )
         if asset_id in indexed:
             raise AssetLibraryBuildError(f"Duplicate conversion asset id: {asset_id}")
-        source_glb = _contained_file(
+        source_glb = _contained_batch_file(
             batch_root,
             record.get("source_glb"),
             f"source GLB {asset_id}",
+            folder=("glb",),
         )
-        usd = _contained_file(batch_root, record.get("usd"), f"USD {asset_id}")
+        usd = _contained_batch_file(
+            batch_root,
+            record.get("usd"),
+            f"USD {asset_id}",
+            folder=("usd",),
+        )
         if source_glb.parent != batch_root / "glb" or source_glb.stem != asset_id:
             raise AssetLibraryBuildError(f"GLB stem differs from asset id: {asset_id}")
         if usd.parent != batch_root / "usd" or usd.stem != asset_id:
@@ -446,10 +487,11 @@ def _index_conversion_results(
         structural = record.get("structural_validation")
         if not isinstance(structural, dict):
             raise AssetLibraryBuildError(f"Missing structural validation: {asset_id}")
-        texture = _contained_file(
+        texture = _contained_batch_file(
             batch_root,
             structural.get("texture"),
             f"texture {asset_id}",
+            folder=("usd", "textures"),
         )
         if texture.parent != batch_root / "usd" / "textures":
             raise AssetLibraryBuildError(f"Texture path differs for {asset_id}")
@@ -458,7 +500,13 @@ def _index_conversion_results(
                 f"Texture stem differs from asset id: {asset_id}"
             )
         _sha256(structural.get("texture_sha256"), "texture_sha256")
-        indexed[asset_id] = record
+        normalized_record = dict(record)
+        normalized_record["source_glb"] = str(source_glb)
+        normalized_record["usd"] = str(usd)
+        normalized_structural = dict(structural)
+        normalized_structural["texture"] = str(texture)
+        normalized_record["structural_validation"] = normalized_structural
+        indexed[asset_id] = normalized_record
     declared_count = manifest.get("asset_count")
     passed_count = manifest.get("passed_count")
     if declared_count != len(indexed) or passed_count != len(indexed):
@@ -502,10 +550,11 @@ def _index_glb_validation(
     for index, record in enumerate(assets):
         if not isinstance(record, dict) or record.get("passed") is not True:
             raise AssetLibraryBuildError(f"GLB validation record {index} did not pass")
-        glb = _contained_file(
+        glb = _contained_batch_file(
             batch_root,
             record.get("path"),
             f"validated GLB {index}",
+            folder=("glb",),
         )
         if glb.parent != batch_root / "glb":
             raise AssetLibraryBuildError(f"Validated GLB escapes the GLB folder: {glb}")
@@ -524,7 +573,9 @@ def _index_glb_validation(
         _positive_integer(record.get("bytes"), "validated GLB bytes")
         _sha256(record.get("sha256"), "validated GLB SHA-256")
         _bounds(record, asset_id)
-        indexed[asset_id] = (record, rejected_reported_id)
+        normalized_record = dict(record)
+        normalized_record["path"] = str(glb)
+        indexed[asset_id] = (normalized_record, rejected_reported_id)
     declared = manifest.get("asset_count")
     expected = manifest.get("expected_count")
     passed = manifest.get("passed_count")
@@ -955,7 +1006,17 @@ def build_asset_library(
         )
         receipt_path = batch / "reports" / "usd" / f"{asset_id}-usd.json"
         receipt_payload = _read_json(receipt_path, f"USD receipt {asset_id}")
-        if receipt_payload != conversion_record:
+        normalized_receipt = _index_conversion_results(
+            {
+                "passed": True,
+                "failed_count": 0,
+                "asset_count": 1,
+                "passed_count": 1,
+                "results": [receipt_payload],
+            },
+            batch,
+        ).get(asset_id)
+        if normalized_receipt != conversion_record:
             raise AssetLibraryBuildError(
                 f"USD receipt differs from manifest for {asset_id}"
             )

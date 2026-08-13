@@ -259,6 +259,13 @@ def _portable_path(value: Any, label: str) -> str:
     return path.as_posix()
 
 
+def _portable_basename(value: str) -> str:
+    """Return the final component of either a POSIX or Windows receipt path."""
+
+    normalized = value.replace("\\", "/")
+    return PurePosixPath(normalized).name
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -966,7 +973,10 @@ def _simready_candidate_evidence(
             )
         for key, expected in (("usd", usd), ("glb", glb), ("texture", texture)):
             declared = record.get(key)
-            if not isinstance(declared, str) or Path(declared).name != expected.name:
+            if (
+                not isinstance(declared, str)
+                or _portable_basename(declared) != expected.name
+            ):
                 raise ReferenceAssetLibraryError(
                     f"SimReady {key} declaration differs: {asset_id}"
                 )
@@ -1108,6 +1118,188 @@ def _simready_candidate_evidence(
     return dict(sorted(candidates.items())), rejected_ids
 
 
+def _final_simready_candidate_evidence(
+    root: Path,
+    reference_ids: set[str],
+    inspection: Mapping[str, Mapping[str, Any]],
+    inspection_sha256: str | None,
+) -> tuple[dict[str, CandidateAsset], frozenset[str]]:
+    """Load the merged, reviewed 001-294 library without its source archives."""
+
+    names = ("active-assets.json", "merge-validation.json", "rejected-assets.json")
+    paths = {name: root / name for name in names}
+    if any(not path.is_file() for path in paths.values()):
+        raise ReferenceAssetLibraryError("final SimReady evidence is incomplete")
+    active = _load_json(paths["active-assets.json"], "final SimReady active manifest")
+    merge = _load_json(paths["merge-validation.json"], "final SimReady validation")
+    rejected = _load_json(
+        paths["rejected-assets.json"], "final SimReady rejected manifest"
+    )
+    active_records = active.get("assets")
+    rejected_records = rejected.get("assets")
+    range_count = len(reference_ids)
+    if (
+        active.get("schema_version") != 1
+        or active.get("status") != "final_merged"
+        or active.get("operation") != "merge_only_no_asset_modification"
+        or active.get("range") != {"start": 1, "end": range_count}
+        or not isinstance(active_records, list)
+        or active.get("asset_count") != len(active_records)
+        or active.get("rejected_count") != range_count - len(active_records)
+    ):
+        raise ReferenceAssetLibraryError("final SimReady active manifest differs")
+    if (
+        merge.get("schema_version") != 1
+        or merge.get("status") != "passed"
+        or merge.get("operation") != "merge_only_no_asset_modification"
+        or merge.get("range_count") != range_count
+        or merge.get("active_count") != len(active_records)
+        or merge.get("rejected_count") != active.get("rejected_count")
+        or merge.get("active_directory_count") != len(active_records)
+        or merge.get("glb_count") != len(active_records)
+        or merge.get("usd_count") != len(active_records)
+        or merge.get("texture_count") != len(active_records)
+    ):
+        raise ReferenceAssetLibraryError("final SimReady merge validation differs")
+    if (
+        rejected.get("schema_version") != 1
+        or rejected.get("status") != "excluded_from_final_library"
+        or not isinstance(rejected_records, list)
+        or rejected.get("asset_count") != len(rejected_records)
+        or len(rejected_records) != active.get("rejected_count")
+    ):
+        raise ReferenceAssetLibraryError("final SimReady rejection manifest differs")
+
+    def indexed_records(
+        records: Sequence[Any], label: str
+    ) -> tuple[dict[str, Mapping[str, Any]], list[int]]:
+        indexed: dict[str, Mapping[str, Any]] = {}
+        indices: list[int] = []
+        for record in records:
+            if not isinstance(record, Mapping):
+                raise ReferenceAssetLibraryError(f"{label} record is invalid")
+            asset_id = str(record.get("asset_id"))
+            index = record.get("index")
+            if (
+                asset_id not in reference_ids
+                or asset_id in indexed
+                or not isinstance(index, int)
+                or not 1 <= index <= range_count
+            ):
+                raise ReferenceAssetLibraryError(f"{label} identity differs")
+            indexed[asset_id] = record
+            indices.append(index)
+        if len(indices) != len(set(indices)):
+            raise ReferenceAssetLibraryError(f"{label} indices are duplicated")
+        return indexed, sorted(indices)
+
+    active_by_id, active_indices = indexed_records(active_records, "final SimReady")
+    rejected_by_id, rejected_indices = indexed_records(
+        rejected_records, "final SimReady rejected"
+    )
+    if (
+        set(active_by_id) & set(rejected_by_id)
+        or set(active_by_id) | set(rejected_by_id) != reference_ids
+        or active_indices != merge.get("active_indices")
+        or rejected_indices != merge.get("rejected_indices")
+        or sorted((*active_indices, *rejected_indices))
+        != list(range(1, range_count + 1))
+    ):
+        raise ReferenceAssetLibraryError("final SimReady coverage differs")
+    if not inspection or inspection_sha256 is None:
+        raise ReferenceAssetLibraryError(
+            "final SimReady OpenUSD inspection is required"
+        )
+    evidence_sha256 = _sha256_bytes(
+        _canonical_bytes(
+            {
+                "candidate_inspection_sha256": inspection_sha256,
+                **{name: _sha256_file(path) for name, path in sorted(paths.items())},
+            }
+        )
+    )
+
+    candidates: dict[str, CandidateAsset] = {}
+    for asset_id, record in active_by_id.items():
+        index = int(record["index"])
+        if record.get("status") != "retained" or record.get("passed") is not True:
+            raise ReferenceAssetLibraryError(
+                f"final SimReady status differs: {asset_id}"
+            )
+        directory = root / "assets" / f"{index:03d}_{asset_id}"
+        usd = directory / f"{asset_id}.usd"
+        glb = directory / f"{asset_id}.glb"
+        texture = directory / "textures" / f"{asset_id}.png"
+        report = directory / "asset-report.json"
+        # GLB files remain in the immutable local provenance library. The
+        # runtime image deliberately carries only OpenUSD, its texture and the
+        # small receipt needed to validate the selected source.
+        if any(not path.is_file() for path in (usd, texture, report)):
+            raise ReferenceAssetLibraryError(
+                f"final SimReady artifact is missing: {asset_id}"
+            )
+        if _load_json(report, f"final SimReady report {asset_id}") != dict(record):
+            raise ReferenceAssetLibraryError(
+                f"final SimReady report differs: {asset_id}"
+            )
+        for key, expected in (("usd", usd), ("glb", glb), ("texture", texture)):
+            declared = record.get(key)
+            if (
+                not isinstance(declared, str)
+                or _portable_basename(declared) != expected.name
+            ):
+                raise ReferenceAssetLibraryError(
+                    f"final SimReady {key} declaration differs: {asset_id}"
+                )
+        bounds, stage, policy, _inspection_hash = _metadata_for_candidate(
+            usd, inspection, inspection_sha256, required=True
+        )
+        if policy not in {"source_package_pbr", "source_package_color_override"}:
+            raise ReferenceAssetLibraryError(
+                "final SimReady USD qualification differs: "
+                f"{asset_id}; stage={stage}; material_policy={policy}"
+            )
+        assert bounds is not None
+        meters_per_unit = float(stage["meters_per_unit"])
+        extents = [
+            (bounds["maximum"][axis] - bounds["minimum"][axis]) * meters_per_unit
+            for axis in range(3)
+        ]
+        runtime_material_policy = (
+            "scoped_source_pbr"
+            if policy == "source_package_pbr"
+            else "fireviewer_color_override"
+        )
+        candidates[asset_id] = CandidateAsset(
+            asset_id=asset_id,
+            tier="simready_normalized",
+            source_path=usd.resolve(),
+            texture_path=texture.resolve(),
+            texture_member=None,
+            source_bounds=bounds,
+            usd_stage=stage,
+            material_policy=runtime_material_policy,
+            source_name=usd.name,
+            source_sha256=_sha256_file(usd),
+            source_byte_count=usd.stat().st_size,
+            texture_sha256=_sha256_file(texture),
+            texture_byte_count=texture.stat().st_size,
+            inspection_sha256=evidence_sha256,
+            qualification={
+                "dimensions": {"status": "accepted", "value_m": extents},
+                "ground_anchor": {
+                    "status": "accepted",
+                    "offset_m": -bounds["minimum"][1] * meters_per_unit,
+                },
+                "visual": {
+                    "status": "validated_omniverse_minimal_placeable_visual",
+                    "accepted": False,
+                },
+            },
+        )
+    return dict(sorted(candidates.items())), frozenset(rejected_by_id)
+
+
 def discover_candidate_assets(
     reference_manifest: Path | str | Mapping[str, Any],
     *,
@@ -1161,9 +1353,14 @@ def discover_candidate_assets(
         root = Path(simready_root).resolve()
         if not root.is_dir():
             raise ReferenceAssetLibraryError(f"SimReady root is missing: {root}")
-        normalized, rejected_asset_ids = _simready_candidate_evidence(
-            root, reference_ids
-        )
+        if (root / "merge-validation.json").is_file():
+            normalized, rejected_asset_ids = _final_simready_candidate_evidence(
+                root, reference_ids, inspection, inspection_hash
+            )
+        else:
+            normalized, rejected_asset_ids = _simready_candidate_evidence(
+                root, reference_ids
+            )
         for candidate in normalized.values():
             select(candidate)
 
@@ -1586,15 +1783,19 @@ def validate_reference_asset_library(payload: Mapping[str, Any]) -> dict[str, An
             ):
                 raise ReferenceAssetLibraryError("premium material policy is invalid")
         elif tier == "simready_normalized":
-            if (
-                material
-                != {
+            valid_materials = (
+                {
                     "policy": "scoped_source_pbr",
                     "source_package": False,
                     "pbr_preserved": True,
-                }
-                or inspection_hash is None
-            ):
+                },
+                {
+                    "policy": "fireviewer_color_override",
+                    "source_package": False,
+                    "pbr_preserved": False,
+                },
+            )
+            if material not in valid_materials or inspection_hash is None:
                 raise ReferenceAssetLibraryError("SimReady material policy is invalid")
         elif material != {
             "policy": "fireviewer_color_override",
@@ -1646,11 +1847,9 @@ def validate_reference_asset_library(payload: Mapping[str, Any]) -> dict[str, An
         elif tier == "simready_normalized":
             if usd_suffix not in {".usd", ".usda", ".usdc"} or texture_suffix != ".png":
                 raise ReferenceAssetLibraryError("SimReady artifact formats differ")
-            stage = _validated_stage(
+            _validated_stage(
                 asset.get("usd_stage"), str(asset["asset_id"]), required=True
             )
-            if stage["up_axis"] != "Z" or stage["meters_per_unit"] != 1.0:
-                raise ReferenceAssetLibraryError("SimReady USD stage differs")
             qualification = asset.get("qualification")
             if (
                 not isinstance(qualification, Mapping)
@@ -2073,7 +2272,7 @@ def select_asset_for_candidate(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference-manifest", type=Path, required=True)
-    parser.add_argument("--reviewed-library", type=Path, required=True)
+    parser.add_argument("--reviewed-library", type=Path)
     parser.add_argument("--review-batch-root", type=Path, required=True)
     parser.add_argument("--output-catalog", type=Path, required=True)
     parser.add_argument("--reviewed-source-root", type=Path)
@@ -2090,9 +2289,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         simready_root=options.simready_root,
         candidate_inspection=options.candidate_inspection,
     )
+    reviewed_library: Path | Mapping[str, Any] = options.reviewed_library or {
+        "schema": "fireviewer.asset-library.v1",
+        "assets": [],
+    }
     payload = build_reference_asset_library(
         options.reference_manifest,
-        options.reviewed_library,
+        reviewed_library,
         candidate_assets=candidates,
     )
     result = write_reference_asset_library(

@@ -22,6 +22,13 @@ def _sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def test_portable_basename_accepts_historical_windows_receipts() -> None:
+    assert (
+        library._portable_basename(r"D:\archive\assets\001_tree\tree.usd") == "tree.usd"
+    )
+    assert library._portable_basename("/archive/assets/001_tree/tree.usd") == "tree.usd"
+
+
 def _reference(asset_id: str, path: str, route: str = "hunyuan3d") -> dict:
     content = f"reference:{path}".encode()
     return {
@@ -108,7 +115,13 @@ def _fixture() -> tuple[dict, dict, dict, dict]:
     return manifest, reviewed, tree, building
 
 
-def _inspection(path: Path, *, scope_safe: bool = True, up_axis: str = "Y") -> dict:
+def _inspection(
+    path: Path,
+    *,
+    scope_safe: bool = True,
+    up_axis: str = "Y",
+    meters_per_unit: float = 1.0,
+) -> dict:
     basis = {
         "schema": "fireviewer.usd-candidate-inspection.v1",
         "artifacts": [
@@ -124,7 +137,7 @@ def _inspection(path: Path, *, scope_safe: bool = True, up_axis: str = "Y") -> d
                 "usd_stage": {
                     "status": "inspected",
                     "up_axis": up_axis,
-                    "meters_per_unit": 1.0,
+                    "meters_per_unit": meters_per_unit,
                     "default_prim": "/Asset",
                 },
                 "mesh_count": 1,
@@ -255,6 +268,83 @@ def _simready_root(
     return root
 
 
+def _final_simready_root(
+    root: Path,
+    *,
+    active_reference: dict,
+    rejected_reference: dict,
+) -> tuple[Path, Path]:
+    asset_id = active_reference["asset_id"]
+    rejected_id = rejected_reference["asset_id"]
+    directory = root / "assets" / f"001_{asset_id}"
+    texture = directory / "textures" / f"{asset_id}.png"
+    usd = directory / f"{asset_id}.usd"
+    glb = directory / f"{asset_id}.glb"
+    texture.parent.mkdir(parents=True)
+    usd.write_bytes(b"final controlled usd")
+    texture.write_bytes(b"final controlled texture")
+    record = {
+        "schema_version": 1,
+        "index": 1,
+        "asset_id": asset_id,
+        "status": "retained",
+        "source_library": r"D:\archives\simready_reviewed",
+        "source_asset_report": r"D:\archives\simready_reviewed\asset-report.json",
+        "glb": str(glb),
+        "usd": str(usd),
+        "texture": str(texture),
+        "scale_policy": "unchanged_from_postprocess",
+        "color_policy": "unchanged_from_postprocess",
+        "passed": True,
+    }
+    (directory / "asset-report.json").write_text(json.dumps(record), encoding="utf-8")
+    active = {
+        "schema_version": 1,
+        "status": "final_merged",
+        "range": {"start": 1, "end": 2},
+        "asset_count": 1,
+        "rejected_count": 1,
+        "operation": "merge_only_no_asset_modification",
+        "sources": [],
+        "assets": [record],
+    }
+    rejected = {
+        "schema_version": 1,
+        "status": "excluded_from_final_library",
+        "asset_count": 1,
+        "archive_policy": "provenance only",
+        "assets": [
+            {
+                "index": 2,
+                "asset_id": rejected_id,
+                "reason": "rejected",
+                "active_library_included": False,
+            }
+        ],
+    }
+    merge = {
+        "schema_version": 1,
+        "status": "passed",
+        "operation": "merge_only_no_asset_modification",
+        "range_count": 2,
+        "active_count": 1,
+        "rejected_count": 1,
+        "active_directory_count": 1,
+        "glb_count": 1,
+        "usd_count": 1,
+        "texture_count": 1,
+        "active_indices": [1],
+        "rejected_indices": [2],
+    }
+    for name, payload in (
+        ("active-assets.json", active),
+        ("merge-validation.json", merge),
+        ("rejected-assets.json", rejected),
+    ):
+        (root / name).write_text(json.dumps(payload), encoding="utf-8")
+    return root, usd
+
+
 def test_images_define_expected_assets_but_never_enter_runtime() -> None:
     manifest, reviewed, tree, building = _fixture()
     payload = library.build_reference_asset_library(manifest, reviewed)
@@ -369,6 +459,109 @@ def test_simready_normalized_replaces_reviewed_and_blocks_rejected_hunyuan(
         == 0
     )
     assert (cli_output / "reference-asset-library.v1.json").is_file()
+
+
+def test_final_simready_replaces_uncontrolled_sources_and_preserves_rejections(
+    tmp_path: Path,
+) -> None:
+    active = _reference("111111111111_tree", "01_arbres/Lot 1/Final Tree.png")
+    rejected = _reference("222222222222_tree", "01_arbres/Lot 1/Rejected Tree.png")
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 2,
+        "route_counts": {"hunyuan3d": 2},
+        "assets": [active, rejected],
+    }
+    final_root, usd = _final_simready_root(
+        tmp_path / "simready_final_0001_0294",
+        active_reference=active,
+        rejected_reference=rejected,
+    )
+    candidates = library.discover_candidate_assets(
+        manifest,
+        simready_root=final_root,
+        candidate_inspection=_inspection(usd, up_axis="Z"),
+    )
+    payload = library.build_reference_asset_library(
+        manifest,
+        {"schema": "fireviewer.asset-library.v1", "assets": []},
+        candidate_assets=candidates,
+    )
+    indexed = {asset["asset_id"]: asset for asset in payload["assets"]}
+
+    assert candidates.rejected_asset_ids == {rejected["asset_id"]}
+    assert payload["source_counts"] == {"simready_normalized": 1}
+    assert indexed[active["asset_id"]]["usd"]["sha256"] == _sha(usd.read_bytes())
+    assert indexed[rejected["asset_id"]]["fallback_resolution"]["used"] is True
+    assert (
+        indexed[rejected["asset_id"]]["fallback_resolution"]["donor_asset_id"]
+        == active["asset_id"]
+    )
+
+    output = tmp_path / "published-final"
+    result = library.write_reference_asset_library(
+        payload,
+        review_batch_root=output,
+        output_catalog=output / "reference-asset-library.v1.json",
+        candidate_assets=candidates,
+    )
+    assert result["materialized_simready_normalized_count"] == 1
+    assert (output / "simready-normalized" / f"{active['asset_id']}.usd").is_file()
+    assert not (output / "usd").exists()
+
+
+def test_final_simready_legacy_stage_uses_local_material_and_metric_qualification(
+    tmp_path: Path,
+) -> None:
+    active = _reference("111111111111_tree", "01_arbres/Lot 1/Final Tree.png")
+    rejected = _reference("222222222222_tree", "01_arbres/Lot 1/Rejected Tree.png")
+    manifest = {
+        "schema_version": 1,
+        "asset_count": 2,
+        "route_counts": {"hunyuan3d": 2},
+        "assets": [active, rejected],
+    }
+    final_root, usd = _final_simready_root(
+        tmp_path / "simready_final_0001_0294",
+        active_reference=active,
+        rejected_reference=rejected,
+    )
+    candidates = library.discover_candidate_assets(
+        manifest,
+        simready_root=final_root,
+        candidate_inspection=_inspection(
+            usd, scope_safe=False, up_axis="Y", meters_per_unit=0.001
+        ),
+    )
+    payload = library.build_reference_asset_library(
+        manifest,
+        {"schema": "fireviewer.asset-library.v1", "assets": []},
+        candidate_assets=candidates,
+    )
+    selected = next(
+        asset for asset in payload["assets"] if asset["asset_id"] == active["asset_id"]
+    )
+
+    assert selected["usd_stage"]["up_axis"] == "Y"
+    assert selected["usd_stage"]["meters_per_unit"] == 0.001
+    assert selected["material"] == {
+        "policy": "fireviewer_color_override",
+        "source_package": False,
+        "pbr_preserved": False,
+    }
+    assert selected["texture"]["sha256"] == _sha(
+        (
+            final_root
+            / "assets"
+            / f"001_{active['asset_id']}"
+            / "textures"
+            / f"{active['asset_id']}.png"
+        ).read_bytes()
+    )
+    assert selected["qualification"]["dimensions"] == {
+        "status": "accepted",
+        "value_m": [0.002, 0.002, 0.002],
+    }
 
 
 def test_missing_asset_resolves_to_compatible_real_usd_without_black_cube() -> None:

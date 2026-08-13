@@ -19,6 +19,12 @@ class CandidateInspectionError(ValueError):
     """A candidate cannot be qualified for deterministic catalogue use."""
 
 
+def _traverse_stage_prims(Usd: Any, stage: Any) -> Any:
+    """Traverse regular prims and meshes authored below instance prims."""
+
+    return Usd.PrimRange.Stage(stage, Usd.TraverseInstanceProxies())
+
+
 def _canonical_bytes(value: Any, *, pretty: bool = False) -> bytes:
     rendered = json.dumps(
         value,
@@ -89,7 +95,9 @@ def inspect_candidates(paths: Sequence[Path | str]) -> dict[str, Any]:
             maximum[index] <= minimum[index] for index in range(3)
         ):
             raise CandidateInspectionError(f"USD stage bounds are invalid: {raw.name}")
-        meshes = [prim for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh)]
+        meshes = [
+            prim for prim in _traverse_stage_prims(Usd, stage) if prim.IsA(UsdGeom.Mesh)
+        ]
         if not meshes:
             raise CandidateInspectionError(f"USD stage contains no mesh: {raw.name}")
         default_path = default_prim.GetPath()
