@@ -1,0 +1,17 @@
+FROM fireviewer-map-base:pilot-v1-20260811-r12
+
+ENV FIREVIEWER_TILE_WORKERS=8 \
+    FIREVIEWER_WORK_ROOT=/runpod-volume/fireviewer-map-production \
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260813-r13-runpod
+
+COPY fireviewer-spatial/requirements.runpod-map-production.txt /opt/fireviewer/requirements.runpod.txt
+RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.runpod.txt
+
+COPY fireviewer-spatial/blender/ /opt/fireviewer/fireviewer-spatial/blender/
+COPY fireviewer-spatial/omniverse/ /opt/fireviewer/fireviewer-spatial/omniverse/
+
+RUN mkdir -p /runpod-volume/fireviewer-map-production \
+    && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-assets-only \
+    && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-runtime-only
+
+CMD ["python", "/opt/fireviewer/fireviewer-spatial/blender/runpod_map_production.py"]

@@ -93,6 +93,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
         elevation_revision="elevation-test",
         orthophoto_revision="orthophoto-test",
         context_revision="context-test",
+        tile_workers=3,
     )
     config.work_root.mkdir()
     config.review_batch.mkdir(parents=True)
@@ -177,6 +178,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
             ),
             "asset_root_names": sorted(kwargs["asset_roots"]),
             "usage": "technical_pilot_non_final",
+            "mns_fallback_policy": "ground_only_on_hag_validation_failure",
             "pipeline_files": {"test": "pipeline"},
             "prototype_bundle": {
                 "scope": "explicit_shared",
@@ -269,7 +271,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
         engine.run(
             latitude,
             longitude,
-            0.5,
+            1.0,
             fixed_asset_placements={
                 "schema": "fireviewer.fixed-asset-placement-request.v1",
                 "crs": "EPSG:4326",
@@ -292,9 +294,10 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     archive = Path(results[-1][1])
     assert len(results[-1][2]) == 20
     assert archive.is_file()
-    assert len(prepared_fixed_assets) == 1
-    assert prepared_fixed_assets[0][0]["asset_id"] == "church_village_01"
-    assert prepared_fixed_assets[0][0]["owner_tile_origin_l93_m"] == [
+    assert sum(len(items) for items in prepared_fixed_assets) == 1
+    fixed = next(items[0] for items in prepared_fixed_assets if items)
+    assert fixed["asset_id"] == "church_village_01"
+    assert fixed["owner_tile_origin_l93_m"] == [
         820_000,
         6_312_500,
     ]
@@ -305,9 +308,10 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     receipt = json.loads(
         (job_root / production.ZONE_RECEIPT_NAME).read_text(encoding="utf-8")
     )
-    assert receipt["tile_count"] == 1
-    assert receipt["building_count"] == 2
-    assert receipt["tree_count"] == 7
+    assert receipt["tile_count"] > 1
+    assert len(prepared_fixed_assets) == receipt["tile_count"]
+    assert receipt["building_count"] == 2 * receipt["tile_count"]
+    assert receipt["tree_count"] == 7 * receipt["tile_count"]
     assert receipt["accepted_human"] is False
     with zipfile.ZipFile(archive) as bundle:
         names = set(bundle.namelist())
@@ -324,12 +328,11 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     assert not any("orthophoto-1m.png" in name for name in names)
     assert not any("mnt-05m.tif" in name or "mns-05m.tif" in name for name in names)
     assert validated_requests
-    assert all(
-        request["tile_id"] == receipt["tiles"][0]["tile_id"]
-        for request in validated_requests
-    )
+    expected_tile_ids = {tile["tile_id"] for tile in receipt["tiles"]}
+    assert {request["tile_id"] for request in validated_requests} == expected_tile_ids
     messages = [message for _fraction, message in progress_events]
     assert any("Moteur embarqué validé" in message for message in messages)
+    assert any("3 tuiles simultanées" in message for message in messages)
     assert any("MNT 0,5 m reçu" in message for message in messages)
     assert any("Placement MNS−MNT mesuré" in message for message in messages)
     assert any("Compression du pack autonome" in message for message in messages)
@@ -434,6 +437,24 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
         "huggingface_hub",
         SimpleNamespace(CommitOperationAdd=FakeOperation, HfApi=FakeApi),
     )
+    capture_records = []
+    for index in range(20):
+        relative = f"qa/captures/capture-{index:02d}.png"
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"capture-{index}".encode())
+        capture_records.append(
+            {
+                "capture_id": f"capture-{index:02d}",
+                "category": "overview" if index < 4 else "detail",
+                "artifact": {"path": relative},
+            }
+        )
+    monkeypatch.setattr(
+        production,
+        "verify_gallery",
+        lambda _root: {"captures": capture_records},
+    )
     first = production._publish_dataset_entry(
         config,
         job_root=tmp_path,
@@ -451,7 +472,7 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
     assert first == second
     assert len(commits) == 1
     operations = commits[0]["operations"]
-    assert len(operations) == 3
+    assert len(operations) == 23
     assert all(
         operation.values["path_in_repo"].startswith(
             f"zones/{plan.zone_id}/{receipt['build_id']}/"

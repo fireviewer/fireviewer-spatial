@@ -27,11 +27,14 @@ import os
 import re
 import shutil
 import sys
+import threading
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+
+_SHARED_PROTOTYPE_LOCK = threading.Lock()
 
 CONTRACT_SCHEMA = "fireviewer.measured-scene-usd-contract.v1"
 ALGORITHM = "fireviewer.measured-scene-usd-builder.v1"
@@ -1529,6 +1532,13 @@ def _prototype_payloads(prototype: _Prototype) -> dict[str, bytes]:
 def _publish_shared_prototype(
     bundle_root: Path, prototype: _Prototype, payloads: Mapping[str, bytes]
 ) -> None:
+    with _SHARED_PROTOTYPE_LOCK:
+        _publish_shared_prototype_locked(bundle_root, prototype, payloads)
+
+
+def _publish_shared_prototype_locked(
+    bundle_root: Path, prototype: _Prototype, payloads: Mapping[str, bytes]
+) -> None:
     asset_root = bundle_root / prototype.asset_id
     expected_relatives = {
         PurePosixPath(relative).relative_to(prototype.asset_id).as_posix()
@@ -1981,6 +1991,8 @@ def build_measured_scene_usd(
                     bundle_root, prototype, prototype_payloads[key]
                 )
         staging.mkdir(parents=False, exist_ok=False)
+        if bundle_scope == "output_local":
+            (staging / "prototypes").mkdir(parents=False, exist_ok=False)
         for _key, prototype in sorted(prototypes.items()):
             if bundle_scope != "output_local":
                 continue

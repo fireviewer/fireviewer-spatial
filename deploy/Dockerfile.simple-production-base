@@ -1,0 +1,83 @@
+FROM debian:bookworm-slim AS blender-download
+
+ARG BLENDER_VERSION=4.5.3
+ARG BLENDER_SHA256=975c58fcb244273838534bba771e64ad87739216b0f9b39a888531a49a72d845
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates curl xz-utils \
+    && curl --fail --location --retry 5 \
+        "https://download.blender.org/release/Blender4.5/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \
+        --output /tmp/blender.tar.xz \
+    && echo "${BLENDER_SHA256}  /tmp/blender.tar.xz" | sha256sum --check --strict \
+    && mkdir -p /opt/blender \
+    && tar --extract --xz --file /tmp/blender.tar.xz \
+        --directory /opt/blender --strip-components=1
+
+FROM python:3.11-slim AS asset-catalog
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        libgomp1 libgl1 libegl1 libglib2.0-0 libx11-6 libxi6 libxrender1 \
+        libxfixes3 libxkbcommon0 libsm6 libxxf86vm1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=blender-download /opt/blender/ /opt/blender/
+COPY fireviewer-sdg/asset4sim/generated_hunyuan3d_v2/reference-manifest.json /inputs/reference-manifest.json
+COPY fireviewer-spatial/blender/build_reference_usd_asset_library.py /tools/build_reference_usd_asset_library.py
+COPY fireviewer-spatial/blender/inspect_reference_usd_candidates.py /tools/inspect_reference_usd_candidates.py
+COPY fireviewer-sdg/asset4sim/generated_hunyuan3d_v2/simready_final_0001_0294/ /inputs/simready-final/
+COPY fireviewer-sdg/asset4sim/generated_otherway_betterquality/ /inputs/premium-usdz/
+
+RUN /opt/blender/blender --background --factory-startup --disable-autoexec \
+        --python-exit-code 1 \
+        --python /tools/inspect_reference_usd_candidates.py -- \
+        --input-root /inputs/simready-final/assets \
+        --input-root /inputs/premium-usdz \
+        --output /inputs/candidate-inspection.json \
+    && python /tools/build_reference_usd_asset_library.py \
+        --reference-manifest /inputs/reference-manifest.json \
+        --review-batch-root /out/simready_final_0001_0294 \
+        --output-catalog /out/reference-asset-library.v1.json \
+        --simready-root /inputs/simready-final \
+        --premium-usdz-root /inputs/premium-usdz \
+        --candidate-inspection /inputs/candidate-inspection.json \
+        --execute
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/opt/fireviewer/fireviewer-spatial/blender:/opt/fireviewer/fireviewer-spatial/omniverse \
+    FIREVIEWER_WORK_ROOT=/work \
+    FIREVIEWER_PORTABLE_ROOT=/ \
+    FIREVIEWER_ASSET_LIBRARY=/opt/fireviewer/assets/reference-asset-library.v1.json \
+    FIREVIEWER_REVIEW_BATCH=/opt/fireviewer/assets/simready_final_0001_0294 \
+    FIREVIEWER_BLENDER=/opt/blender/blender \
+    FIREVIEWER_HF_DATASET_ID=fireviewer/simple-measured-scenes-v1 \
+    FIREVIEWER_IMAGE_REFERENCE=fireviewer-map-base:pilot-v1-20260811-r12
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        libgomp1 libgl1 libegl1 libglib2.0-0 libx11-6 libxi6 libxrender1 \
+        libxfixes3 libxkbcommon0 libsm6 libxxf86vm1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=blender-download /opt/blender/ /opt/blender/
+COPY fireviewer-spatial/requirements.simple-production-api.txt /opt/fireviewer/requirements.txt
+RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.txt
+
+COPY --from=asset-catalog /out/simready_final_0001_0294/ /opt/fireviewer/assets/simready_final_0001_0294/
+COPY --from=asset-catalog /out/reference-asset-library.v1.json /opt/fireviewer/assets/reference-asset-library.v1.json
+COPY fireviewer-spatial/blender/ /opt/fireviewer/fireviewer-spatial/blender/
+COPY fireviewer-spatial/omniverse/ /opt/fireviewer/fireviewer-spatial/omniverse/
+
+RUN mkdir -p /work \
+    && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-assets-only \
+    && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-runtime-only
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=60s --timeout=120s --start-period=20s --retries=2 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=10).read()" || exit 1
+
+CMD ["python", "/opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py", "--host", "0.0.0.0", "--port", "8000"]

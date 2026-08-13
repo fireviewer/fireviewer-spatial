@@ -18,6 +18,7 @@ import threading
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -103,6 +104,7 @@ class ProductionConfig:
     context_revision: str
     max_side_m: int = 15_000
     max_tiles: int = 900
+    tile_workers: int = 1
     blender: Path = Path("/opt/blender/blender")
     dataset_id: str | None = None
 
@@ -120,7 +122,7 @@ class ProductionConfig:
             review_batch=Path(
                 os.environ.get(
                     "FIREVIEWER_REVIEW_BATCH",
-                    "/opt/fireviewer/assets/review_batch_53",
+                    "/opt/fireviewer/assets/simready_final_0001_0294",
                 )
             ),
             elevation_revision=os.environ.get(
@@ -134,6 +136,7 @@ class ProductionConfig:
             ),
             max_side_m=int(os.environ.get("FIREVIEWER_MAX_SIDE_M", "15000")),
             max_tiles=int(os.environ.get("FIREVIEWER_MAX_TILES", "900")),
+            tile_workers=int(os.environ.get("FIREVIEWER_TILE_WORKERS", "1")),
             blender=Path(os.environ.get("FIREVIEWER_BLENDER", "/opt/blender/blender")),
             dataset_id=(os.environ.get("FIREVIEWER_HF_DATASET_ID", "").strip() or None),
         )
@@ -424,7 +427,11 @@ def validate_config(config: ProductionConfig) -> dict[str, Any]:
 def validate_production_config(config: ProductionConfig) -> dict[str, Any]:
     """Validate only the headless production runtime shared by every frontend."""
 
-    if config.max_side_m < TILE_SIZE_M or config.max_tiles < 1:
+    if (
+        config.max_side_m < TILE_SIZE_M
+        or config.max_tiles < 1
+        or not 1 <= config.tile_workers <= 32
+    ):
         raise SimpleProductionError("Limites du pod invalides")
     portable = _absolute(config.portable_root, "racine portable", exists=True)
     work = _absolute(config.work_root, "volume de travail", exists=False)
@@ -706,6 +713,7 @@ def _expected_request_from_receipt(
         "asset_library_sha256": _sha256_file(asset_library),
         "asset_root_names": sorted(asset_roots),
         "usage": "technical_pilot_non_final",
+        "mns_fallback_policy": "ground_only_on_hag_validation_failure",
         "prototype_bundle": {
             "scope": "explicit_shared",
             "portable_path": asset_bundle_root.resolve()
@@ -776,6 +784,7 @@ def _write_zone_receipt(
     trees = 0
     context_assets = 0
     placeholders = 0
+    degraded_mns_tiles = 0
     for tile in plan.tiles:
         package_root = job_root / "packages" / tile.tile_id
         receipt_path = package_root / "simple-measured-tile-receipt.v1.json"
@@ -804,6 +813,12 @@ def _write_zone_receipt(
         trees += tile_trees
         context_assets += tile_context_assets
         placeholders += tile_placeholders
+        placement_source = receipt.get("placement", {}).get("source", {})
+        degraded = bool(
+            isinstance(placement_source, Mapping)
+            and placement_source.get("mode") == "degraded_mns_fallback"
+        )
+        degraded_mns_tiles += int(degraded)
         tile_records.append(
             {
                 "tile_id": tile.tile_id,
@@ -814,6 +829,7 @@ def _write_zone_receipt(
                 "tree_count": tile_trees,
                 "context_asset_count": tile_context_assets,
                 "placeholder_instance_count": tile_placeholders,
+                "degraded_mns_fallback": degraded,
             }
         )
     context_path = job_root / ZONE_CONTEXT_NAME
@@ -850,6 +866,7 @@ def _write_zone_receipt(
         "tree_count": trees,
         "context_asset_count": context_assets,
         "placeholder_instance_count": placeholders,
+        "degraded_mns_tile_count": degraded_mns_tiles,
         "tiles": tile_records,
     }
     fixed_request_path = job_root / FIXED_ASSET_REQUEST_NAME
@@ -1037,6 +1054,20 @@ def _publish_dataset_entry(
         "byte_count": archive.stat().st_size,
         "sha256": _sha256_file(archive),
     }
+    gallery_receipt = verify_gallery(job_root)
+    capture_records: list[dict[str, Any]] = []
+    for index, record in enumerate(gallery_receipt["captures"]):
+        artifact = record["artifact"]
+        capture_path = job_root / artifact["path"]
+        capture_records.append(
+            {
+                "index": index,
+                "caption": f"{record['capture_id']} — {record['category']}",
+                "file": artifact["path"],
+                "byte_count": capture_path.stat().st_size,
+                "sha256": _sha256_file(capture_path),
+            }
+        )
     entry: dict[str, Any] = {
         "schema": "fireviewer.simple-measured-scene-dataset-entry.v1",
         "status": "technical_scene_produced",
@@ -1058,6 +1089,7 @@ def _publish_dataset_entry(
             "placeholder_instances": receipt.get("placeholder_instance_count", 0),
         },
         "archive": archive_record,
+        "captures": capture_records,
         "zone_receipt": {
             "file": ZONE_RECEIPT_NAME,
             "sha256": _sha256_file(job_root / ZONE_RECEIPT_NAME),
@@ -1092,24 +1124,32 @@ def _publish_dataset_entry(
                 "La dataset cible doit être privée avant toute publication"
             )
         remote_root = f"zones/{plan.zone_id}/{build_id}"
+        operations = [
+            CommitOperationAdd(
+                path_in_repo=f"{remote_root}/{ZIP_NAME}",
+                path_or_fileobj=archive,
+            ),
+            CommitOperationAdd(
+                path_in_repo=f"{remote_root}/{ZONE_RECEIPT_NAME}",
+                path_or_fileobj=job_root / ZONE_RECEIPT_NAME,
+            ),
+            CommitOperationAdd(
+                path_in_repo=f"{remote_root}/{DATASET_ENTRY_NAME}",
+                path_or_fileobj=entry_path,
+            ),
+        ]
+        operations.extend(
+            CommitOperationAdd(
+                path_in_repo=f"{remote_root}/{record['file']}",
+                path_or_fileobj=job_root / record["file"],
+            )
+            for record in capture_records
+        )
         commit = api.create_commit(
             repo_id=config.dataset_id,
             repo_type="dataset",
             commit_message=f"Add measured FireViewer scene {plan.zone_id}",
-            operations=[
-                CommitOperationAdd(
-                    path_in_repo=f"{remote_root}/{ZIP_NAME}",
-                    path_or_fileobj=archive,
-                ),
-                CommitOperationAdd(
-                    path_in_repo=f"{remote_root}/{ZONE_RECEIPT_NAME}",
-                    path_or_fileobj=job_root / ZONE_RECEIPT_NAME,
-                ),
-                CommitOperationAdd(
-                    path_in_repo=f"{remote_root}/{DATASET_ENTRY_NAME}",
-                    path_or_fileobj=entry_path,
-                ),
-            ],
+            operations=operations,
         )
     except SimpleProductionError:
         raise
@@ -1127,6 +1167,7 @@ def _publish_dataset_entry(
         "entry_sha256": entry["entry_sha256"],
         "commit_oid": commit.oid,
         "path_in_repo": remote_root,
+        "captures": capture_records,
     }
     _write_json(publication_path, publication)
     return publication
@@ -1270,6 +1311,8 @@ class ProductionEngine:
             else:
                 _write_json(fixed_request_path, fixed_asset_placements)
 
+        report_lock = threading.Lock()
+
         def report(
             fraction: float,
             phase: str,
@@ -1278,18 +1321,19 @@ class ProductionEngine:
             completed_tiles: int = 0,
             details: Mapping[str, Any] | None = None,
         ) -> None:
-            _status(
-                job_root,
-                state="producing",
-                message=message,
-                completed=completed_tiles,
-                total=len(plan.tiles),
-                phase=phase,
-                details=details,
-                elapsed_seconds=time.perf_counter() - started,
-            )
-            if progress_callback is not None:
-                progress_callback(max(0.0, min(1.0, fraction)), message)
+            with report_lock:
+                _status(
+                    job_root,
+                    state="producing",
+                    message=message,
+                    completed=completed_tiles,
+                    total=len(plan.tiles),
+                    phase=phase,
+                    details=details,
+                    elapsed_seconds=time.perf_counter() - started,
+                )
+                if progress_callback is not None:
+                    progress_callback(max(0.0, min(1.0, fraction)), message)
 
         report(
             0.01,
@@ -1417,19 +1461,16 @@ class ProductionEngine:
             "tile_published": (1.00, "Package de tuile publié"),
             "tile_reused": (1.00, "Package existant revalidé et réutilisé"),
         }
-        for tile_index, tile in enumerate(plan.tiles):
-            tile_base = 0.08 + (tile_index / total) * 0.82
-            tile_span = 0.82 / total
+        tile_progress = [0.0] * total
+        tile_progress_lock = threading.Lock()
+        completed_tiles: set[int] = set()
 
+        def process_tile(tile_index: int, tile: TilePlan) -> str:
             def tile_report(
                 phase: str,
                 details: Mapping[str, Any],
                 *,
                 table: Mapping[str, tuple[float, str]],
-                current_tile_index: int = tile_index,
-                current_tile_base: float = tile_base,
-                current_tile_span: float = tile_span,
-                completed_before_tile: int = completed,
             ) -> None:
                 local, label = table.get(phase, (0.0, phase))
                 suffixes: list[str] = []
@@ -1442,25 +1483,21 @@ class ProductionEngine:
                 ):
                     if isinstance(details.get(key), int):
                         suffixes.append(f"{details[key]} {label_key}")
-                message = f"Tuile {current_tile_index + 1}/{total} — {label}"
+                message = f"Tuile {tile_index + 1}/{total} — {label}"
                 if suffixes:
                     message += " — " + ", ".join(suffixes)
+                with tile_progress_lock:
+                    tile_progress[tile_index] = max(tile_progress[tile_index], local)
+                    fraction = 0.08 + 0.82 * (sum(tile_progress) / total)
+                    completed_count = len(completed_tiles)
                 report(
-                    current_tile_base + local * current_tile_span,
+                    fraction,
                     phase,
                     message,
-                    completed_tiles=completed_before_tile,
-                    details=details,
+                    completed_tiles=completed_count,
+                    details={**details, "tile_index": tile_index + 1},
                 )
 
-            _status(
-                job_root,
-                state="producing",
-                message=f"Production {tile.tile_id}",
-                completed=completed,
-                total=total,
-            )
-            yield f"Tuile {completed + 1}/{total} — {tile.tile_id}", None, []
             package_root = job_root / "packages" / tile.tile_id
             if package_root.exists():
                 validate_simple_measured_tile_package(
@@ -1478,72 +1515,101 @@ class ProductionEngine:
                     asset_roots=asset_roots,
                 )
                 tile_report(
-                    "tile_reused",
-                    {"tile_id": tile.tile_id},
-                    table=production_phase,
+                    "tile_reused", {"tile_id": tile.tile_id}, table=production_phase
                 )
-                completed += 1
-                continue
-            source_root = job_root / "sources" / tile.tile_id
-            sources = self.prepare_sources_fn(
-                output_root=source_root,
-                zone_id=plan.zone_id,
-                tile_id=tile.tile_id,
-                tile_origin_l93_m=tile.origin_l93_m,
-                elevation_revision=self.config.elevation_revision,
-                orthophoto_revision=self.config.orthophoto_revision,
-                zone_context=job_root / ZONE_CONTEXT_NAME,
-                fixed_asset_placements=[
-                    placement
-                    for placement in projected_fixed_assets
-                    if placement["owner_tile_origin_l93_m"] == list(tile.origin_l93_m)
-                ],
-                progress_callback=lambda phase, details: tile_report(
-                    phase, details, table=source_phase
-                ),
-            )
-            package = self.produce_tile_fn(
-                mnt_05m=sources.mnt,
-                mns_05m=sources.mns,
-                orthophoto_1m=sources.orthophoto,
-                elevation_source_receipt=sources.elevation_receipt,
-                orthophoto_source_receipt=sources.orthophoto_receipt,
-                placement_context=sources.placement_context,
-                asset_library=self.config.asset_library,
-                asset_roots=asset_roots,
-                portable_root=self.config.portable_root,
-                asset_bundle_root=shared_bundle,
-                output_root=package_root,
-                zone_id=plan.zone_id,
-                tile_id=tile.tile_id,
-                tile_origin_l93_m=tile.origin_l93_m,
-                progress_callback=lambda phase, details: tile_report(
-                    phase, details, table=production_phase
-                ),
-            )
-            validate_simple_measured_tile_package(
-                package.output_root,
-                expected_request=_expected_request_from_receipt(
-                    package.output_root,
-                    plan=plan,
-                    tile=tile,
+            else:
+                source_root = job_root / "sources" / tile.tile_id
+                sources = self.prepare_sources_fn(
+                    output_root=source_root,
+                    zone_id=plan.zone_id,
+                    tile_id=tile.tile_id,
+                    tile_origin_l93_m=tile.origin_l93_m,
+                    elevation_revision=self.config.elevation_revision,
+                    orthophoto_revision=self.config.orthophoto_revision,
+                    zone_context=job_root / ZONE_CONTEXT_NAME,
+                    fixed_asset_placements=[
+                        placement
+                        for placement in projected_fixed_assets
+                        if placement["owner_tile_origin_l93_m"]
+                        == list(tile.origin_l93_m)
+                    ],
+                    progress_callback=lambda phase, details: tile_report(
+                        phase, details, table=source_phase
+                    ),
+                )
+                package = self.produce_tile_fn(
+                    mnt_05m=sources.mnt,
+                    mns_05m=sources.mns,
+                    orthophoto_1m=sources.orthophoto,
+                    elevation_source_receipt=sources.elevation_receipt,
+                    orthophoto_source_receipt=sources.orthophoto_receipt,
+                    placement_context=sources.placement_context,
                     asset_library=self.config.asset_library,
                     asset_roots=asset_roots,
                     portable_root=self.config.portable_root,
                     asset_bundle_root=shared_bundle,
-                ),
-                asset_library=self.config.asset_library,
-                asset_roots=asset_roots,
-            )
-            _copy_provenance(sources, job_root / "provenance" / tile.tile_id)
-            _remove_sources(job_root, sources.root)
+                    output_root=package_root,
+                    zone_id=plan.zone_id,
+                    tile_id=tile.tile_id,
+                    tile_origin_l93_m=tile.origin_l93_m,
+                    progress_callback=lambda phase, details: tile_report(
+                        phase, details, table=production_phase
+                    ),
+                )
+                validate_simple_measured_tile_package(
+                    package.output_root,
+                    expected_request=_expected_request_from_receipt(
+                        package.output_root,
+                        plan=plan,
+                        tile=tile,
+                        asset_library=self.config.asset_library,
+                        asset_roots=asset_roots,
+                        portable_root=self.config.portable_root,
+                        asset_bundle_root=shared_bundle,
+                    ),
+                    asset_library=self.config.asset_library,
+                    asset_roots=asset_roots,
+                )
+                _copy_provenance(sources, job_root / "provenance" / tile.tile_id)
+                _remove_sources(job_root, sources.root)
+            with tile_progress_lock:
+                tile_progress[tile_index] = 1.0
+                completed_tiles.add(tile_index)
+                completed_count = len(completed_tiles)
+                fraction = 0.08 + 0.82 * (sum(tile_progress) / total)
             report(
-                tile_base + tile_span,
+                fraction,
                 "raw_sources_removed",
-                f"Tuile {tile_index + 1}/{total} — sources raster brutes supprimées",
-                completed_tiles=completed + 1,
+                f"Tuile {tile_index + 1}/{total} — package validé, sources brutes absentes",
+                completed_tiles=completed_count,
+                details={"tile_id": tile.tile_id, "tile_index": tile_index + 1},
             )
-            completed += 1
+            return tile.tile_id
+
+        worker_count = min(self.config.tile_workers, total)
+        if worker_count == 1:
+            for tile_index, tile in enumerate(plan.tiles):
+                yield f"Tuile {tile_index + 1}/{total} — {tile.tile_id}", None, []
+                process_tile(tile_index, tile)
+        else:
+            report(
+                0.08,
+                "parallel_tile_production",
+                f"Production parallèle — {worker_count} tuiles simultanées",
+            )
+            with ThreadPoolExecutor(
+                max_workers=worker_count, thread_name_prefix="fireviewer-tile"
+            ) as executor:
+                futures = {
+                    executor.submit(process_tile, tile_index, tile): tile_index
+                    for tile_index, tile in enumerate(plan.tiles)
+                }
+                for future in as_completed(futures):
+                    tile_id = future.result()
+                    with tile_progress_lock:
+                        done_count = len(completed_tiles)
+                    yield f"Tuile {done_count}/{total} terminée — {tile_id}", None, []
+        completed = len(completed_tiles)
 
         _status(
             job_root,

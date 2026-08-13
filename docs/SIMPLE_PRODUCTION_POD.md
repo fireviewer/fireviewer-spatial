@@ -1,7 +1,7 @@
 # API de production simple FireViewer
 
-Le conteneur est un moteur headless FastAPI, sans Gradio, frontend ni base de
-données. L'écran React vit séparément dans l'espace authentifié de
+Le conteneur actif est un worker RunPod Serverless headless, sans Gradio,
+frontend ni base de données. L'écran React vit séparément dans l'espace authentifié de
 `fireviewer-frontend`, à `/admin/production`; son composant est
 `src/features/simple-production/SimpleProductionWorkspace.tsx`. Aucune route
 publique ne donne accès à la production.
@@ -49,28 +49,28 @@ sur les heures réelles. Une entrée peut être un instant ou une plage explicit
 `time_window.start` / `time_window.end`; ces bornes sont conservées sans être
 devinées. Un curseur charge chaque instant ou plage sur le terrain dans un
 viewer 3D. Aucune progression n'est interpolée ou prédite entre deux entrées.
-Une seule production s'exécute à la fois. L'état, les reçus et les résultats
-sont des fichiers sous `/work`.
+Une seule production s'exécute par worker. L'état, les reçus et les résultats
+sont des fichiers sous `/runpod-volume/fireviewer-map-production`.
 
 ## Contrat HTTP
 
-L'API expose `GET /healthz`, `GET /v1/config`, `POST /v1/plan`,
-`POST /v1/fixed-assets/validate`, `POST /v1/jobs`,
-`POST /v1/perimeter-jobs` et les routes de suivi/téléchargement sous
-`/v1/jobs/{job_id}`. Un jeton Bearer est optionnel via
-`FIREVIEWER_API_TOKEN`; les origines du futur espace admin sont explicitement
-listées dans `FIREVIEWER_API_CORS_ORIGINS`. Une seule production s'exécute à la
-fois.
+Le navigateur appelle uniquement les routes authentifiées du backend
+`/api/v1/admin/map-production/*` et `/api/v1/admin/map-jobs/*`. Le backend
+soumet le travail à l'opération asynchrone RunPod `/run`, interroge `/status`
+et ne transmet jamais les secrets RunPod ou Hugging Face au navigateur. Les
+contrats de l'Admin et les ZIP produits restent inchangés.
 
-## Construire l'image
+## Construire l'image RunPod
 
 Depuis `fireviewer-repositories` :
 
 ```powershell
-docker build -f Dockerfile.simple-production-api -t fireviewer/simple-production-api:pilot-v1 .
+docker build -f fireviewer-spatial/deploy/Dockerfile.simple-production-base -t fireviewer-map-base:pilot-v1-20260811-r12 .
+docker build -f fireviewer-spatial/deploy/Dockerfile.runpod-map-production -t charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260813-r13-runpod .
 ```
 
-Le build ne télécharge aucune donnée géographique et ne compile aucun terrain.
+Le build dérive de l'image runtime validée et ne télécharge aucune donnée
+géographique ni ne compile de terrain.
 Il embarque les dépendances Python, Blender 4.5.3 avec ses bindings OpenUSD, le
 générateur complet et le catalogue intégral des assets 3D attendus. Les USD
 normalisés validés ont priorité sur les anciennes versions Hunyuan ; les assets
@@ -96,15 +96,15 @@ justifient. Les compteurs de scène séparent les prototypes uniques des instanc
 placées. Les catégories sans observation géographique exploitable restent dans
 le catalogue, mais ne sont pas dispersées arbitrairement sur le terrain.
 
-## Lancer
+## Exécution
 
-```powershell
-docker run --rm -p 8000:8000 -v D:\FireViewerPodWork:/work fireviewer/simple-production-api:pilot-v1
-```
+Le template RunPod lance directement
+`blender/runpod_map_production.py`. Le volume persistant est monté sur
+`/runpod-volume` et `FIREVIEWER_TILE_WORKERS` fixe le parallélisme borné par
+tuile (8 dans l'image active). Une tuile déjà scellée est revalidée et reprise.
 
-Sur un pod, exposer le port `8000`, monter un volume persistant sur `/work` et
-autoriser les requêtes HTTPS sortantes vers la Géoplateforme IGN. Pour publier
-les résultats, injecter `HF_TOKEN` comme secret RunPod ; il n'est jamais copié
+Le worker doit autoriser les requêtes HTTPS sortantes vers la Géoplateforme IGN.
+Pour publier les résultats, injecter `HF_TOKEN` comme secret RunPod ; il n'est jamais copié
 dans l'image, les reçus ou le ZIP. La cible verrouillée de l'image est la dataset
 privée `fireviewer/simple-measured-scenes-v1`.
 
@@ -122,6 +122,12 @@ autonome après extraction et contient :
 Les MNT, MNS et orthophotos bruts sont supprimés après validation de chaque
 tuile et ne sont pas placés dans le ZIP. L'interface ne crée aucune acceptation
 humaine automatique : le reçu de zone reste technique.
+
+Si une paire MNS/MNT reste incohérente, la tuile n'arrête plus toute la zone :
+elle conserve terrain et orthophoto, utilise le MNT comme MNS de secours et
+n'infère aucun objet de hauteur sur cette tuile. Les reçus de tuile et de zone
+enregistrent explicitement `degraded_mns_fallback` et le nombre de tuiles
+dégradées ; cette information doit rester visible lors de la validation.
 
 Le téléchargement du flux périmètres est un ZIP autonome contenant :
 
@@ -184,8 +190,12 @@ décodage, FVTG, texture sol, inventaire MNS-MNT avec comptes, exports OpenUSD,
 rehash du package, suppression des rasters bruts, scène unifiée et ZIP. Une
 phase n'avance qu'après le retour de l'opération correspondante.
 
-Après validation du ZIP, le pod publie dans la dataset privée trois artefacts
-sous `zones/<zone_id>/<build_id>/` : le ZIP autonome, `zone.done.json` et
-`dataset-entry.json`. L'upload est idempotent et échoue fermé si la cible n'est
+Après validation du ZIP, le worker publie dans la dataset privée 23 artefacts
+sous `zones/<zone_id>/<build_id>/` : le ZIP autonome, `zone.done.json`,
+`dataset-entry.json` et les 20 captures. L'upload est idempotent et échoue fermé si la cible n'est
 pas privée ou si le jeton est absent. La dataset publique historique n'est pas
 modifiée par ce parcours.
+
+Modal n'est plus un fournisseur de cartes. Son workspace reste séparé et peut
+être réutilisé plus tard par l'agent de collecte périodique ; aucune source de
+collecte n'est inventée dans le worker cartographique.

@@ -53,6 +53,7 @@ from fixed_terrain_usd import (
     validate_fixed_terrain_usd_package,
 )
 from mns_mnt_placement_inventory import (
+    PlacementInventoryError,
     build_placement_inventory,
     read_hag_1m,
     validate_inventory,
@@ -782,6 +783,7 @@ def _request_identity(
         "asset_library_sha256": _sha256_file(asset_library),
         "asset_root_names": sorted(asset_roots),
         "usage": "technical_pilot_non_final",
+        "mns_fallback_policy": "ground_only_on_hag_validation_failure",
         "pipeline_files": _pipeline_file_hashes(),
     }
     if asset_bundle_root is not None:
@@ -845,6 +847,7 @@ def _write_receipt(
     terrain: FixedTerrainTile,
     placement_inventory: Mapping[str, Any],
     scene_receipt: Mapping[str, Any],
+    placement_source: Mapping[str, Any],
 ) -> Path:
     outputs = _output_artifacts(root)
     without_hash: dict[str, Any] = {
@@ -875,6 +878,7 @@ def _write_receipt(
             ],
             "quota_applied": False,
             "thinning_applied": False,
+            "source": dict(placement_source),
         },
         "scene": {
             "build_id": scene_receipt["build_id"],
@@ -1214,16 +1218,47 @@ def produce_simple_measured_tile(
             height=500,
         )
 
-        placement = build_placement_inventory(
-            sources.mnt_m,
-            sources.mns_m,
-            tile_origin_l93_m=origin,
-            zone_id=zone_id,
-            building_footprints=context.building_footprints,
-            context_geometries=context.context_geometries,
-            context_features=context.context_features,
-            fixed_asset_placements=context.fixed_asset_placements,
-        )
+        placement_source: dict[str, Any] = {
+            "mode": "measured_mns_minus_mnt",
+            "degraded": False,
+        }
+        try:
+            placement = build_placement_inventory(
+                sources.mnt_m,
+                sources.mns_m,
+                tile_origin_l93_m=origin,
+                zone_id=zone_id,
+                building_footprints=context.building_footprints,
+                context_geometries=context.context_geometries,
+                context_features=context.context_features,
+                fixed_asset_placements=context.fixed_asset_placements,
+            )
+        except PlacementInventoryError as error:
+            message = str(error)
+            if "corrupt or misaligned" not in message:
+                raise
+            placement_source = {
+                "mode": "degraded_mns_fallback",
+                "degraded": True,
+                "reason": message,
+                "behavior": "MNT used as MNS; no measured height objects inferred",
+            }
+            _emit_progress(
+                progress_callback,
+                "placement_mns_fallback",
+                tile_id=tile_id,
+                reason=message,
+            )
+            placement = build_placement_inventory(
+                sources.mnt_m,
+                sources.mnt_m,
+                tile_origin_l93_m=origin,
+                zone_id=zone_id,
+                building_footprints=(),
+                context_geometries=context.context_geometries,
+                context_features=context.context_features,
+                fixed_asset_placements=context.fixed_asset_placements,
+            )
         write_placement_outputs(
             staging / "placement", placement, tile_origin_l93_m=origin, gpkg="off"
         )
@@ -1279,6 +1314,7 @@ def produce_simple_measured_tile(
             terrain=terrain,
             placement_inventory=placement.inventory,
             scene_receipt=scene_receipt,
+            placement_source=placement_source,
         )
         validate_simple_measured_tile_package(
             staging,
