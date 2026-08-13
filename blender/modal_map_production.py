@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,14 @@ VOLUME_NAME = "fireviewer-map-production-work-v1"
 JOB_STORE_NAME = "fireviewer-map-production-jobs-v1"
 SECRET_NAME = "fireviewer-map-production-secrets"
 JOB_ID_RE = re.compile(r"^map_[0-9a-f]{32}$")
+ACTIVE_STATES = frozenset({"queued", "running"})
+PUBLIC_STATES = frozenset({"queued", "running", "completed", "failed"})
+RESUMABLE_PHASES = frozenset(
+    {"canceled", "stale", "worker_timeout", "worker_terminated"}
+)
+CALL_REGISTRATION_GRACE_SECONDS = 30.0
+CALL_KEY_PREFIX = "_call:"
+RESUME_KEY_PREFIX = "_resume:"
 
 
 class ModalMapContractError(ValueError):
@@ -87,6 +96,7 @@ def job_id_for_request(payload: Any) -> str:
 def initial_job_status(job_id: str, request: dict[str, Any]) -> dict[str, Any]:
     if not JOB_ID_RE.fullmatch(job_id):
         raise ModalMapContractError("job_id Modal invalide")
+    now = _now()
     return {
         "schema": JOB_SCHEMA,
         "job_id": job_id,
@@ -98,9 +108,11 @@ def initial_job_status(job_id: str, request: dict[str, Any]) -> dict[str, Any]:
         "message": "En attente d'une ressource Modal CPU Serverless",
         "current_tile": None,
         "tile_count": None,
-        "created_at": _now(),
+        "created_at": now,
         "started_at": None,
         "finished_at": None,
+        "heartbeat_at": now,
+        "attempt": 1,
         "error": None,
         "dataset": None,
         "archive": None,
@@ -116,6 +128,8 @@ def public_job_status(status: Any) -> dict[str, Any]:
         raise ModalMapContractError("Statut Modal avec job_id invalide")
     if status.get("captures") != []:
         raise ModalMapContractError("Inventaire des captures Modal invalide")
+    if status.get("state") not in PUBLIC_STATES:
+        raise ModalMapContractError("Statut Modal avec état invalide")
     return {
         "schema": PUBLIC_SCHEMA,
         "job_id": job_id,
@@ -140,6 +154,187 @@ def public_job_status(status: Any) -> dict[str, Any]:
     }
 
 
+def _attempt(status: dict[str, Any]) -> int:
+    raw = status.get("attempt", 1)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise ModalMapContractError("Statut Modal avec tentative invalide")
+    return raw
+
+
+def _call_key(job_id: str, attempt: int) -> str:
+    return f"{CALL_KEY_PREFIX}{job_id}:{attempt}"
+
+
+def _resume_key(job_id: str, attempt: int) -> str:
+    return f"{RESUME_KEY_PREFIX}{job_id}:{attempt}"
+
+
+def _timestamp_age_seconds(status: dict[str, Any]) -> float:
+    raw = (
+        status.get("heartbeat_at")
+        or status.get("started_at")
+        or status.get("created_at")
+    )
+    if not isinstance(raw, str):
+        return float("inf")
+    try:
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return float("inf")
+    if stamp.tzinfo is None:
+        return float("inf")
+    return max(0.0, (datetime.now(UTC) - stamp.astimezone(UTC)).total_seconds())
+
+
+def _terminal_transition(
+    status: dict[str, Any],
+    *,
+    phase: str,
+    message: str,
+    error: str,
+) -> dict[str, Any]:
+    terminal = dict(status)
+    terminal.update(
+        state="failed",
+        phase=phase,
+        message=message,
+        error=error,
+        finished_at=_now(),
+        heartbeat_at=_now(),
+    )
+    return terminal
+
+
+def _poll_function_call(function_call_id: str) -> None:
+    modal.FunctionCall.from_id(function_call_id).get(timeout=0)
+
+
+def _looks_canceled(error: BaseException) -> bool:
+    message = str(error).strip().lower()
+    return isinstance(error, modal.exception.RemoteError) and (
+        not message or "cancel" in message or "terminat" in message
+    )
+
+
+def _reconcile_active_status(status: dict[str, Any]) -> dict[str, Any]:
+    """Turn a terminal Modal call into a terminal public status on the next poll."""
+
+    if status.get("state") not in ACTIVE_STATES:
+        return status
+    job_id = str(status.get("job_id", ""))
+    attempt = _attempt(status)
+    call = job_store.get(_call_key(job_id, attempt))
+    if not isinstance(call, dict) or not isinstance(call.get("function_call_id"), str):
+        if _timestamp_age_seconds(status) < CALL_REGISTRATION_GRACE_SECONDS:
+            return status
+        stale = _terminal_transition(
+            status,
+            phase="stale",
+            message="Production interrompue — reprise disponible",
+            error="L'appel Modal actif est absent; les tuiles validées restent réutilisables.",
+        )
+        job_store[job_id] = stale
+        return stale
+
+    try:
+        _poll_function_call(str(call["function_call_id"]))
+    except modal.exception.OutputExpiredError:
+        phase = "stale"
+        error_message = (
+            "Le résultat de l'appel Modal a expiré; les tuiles validées restent "
+            "réutilisables."
+        )
+    except modal.exception.FunctionTimeoutError as error:
+        phase = "worker_timeout"
+        error_message = str(error) or "Le worker Modal a dépassé sa durée maximale."
+    except modal.exception.TimeoutError:
+        return dict(job_store.get(job_id, status))
+    except Exception as error:  # Modal reports external cancellation as RemoteError.
+        latest = dict(job_store.get(job_id, status))
+        if latest.get("state") not in ACTIVE_STATES:
+            return latest
+        phase = "canceled" if _looks_canceled(error) else "worker_terminated"
+        error_message = str(error) or (
+            "L'appel Modal a été annulé."
+            if phase == "canceled"
+            else "Le worker Modal s'est arrêté sans statut final."
+        )
+    else:
+        latest = dict(job_store.get(job_id, status))
+        if latest.get("state") not in ACTIVE_STATES:
+            return latest
+        phase = "stale"
+        error_message = "Le worker Modal s'est terminé sans publier de statut final."
+
+    latest = dict(job_store.get(job_id, status))
+    if latest.get("state") not in ACTIVE_STATES or _attempt(latest) != attempt:
+        return latest
+    terminal = _terminal_transition(
+        latest,
+        phase=phase,
+        message=(
+            "Production annulée — reprise disponible"
+            if phase == "canceled"
+            else "Production interrompue — reprise disponible"
+        ),
+        error=error_message,
+    )
+    job_store[job_id] = terminal
+    return terminal
+
+
+def _dispatch(job_id: str, request: dict[str, Any], attempt: int) -> None:
+    try:
+        call = produce_map.spawn(job_id, request, attempt)
+    except Exception as error:
+        current = dict(job_store[job_id])
+        if _attempt(current) == attempt and current.get("state") in ACTIVE_STATES:
+            job_store[job_id] = _terminal_transition(
+                current,
+                phase="dispatch_failed",
+                message="Échec du lancement Modal",
+                error=str(error),
+            )
+        return
+    job_store[_call_key(job_id, attempt)] = {
+        "function_call_id": call.object_id,
+        "created_at": _now(),
+    }
+
+
+def _resume_if_interrupted(
+    status: dict[str, Any], request: dict[str, Any]
+) -> dict[str, Any]:
+    if status.get("state") != "failed" or status.get("phase") not in RESUMABLE_PHASES:
+        return status
+    next_attempt = _attempt(status) + 1
+    lease = job_store.put(
+        _resume_key(str(status["job_id"]), next_attempt),
+        {"created_at": _now()},
+        skip_if_exists=True,
+    )
+    if not lease:
+        return dict(job_store.get(str(status["job_id"]), status))
+    current = dict(job_store.get(str(status["job_id"]), status))
+    if current.get("state") != "failed" or current.get("phase") not in RESUMABLE_PHASES:
+        return current
+    resumed = dict(current)
+    resumed.update(
+        request=request,
+        state="queued",
+        phase="resume_queued",
+        message="Reprise demandée — revalidation des tuiles déjà produites",
+        attempt=next_attempt,
+        started_at=None,
+        finished_at=None,
+        heartbeat_at=_now(),
+        error=None,
+    )
+    job_store[str(status["job_id"])] = resumed
+    _dispatch(str(status["job_id"]), request, next_attempt)
+    return dict(job_store[str(status["job_id"])])
+
+
 app = modal.App(APP_NAME)
 work_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 job_store = modal.Dict.from_name(JOB_STORE_NAME, create_if_missing=True)
@@ -160,7 +355,7 @@ runtime_image = (
                 "/opt/fireviewer/fireviewer-spatial/omniverse"
             ),
             "FIREVIEWER_WORK_ROOT": "/work",
-            "FIREVIEWER_TILE_WORKERS": "8",
+            "FIREVIEWER_TILE_WORKERS": "4",
             "FIREVIEWER_IMAGE_REFERENCE": "modal-cpu-serverless-no-captures-v1",
         }
     )
@@ -182,25 +377,49 @@ api_image = modal.Image.debian_slim(python_version="3.11").pip_install(
     max_containers=1,
     scaledown_window=30,
 )
-def produce_map(job_id: str, request: dict[str, Any]) -> None:
+def produce_map(job_id: str, request: dict[str, Any], attempt: int) -> None:
     from simple_production_engine import ProductionConfig, ProductionEngine
 
-    status = initial_job_status(job_id, request)
-    status.update(state="running", phase="starting", started_at=_now())
+    work_volume.reload()
+    stored = job_store.get(job_id)
+    if not isinstance(stored, dict) or _attempt(stored) != attempt:
+        return
+    status = dict(stored)
+    status.update(
+        state="running",
+        phase="starting",
+        started_at=_now(),
+        heartbeat_at=_now(),
+        finished_at=None,
+        error=None,
+    )
     job_store[job_id] = status
+    volume_commit_lock = threading.Lock()
     try:
         engine = ProductionEngine(ProductionConfig.from_environment())
 
         def progress(fraction: float, message: str) -> None:
+            # The engine only emits this message after an atomic tile package has
+            # been revalidated and its raw sources have been removed. Persist that
+            # checkpoint before advertising it, so a killed worker can reuse it.
+            if "package validé, sources brutes absentes" in str(message):
+                with volume_commit_lock:
+                    work_volume.commit()
             current = dict(job_store[job_id])
+            if _attempt(current) != attempt:
+                raise ModalMapContractError("La tentative Modal a été remplacée")
             match = re.search(r"Tuile\s+(\d+)/(\d+)", message, re.IGNORECASE)
             current.update(
                 state="running",
                 phase="in_progress",
-                progress=max(0.0, min(0.999, float(fraction))),
+                progress=max(
+                    float(current.get("progress", 0.0)),
+                    max(0.0, min(0.999, float(fraction))),
+                ),
                 message=str(message),
                 current_tile=int(match.group(1)) if match else current["current_tile"],
                 tile_count=int(match.group(2)) if match else current["tile_count"],
+                heartbeat_at=_now(),
             )
             job_store[job_id] = current
 
@@ -247,19 +466,32 @@ def produce_map(job_id: str, request: dict[str, Any]) -> None:
                 "sha256": publication["archive_sha256"],
             },
             captures=[],
+            heartbeat_at=_now(),
         )
         job_store[job_id] = status
         work_volume.commit()
+    except modal.exception.InputCancellation as error:
+        canceled = dict(job_store.get(job_id, status))
+        if _attempt(canceled) == attempt and canceled.get("state") in ACTIVE_STATES:
+            canceled = _terminal_transition(
+                canceled,
+                phase="canceled",
+                message="Production annulée — reprise disponible",
+                error=str(error) or "L'appel Modal a été annulé.",
+            )
+            job_store[job_id] = canceled
+        # Preserve every atomic tile that reached disk before cancellation.
+        work_volume.commit()
+        raise
     except Exception as error:
         failed = dict(job_store.get(job_id, status))
-        failed.update(
-            state="failed",
-            phase="failed",
-            message="Échec de production",
-            error=str(error),
-            finished_at=_now(),
-        )
-        job_store[job_id] = failed
+        if _attempt(failed) == attempt and failed.get("state") in ACTIVE_STATES:
+            job_store[job_id] = _terminal_transition(
+                failed,
+                phase="failed",
+                message="Échec de production",
+                error=str(error),
+            )
         raise
 
 
@@ -330,8 +562,13 @@ def api():
         initial = initial_job_status(job_id, normalized)
         inserted = job_store.put(job_id, initial, skip_if_exists=True)
         if inserted:
-            produce_map.spawn(job_id, normalized)
-        return public_job_status(job_store[job_id])
+            _dispatch(job_id, normalized, 1)
+        stored = dict(job_store[job_id])
+        if stored.get("request_sha256") != request_sha256(normalized):
+            raise HTTPException(status_code=409, detail="Identité de job incohérente")
+        stored = _reconcile_active_status(stored)
+        stored = _resume_if_interrupted(stored, normalized)
+        return public_job_status(stored)
 
     @web.get("/v1/map-jobs/{job_id}")
     def status(
@@ -341,7 +578,7 @@ def api():
         stored = job_store.get(job_id)
         if stored is None:
             raise HTTPException(status_code=404, detail="Job introuvable")
-        return public_job_status(stored)
+        return public_job_status(_reconcile_active_status(dict(stored)))
 
     @web.get("/v1/map-jobs/{job_id}/captures")
     def captures(

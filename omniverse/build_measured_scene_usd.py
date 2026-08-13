@@ -29,12 +29,23 @@ import shutil
 import sys
 import threading
 import unicodedata
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections import OrderedDict
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-_SHARED_PROTOTYPE_LOCK = threading.Lock()
+_SHARED_PROTOTYPE_LOCKS_GUARD = threading.Lock()
+_SHARED_PROTOTYPE_LOCKS: dict[tuple[str, str], tuple[threading.Lock, int]] = {}
+_FILE_HASH_CACHE_LOCK = threading.Lock()
+_FILE_HASH_CACHE: OrderedDict[str, tuple[tuple[int, int, int, int, int], str]] = (
+    OrderedDict()
+)
+_FILE_HASH_IN_FLIGHT: dict[
+    tuple[str, tuple[int, int, int, int, int]], threading.Event
+] = {}
+_FILE_HASH_CACHE_LIMIT = 4096
 
 CONTRACT_SCHEMA = "fireviewer.measured-scene-usd-contract.v1"
 ALGORITHM = "fireviewer.measured-scene-usd-builder.v1"
@@ -152,6 +163,93 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _file_signature(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )
+
+
+def _remember_file_hash(path: Path, digest: str) -> None:
+    resolved = path.resolve()
+    cache_key = str(resolved)
+    signature = _file_signature(resolved)
+    with _FILE_HASH_CACHE_LOCK:
+        _FILE_HASH_CACHE[cache_key] = (signature, digest)
+        _FILE_HASH_CACHE.move_to_end(cache_key)
+        while len(_FILE_HASH_CACHE) > _FILE_HASH_CACHE_LIMIT:
+            _FILE_HASH_CACHE.popitem(last=False)
+
+
+def _cached_sha256_file(path: Path) -> str:
+    """Hash one stable file once per process, including concurrent callers."""
+
+    resolved = path.resolve()
+    cache_key = str(resolved)
+    while True:
+        before = _file_signature(resolved)
+        flight_key = (cache_key, before)
+        with _FILE_HASH_CACHE_LOCK:
+            cached = _FILE_HASH_CACHE.get(cache_key)
+            if cached is not None and cached[0] == before:
+                _FILE_HASH_CACHE.move_to_end(cache_key)
+                return cached[1]
+            pending = _FILE_HASH_IN_FLIGHT.get(flight_key)
+            if pending is None:
+                pending = threading.Event()
+                _FILE_HASH_IN_FLIGHT[flight_key] = pending
+                owns_hash = True
+            else:
+                owns_hash = False
+        if not owns_hash:
+            pending.wait()
+            continue
+        try:
+            digest = sha256_file(resolved)
+            after = _file_signature(resolved)
+            if after != before:
+                raise MeasuredSceneError(f"file changed while hashing: {resolved}")
+            _remember_file_hash(resolved, digest)
+            return digest
+        finally:
+            with _FILE_HASH_CACHE_LOCK:
+                _FILE_HASH_IN_FLIGHT.pop(flight_key, None)
+                pending.set()
+
+
+@contextmanager
+def _shared_prototype_lock(bundle_root: Path, asset_id: str) -> Iterator[None]:
+    """Serialize one immutable prototype without blocking unrelated assets."""
+
+    key = (str(bundle_root.resolve()), asset_id)
+    with _SHARED_PROTOTYPE_LOCKS_GUARD:
+        entry = _SHARED_PROTOTYPE_LOCKS.get(key)
+        if entry is None:
+            lock = threading.Lock()
+            users = 0
+        else:
+            lock, users = entry
+        _SHARED_PROTOTYPE_LOCKS[key] = (lock, users + 1)
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+        with _SHARED_PROTOTYPE_LOCKS_GUARD:
+            current_lock, current_users = _SHARED_PROTOTYPE_LOCKS[key]
+            if current_users == 1:
+                del _SHARED_PROTOTYPE_LOCKS[key]
+            else:
+                _SHARED_PROTOTYPE_LOCKS[key] = (
+                    current_lock,
+                    current_users - 1,
+                )
 
 
 def _finite(value: Any, label: str, *, positive: bool = False) -> float:
@@ -617,7 +715,7 @@ def _catalog_artifact_target(
         raise MeasuredSceneError(
             f"{role} prototype byte count differs: {relative.as_posix()}"
         )
-    actual_hash = sha256_file(target)
+    actual_hash = _cached_sha256_file(target)
     if actual_hash != expected_hash:
         raise MeasuredSceneError(
             f"{role} prototype hash differs: {relative.as_posix()}"
@@ -1552,20 +1650,42 @@ def _prototype_payloads(prototype: _Prototype) -> dict[str, bytes]:
     return payloads
 
 
-def _publish_shared_prototype(
-    bundle_root: Path, prototype: _Prototype, payloads: Mapping[str, bytes]
-) -> None:
-    with _SHARED_PROTOTYPE_LOCK:
-        _publish_shared_prototype_locked(bundle_root, prototype, payloads)
+def _prototype_artifact_hashes(
+    prototype: _Prototype,
+) -> dict[str, tuple[int, str]]:
+    artifacts = {
+        prototype.source_relative: (
+            prototype.source_byte_count,
+            prototype.source_sha256,
+        ),
+        prototype.wrapper_relative: (
+            len(prototype.wrapper_bytes),
+            sha256_bytes(prototype.wrapper_bytes),
+        ),
+    }
+    if prototype.texture_relative is not None:
+        if prototype.texture_byte_count is None or prototype.texture_sha256 is None:
+            raise MeasuredSceneError(
+                f"prototype texture receipt is incomplete: {prototype.asset_id}"
+            )
+        artifacts[prototype.texture_relative] = (
+            prototype.texture_byte_count,
+            prototype.texture_sha256,
+        )
+    return artifacts
 
 
-def _publish_shared_prototype_locked(
-    bundle_root: Path, prototype: _Prototype, payloads: Mapping[str, bytes]
-) -> None:
+def _publish_shared_prototype(bundle_root: Path, prototype: _Prototype) -> None:
+    with _shared_prototype_lock(bundle_root, prototype.asset_id):
+        _publish_shared_prototype_locked(bundle_root, prototype)
+
+
+def _publish_shared_prototype_locked(bundle_root: Path, prototype: _Prototype) -> None:
     asset_root = bundle_root / prototype.asset_id
+    artifacts = _prototype_artifact_hashes(prototype)
     expected_relatives = {
         PurePosixPath(relative).relative_to(prototype.asset_id).as_posix()
-        for relative in payloads
+        for relative in artifacts
     }
     if asset_root.exists():
         if not asset_root.is_dir():
@@ -1581,10 +1701,13 @@ def _publish_shared_prototype_locked(
             raise MeasuredSceneError(
                 f"shared prototype bundle layout differs: {prototype.asset_id}"
             )
-        for relative, content in payloads.items():
+        for relative, (expected_bytes, expected_hash) in artifacts.items():
             within_asset = PurePosixPath(relative).relative_to(prototype.asset_id)
             target = asset_root.joinpath(*within_asset.parts)
-            if target.read_bytes() != content:
+            if (
+                target.stat().st_size != expected_bytes
+                or _cached_sha256_file(target) != expected_hash
+            ):
                 raise MeasuredSceneError(
                     f"shared prototype bundle is immutable and differs: "
                     f"{prototype.asset_id}"
@@ -1595,6 +1718,11 @@ def _publish_shared_prototype_locked(
     if staging.exists():
         raise MeasuredSceneError(f"shared prototype staging already exists: {staging}")
     try:
+        payloads = _prototype_payloads(prototype)
+        if set(payloads) != set(artifacts):
+            raise MeasuredSceneError(
+                f"prototype payload layout differs: {prototype.asset_id}"
+            )
         staging.mkdir(parents=False, exist_ok=False)
         for relative, content in payloads.items():
             within_asset = PurePosixPath(relative).relative_to(prototype.asset_id)
@@ -1603,6 +1731,9 @@ def _publish_shared_prototype_locked(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
         os.replace(staging, asset_root)
+        for relative, (_expected_bytes, expected_hash) in artifacts.items():
+            within_asset = PurePosixPath(relative).relative_to(prototype.asset_id)
+            _remember_file_hash(asset_root.joinpath(*within_asset.parts), expected_hash)
     except Exception:
         if staging.is_dir():
             shutil.rmtree(staging)
@@ -1989,16 +2120,16 @@ def build_measured_scene_usd(
     scene_path = destination / SCENE_FILE_NAME
     receipt_path = destination / RECEIPT_FILE_NAME
     try:
-        prototype_payloads = {
-            key: _prototype_payloads(prototype)
-            for key, prototype in sorted(prototypes.items())
-        }
         if bundle_scope == "explicit_shared":
             bundle_root.mkdir(parents=True, exist_ok=True)
-            for key, prototype in sorted(prototypes.items()):
-                _publish_shared_prototype(
-                    bundle_root, prototype, prototype_payloads[key]
-                )
+            for _key, prototype in sorted(prototypes.items()):
+                _publish_shared_prototype(bundle_root, prototype)
+            prototype_payloads: dict[tuple[str, str], dict[str, bytes]] = {}
+        else:
+            prototype_payloads = {
+                key: _prototype_payloads(prototype)
+                for key, prototype in sorted(prototypes.items())
+            }
         staging.mkdir(parents=False, exist_ok=False)
         if bundle_scope == "output_local":
             (staging / "prototypes").mkdir(parents=False, exist_ok=False)
@@ -2055,7 +2186,10 @@ def _validate_bundle_artifact(
         record.get("byte_count"), f"{label} bundle byte_count", minimum=1
     )
     expected_hash = _require_sha256(record.get("sha256"), f"{label} bundle sha256")
-    if path.stat().st_size != expected_bytes or sha256_file(path) != expected_hash:
+    if (
+        path.stat().st_size != expected_bytes
+        or _cached_sha256_file(path) != expected_hash
+    ):
         raise MeasuredSceneError(f"{label} bundle bytes differ from receipt")
     return path, relative.as_posix()
 

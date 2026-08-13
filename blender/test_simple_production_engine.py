@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -79,6 +80,97 @@ def _fake_sources(root: Path) -> SimpleNamespace:
         placement_context=root / "placement-context.json",
         reused=False,
     )
+
+
+def test_config_defaults_to_four_workers_and_rejects_more(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FIREVIEWER_TILE_WORKERS", raising=False)
+    assert production.ProductionConfig.from_environment().tile_workers == 4
+    config = production.ProductionConfig(
+        work_root=tmp_path,
+        portable_root=tmp_path,
+        asset_library=tmp_path / "asset-library.json",
+        review_batch=tmp_path / "assets",
+        elevation_revision="elevation-test",
+        orthophoto_revision="orthophoto-test",
+        context_revision="context-test",
+        tile_workers=5,
+    )
+    with pytest.raises(production.SimpleProductionError, match="Limites du pod"):
+        production.validate_production_config(config)
+
+
+def test_interrupted_staging_cleanup_is_bounded_to_owned_patterns(
+    tmp_path: Path,
+) -> None:
+    job = tmp_path / "job"
+    source_staging = job / "sources" / ".x1_y1.simple-sources.part"
+    package_staging = job / "packages" / ".x1_y1.simple-measured-tile.part"
+    prototype_staging = job / "shared" / "prototypes" / ".oak.part"
+    for staging in (source_staging, package_staging, prototype_staging):
+        staging.mkdir(parents=True)
+        (staging / "partial.bin").write_bytes(b"partial")
+    unrelated = job / "packages" / "keep.part"
+    unrelated.write_bytes(b"keep")
+
+    removed = production._remove_interrupted_staging(job)
+
+    assert removed == [
+        "sources/.x1_y1.simple-sources.part",
+        "packages/.x1_y1.simple-measured-tile.part",
+        "shared/prototypes/.oak.part",
+    ]
+    assert not source_staging.exists()
+    assert not package_staging.exists()
+    assert not prototype_staging.exists()
+    assert unrelated.read_bytes() == b"keep"
+
+
+def test_parallel_scheduler_never_starts_more_than_four_and_stops_queue_on_error() -> (
+    None
+):
+    active = 0
+    maximum_active = 0
+    started: list[int] = []
+    release = threading.Event()
+    lock = threading.Lock()
+    stop = threading.Event()
+    tiles = [
+        (index, production.TilePlan(f"tile-{index}", (index * 500, 0)))
+        for index in range(12)
+    ]
+
+    def work(index: int, _tile: production.TilePlan) -> str:
+        nonlocal active, maximum_active
+        with lock:
+            started.append(index)
+            active += 1
+            maximum_active = max(maximum_active, active)
+        try:
+            if index == 0:
+                raise RuntimeError("first tile failed")
+            release.wait(timeout=0.2)
+            return str(index)
+        finally:
+            with lock:
+                active -= 1
+
+    results = production._bounded_parallel_tile_results(
+        tiles,
+        worker_count=4,
+        process_tile=work,
+        stop_event=stop,
+        heartbeat_seconds=0.01,
+    )
+    with pytest.raises(RuntimeError, match="first tile failed"):
+        next(results)
+    release.set()
+    results.close()
+
+    assert maximum_active <= 4
+    assert set(started) <= {0, 1, 2, 3}
+    assert stop.is_set()
 
 
 def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(

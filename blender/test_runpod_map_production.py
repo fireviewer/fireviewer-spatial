@@ -9,7 +9,7 @@ import runpod_map_production as worker
 
 class FakeEngine:
     def __init__(self) -> None:
-        self.config = SimpleNamespace(max_side_m=15_000, max_tiles=900, tile_workers=8)
+        self.config = SimpleNamespace(max_side_m=15_000, max_tiles=900, tile_workers=4)
         self.asset_summary = {
             "asset_count": 307,
             "catalog_revision": "a" * 64,
@@ -38,7 +38,7 @@ def test_normalize_request_is_bounded_and_stable() -> None:
 def test_handler_exposes_runpod_config_without_modal_capability(monkeypatch) -> None:
     monkeypatch.setattr(worker, "_engine", FakeEngine)
     payload = worker.handler({"id": "local_test", "input": {"operation": "config"}})
-    assert payload["limits"]["parallel_tile_workers"] == 8
+    assert payload["limits"]["parallel_tile_workers"] == 4
     assert payload["assets"]["count"] == 307
     assert payload["capabilities"]["provider_runpod_serverless"] is True
     assert "provider_modal" not in payload["capabilities"]

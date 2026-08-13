@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -8,6 +9,8 @@ from pathlib import Path
 import shutil
 import struct
 import sys
+import threading
+import time
 from types import SimpleNamespace
 import uuid
 import zlib
@@ -853,6 +856,77 @@ def test_explicit_shared_bundle_is_immutable_idempotent_and_not_duplicated(
         }
 
 
+def test_concurrent_shared_bundle_hashes_each_source_artifact_once(
+    fixture_root, monkeypatch
+) -> None:
+    root, terrain, prototype = fixture_root
+    shared = root / "shared" / "scene-prototypes"
+    texture = prototype.parent / "textures" / "source.png"
+    original_sha256_file = measured.sha256_file
+    calls = {prototype.resolve(): 0, texture.resolve(): 0}
+    calls_lock = threading.Lock()
+
+    def counted_sha256_file(path: Path) -> str:
+        resolved = path.resolve()
+        if resolved in calls:
+            with calls_lock:
+                calls[resolved] += 1
+            time.sleep(0.05)
+        return original_sha256_file(path)
+
+    monkeypatch.setattr(measured, "sha256_file", counted_sha256_file)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        packages = list(
+            executor.map(
+                lambda index: _build(
+                    root,
+                    terrain,
+                    prototype,
+                    f"concurrent-shared-scene-{index}",
+                    asset_bundle_root=shared,
+                ),
+                range(8),
+            )
+        )
+
+    assert calls == {prototype.resolve(): 1, texture.resolve(): 1}
+    assert measured._SHARED_PROTOTYPE_LOCKS == {}
+    for package in packages:
+        receipt = measured.validate_measured_scene_package(package.output_root)
+        assert receipt["prototype_bundle"]["scope"] == "explicit_shared"
+
+
+def test_unrelated_shared_prototypes_publish_without_one_global_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    entered = threading.Barrier(2)
+    published: list[str] = []
+    published_lock = threading.Lock()
+
+    def publish(_bundle_root: Path, prototype: SimpleNamespace) -> None:
+        entered.wait(timeout=2.0)
+        with published_lock:
+            published.append(prototype.asset_id)
+
+    monkeypatch.setattr(measured, "_publish_shared_prototype_locked", publish)
+    prototypes = [
+        SimpleNamespace(asset_id="tree_a"),
+        SimpleNamespace(asset_id="building_b"),
+    ]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(
+            executor.map(
+                lambda prototype: measured._publish_shared_prototype(
+                    tmp_path / "shared", prototype
+                ),
+                prototypes,
+            )
+        )
+
+    assert sorted(published) == ["building_b", "tree_a"]
+    assert measured._SHARED_PROTOTYPE_LOCKS == {}
+
+
 def test_shared_bundle_texture_tamper_invalidates_existing_scene(fixture_root) -> None:
     root, terrain, prototype = fixture_root
     shared = root / "shared" / "scene-prototypes"
@@ -865,6 +939,12 @@ def test_shared_bundle_texture_tamper_invalidates_existing_scene(fixture_root) -
     )
     receipt = json.loads(package.receipt.read_text(encoding="utf-8"))
     texture = shared / receipt["prototypes"][0]["texture"]["path"]
-    texture.write_bytes(texture.read_bytes() + b"tampered")
+    before = texture.stat()
+    content = texture.read_bytes()
+    texture.write_bytes(bytes((content[0] ^ 1,)) + content[1:])
+    os.utime(
+        texture,
+        ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000),
+    )
     with pytest.raises(measured.MeasuredSceneError, match="bundle bytes differ"):
         measured.validate_measured_scene_package(package.output_root)

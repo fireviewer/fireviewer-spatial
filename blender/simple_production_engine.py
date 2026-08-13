@@ -18,7 +18,7 @@ import threading
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -52,10 +52,7 @@ from fixed_asset_placement import (
 from fixed_asset_placement import (
     template_path as fixed_asset_template_path,
 )
-from portable_scene_package import (
-    seal_map_upload_package,
-    validate_map_upload_package,
-)
+from portable_scene_package import seal_map_upload_package, validate_map_upload_package
 from prepare_simple_measured_tile_sources import PreparedSources, prepare_sources
 from prepare_simple_measured_zone_context import ZoneContext, prepare_zone_context
 from produce_simple_measured_tile import (
@@ -81,6 +78,7 @@ DATASET_ENTRY_NAME = "dataset-entry.json"
 DATASET_PUBLICATION_NAME = "dataset-publication.json"
 FIXED_ASSET_REQUEST_NAME = "fixed-asset-placements.v1.json"
 CAPTURE_COUNT = 0
+PARALLEL_HEARTBEAT_SECONDS = 15.0
 
 
 class SimpleProductionError(RuntimeError):
@@ -98,7 +96,7 @@ class ProductionConfig:
     context_revision: str
     max_side_m: int = 15_000
     max_tiles: int = 900
-    tile_workers: int = 1
+    tile_workers: int = 4
     blender: Path = Path("/opt/blender/blender")
     dataset_id: str | None = None
 
@@ -130,7 +128,7 @@ class ProductionConfig:
             ),
             max_side_m=int(os.environ.get("FIREVIEWER_MAX_SIDE_M", "15000")),
             max_tiles=int(os.environ.get("FIREVIEWER_MAX_TILES", "900")),
-            tile_workers=int(os.environ.get("FIREVIEWER_TILE_WORKERS", "1")),
+            tile_workers=int(os.environ.get("FIREVIEWER_TILE_WORKERS", "4")),
             blender=Path(os.environ.get("FIREVIEWER_BLENDER", "/opt/blender/blender")),
             dataset_id=(os.environ.get("FIREVIEWER_HF_DATASET_ID", "").strip() or None),
         )
@@ -209,6 +207,10 @@ def _load_contract() -> dict[str, Any]:
         payload.get("schema") != SCHEMA
         or payload.get("status") != "locked"
         or payload.get("production", {}).get("tile_size_m") != TILE_SIZE_M
+        or payload.get("production", {}).get("mode") != "bounded_parallel"
+        or payload.get("production", {}).get("max_parallel_tiles") != 4
+        or payload.get("production", {}).get("resume")
+        != "reuse_valid_published_tiles_and_remove_owned_staging"
         or payload.get("output", {}).get("entry_stage") != ENTRY_STAGE
         or payload.get("output", {}).get("portable_zip") is not True
         or payload.get("perimeter_layer", {}).get("fixed_layers") is not True
@@ -424,7 +426,7 @@ def validate_production_config(config: ProductionConfig) -> dict[str, Any]:
     if (
         config.max_side_m < TILE_SIZE_M
         or config.max_tiles < 1
-        or not 1 <= config.tile_workers <= 32
+        or not 1 <= config.tile_workers <= 4
     ):
         raise SimpleProductionError("Limites du pod invalides")
     portable = _absolute(config.portable_root, "racine portable", exists=True)
@@ -647,6 +649,113 @@ def _remove_sources(job_root: Path, source_root: Path) -> None:
     if resolved == expected_root:
         raise SimpleProductionError("Nettoyage global des sources refusé")
     shutil.rmtree(resolved)
+
+
+def _remove_interrupted_staging(job_root: Path) -> list[str]:
+    """Remove only engine-owned staging paths left by an interrupted invocation."""
+
+    roots_and_patterns = (
+        (job_root / "sources", ".*.simple-sources.part"),
+        (job_root / "packages", ".*.simple-measured-tile.part"),
+        (job_root / "shared" / "prototypes", ".*.part"),
+    )
+    removed: list[str] = []
+    resolved_job = job_root.resolve(strict=True)
+    for root, pattern in roots_and_patterns:
+        if not root.is_dir():
+            continue
+        resolved_root = root.resolve(strict=True)
+        try:
+            resolved_root.relative_to(resolved_job)
+        except ValueError as error:  # pragma: no cover - invariant guard
+            raise SimpleProductionError("Racine de staging hors du job") from error
+        for staging in sorted(root.glob(pattern)):
+            if staging.is_symlink():
+                raise SimpleProductionError(
+                    f"Staging interrompu symbolique refusé: {staging.name}"
+                )
+            resolved = staging.resolve(strict=True)
+            if resolved.parent != resolved_root:
+                raise SimpleProductionError(
+                    f"Staging interrompu hors de sa racine: {staging.name}"
+                )
+            relative = resolved.relative_to(resolved_job).as_posix()
+            if staging.is_dir():
+                shutil.rmtree(staging)
+            elif staging.is_file():
+                staging.unlink()
+            else:  # pragma: no cover - unusual filesystem entry
+                raise SimpleProductionError(
+                    f"Type de staging interrompu refusé: {staging.name}"
+                )
+            removed.append(relative)
+    return removed
+
+
+def _bounded_parallel_tile_results(
+    pending_tiles: list[tuple[int, TilePlan]],
+    *,
+    worker_count: int,
+    process_tile: Callable[[int, TilePlan], str],
+    stop_event: threading.Event,
+    heartbeat_seconds: float = PARALLEL_HEARTBEAT_SECONDS,
+) -> Iterator[str | None]:
+    """Run a rolling bounded queue; yield ``None`` when only a heartbeat is due."""
+
+    if not 2 <= worker_count <= 4 or worker_count > len(pending_tiles):
+        raise SimpleProductionError("Configuration de production parallèle invalide")
+    pending_iterator = iter(pending_tiles)
+    executor = ThreadPoolExecutor(
+        max_workers=worker_count, thread_name_prefix="fireviewer-tile"
+    )
+    futures: dict[Future[str], tuple[int, TilePlan]] = {}
+
+    def submit_next() -> bool:
+        try:
+            tile_index, tile = next(pending_iterator)
+        except StopIteration:
+            return False
+        futures[executor.submit(process_tile, tile_index, tile)] = (tile_index, tile)
+        return True
+
+    for _ in range(worker_count):
+        submit_next()
+    succeeded = False
+    try:
+        while futures:
+            done, _not_done = wait(
+                futures,
+                timeout=heartbeat_seconds,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                yield None
+                continue
+            failed = next(
+                (
+                    future
+                    for future in done
+                    if not future.cancelled() and future.exception() is not None
+                ),
+                None,
+            )
+            if failed is not None:
+                stop_event.set()
+                for queued in futures:
+                    if queued is not failed:
+                        queued.cancel()
+                failed.result()
+            for future in done:
+                futures.pop(future)
+                yield future.result()
+                submit_next()
+        succeeded = True
+    finally:
+        if not succeeded:
+            stop_event.set()
+            for future in futures:
+                future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
 
 
 def _scene_counts(package_root: Path) -> tuple[int, int, int, int]:
@@ -1287,6 +1396,7 @@ class ProductionEngine:
                 _write_json(fixed_request_path, fixed_asset_placements)
 
         report_lock = threading.Lock()
+        last_report_fraction = 0.0
 
         def report(
             fraction: float,
@@ -1296,7 +1406,11 @@ class ProductionEngine:
             completed_tiles: int = 0,
             details: Mapping[str, Any] | None = None,
         ) -> None:
+            nonlocal last_report_fraction
             with report_lock:
+                bounded_fraction = max(0.0, min(1.0, fraction))
+                bounded_fraction = max(last_report_fraction, bounded_fraction)
+                last_report_fraction = bounded_fraction
                 _status(
                     job_root,
                     state="producing",
@@ -1308,7 +1422,7 @@ class ProductionEngine:
                     elapsed_seconds=time.perf_counter() - started,
                 )
                 if progress_callback is not None:
-                    progress_callback(max(0.0, min(1.0, fraction)), message)
+                    progress_callback(bounded_fraction, message)
 
         report(
             0.01,
@@ -1332,6 +1446,15 @@ class ProductionEngine:
                 )
         else:
             _write_json(plan_path, plan_payload)
+
+        removed_staging = _remove_interrupted_staging(job_root)
+        if removed_staging:
+            report(
+                0.02,
+                "interrupted_staging_removed",
+                f"Reprise — {len(removed_staging)} staging(s) interrompu(s) nettoyé(s)",
+                details={"removed_staging": removed_staging},
+            )
 
         existing_archive = job_root / ZIP_NAME
         existing_receipt = job_root / ZONE_RECEIPT_NAME
@@ -1439,6 +1562,23 @@ class ProductionEngine:
         tile_progress = [0.0] * total
         tile_progress_lock = threading.Lock()
         completed_tiles: set[int] = set()
+        stop_tiles = threading.Event()
+
+        def validate_published_tile(tile: TilePlan, package_root: Path) -> None:
+            validate_simple_measured_tile_package(
+                package_root,
+                expected_request=_expected_request_from_receipt(
+                    package_root,
+                    plan=plan,
+                    tile=tile,
+                    asset_library=self.config.asset_library,
+                    asset_roots=asset_roots,
+                    portable_root=self.config.portable_root,
+                    asset_bundle_root=shared_bundle,
+                ),
+                asset_library=self.config.asset_library,
+                asset_roots=asset_roots,
+            )
 
         def process_tile(tile_index: int, tile: TilePlan) -> str:
             def tile_report(
@@ -1447,6 +1587,10 @@ class ProductionEngine:
                 *,
                 table: Mapping[str, tuple[float, str]],
             ) -> None:
+                if stop_tiles.is_set():
+                    raise SimpleProductionError(
+                        "Production parallèle interrompue après l'échec d'une tuile"
+                    )
                 local, label = table.get(phase, (0.0, phase))
                 suffixes: list[str] = []
                 if isinstance(details.get("byte_count"), int):
@@ -1473,22 +1617,13 @@ class ProductionEngine:
                     details={**details, "tile_index": tile_index + 1},
                 )
 
+            if stop_tiles.is_set():
+                raise SimpleProductionError(
+                    "Production parallèle interrompue avant la tuile"
+                )
             package_root = job_root / "packages" / tile.tile_id
             if package_root.exists():
-                validate_simple_measured_tile_package(
-                    package_root,
-                    expected_request=_expected_request_from_receipt(
-                        package_root,
-                        plan=plan,
-                        tile=tile,
-                        asset_library=self.config.asset_library,
-                        asset_roots=asset_roots,
-                        portable_root=self.config.portable_root,
-                        asset_bundle_root=shared_bundle,
-                    ),
-                    asset_library=self.config.asset_library,
-                    asset_roots=asset_roots,
-                )
+                validate_published_tile(tile, package_root)
                 tile_report(
                     "tile_reused", {"tile_id": tile.tile_id}, table=production_phase
                 )
@@ -1561,9 +1696,36 @@ class ProductionEngine:
             )
             return tile.tile_id
 
-        worker_count = min(self.config.tile_workers, total)
-        if worker_count == 1:
-            for tile_index, tile in enumerate(plan.tiles):
+        pending_tiles: list[tuple[int, TilePlan]] = []
+        for tile_index, tile in enumerate(plan.tiles):
+            package_root = job_root / "packages" / tile.tile_id
+            if not package_root.exists():
+                pending_tiles.append((tile_index, tile))
+                continue
+            validate_published_tile(tile, package_root)
+            with tile_progress_lock:
+                tile_progress[tile_index] = 1.0
+                completed_tiles.add(tile_index)
+                completed_count = len(completed_tiles)
+                fraction = 0.08 + 0.82 * (sum(tile_progress) / total)
+            report(
+                fraction,
+                "tile_reused",
+                f"Reprise — tuile {tile_index + 1}/{total} publiée et revalidée",
+                completed_tiles=completed_count,
+                details={"tile_id": tile.tile_id, "tile_index": tile_index + 1},
+            )
+
+        worker_count = min(self.config.tile_workers, len(pending_tiles))
+        if not pending_tiles:
+            report(
+                0.90,
+                "all_tiles_reused",
+                f"Reprise — {total}/{total} tuiles publiées réutilisées",
+                completed_tiles=total,
+            )
+        elif worker_count == 1:
+            for tile_index, tile in pending_tiles:
                 yield f"Tuile {tile_index + 1}/{total} — {tile.tile_id}", None, []
                 process_tile(tile_index, tile)
         else:
@@ -1572,18 +1734,26 @@ class ProductionEngine:
                 "parallel_tile_production",
                 f"Production parallèle — {worker_count} tuiles simultanées",
             )
-            with ThreadPoolExecutor(
-                max_workers=worker_count, thread_name_prefix="fireviewer-tile"
-            ) as executor:
-                futures = {
-                    executor.submit(process_tile, tile_index, tile): tile_index
-                    for tile_index, tile in enumerate(plan.tiles)
-                }
-                for future in as_completed(futures):
-                    tile_id = future.result()
-                    with tile_progress_lock:
-                        done_count = len(completed_tiles)
-                    yield f"Tuile {done_count}/{total} terminée — {tile_id}", None, []
+            for tile_id in _bounded_parallel_tile_results(
+                pending_tiles,
+                worker_count=worker_count,
+                process_tile=process_tile,
+                stop_event=stop_tiles,
+            ):
+                with tile_progress_lock:
+                    done_count = len(completed_tiles)
+                    fraction = 0.08 + 0.82 * (sum(tile_progress) / total)
+                if tile_id is None:
+                    report(
+                        fraction,
+                        "parallel_tile_heartbeat",
+                        f"Production active — {done_count}/{total} tuiles terminées, "
+                        f"{worker_count} au maximum en cours",
+                        completed_tiles=done_count,
+                        details={"max_active_tile_count": worker_count},
+                    )
+                    continue
+                yield f"Tuile {done_count}/{total} terminée — {tile_id}", None, []
         completed = len(completed_tiles)
 
         _status(
