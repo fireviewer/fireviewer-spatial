@@ -40,13 +40,11 @@ zone-context.json
 packages/<tile>/
 shared/prototypes/
 provenance/<tile>/
-qa/zone-gallery-receipt.v1.json
-qa/captures/*.png
 ```
 
-`zone.usda` et `zone.blend` sont les scènes unifiées autonomes. Les 20 captures
-hashées — quatre vues générales puis seize détails — servent au contrôle web ;
-elles ne remplacent pas OpenUSD.
+`zone.usda` et `zone.blend` sont les scènes unifiées autonomes. La production
+active ne calcule plus de galerie PNG ; elle privilégie la génération du ZIP,
+son contrôle dans l'administration et son ouverture indépendante.
 
 ## Périmètres observés
 
@@ -73,14 +71,14 @@ les données de référence.
 [`portable_scene_package.py`](./blender/portable_scene_package.py) inventorie et
 rehash chaque octet avant l'archive. Les contrats actifs sont :
 
-- `fireviewer.simple-measured-map-package.v1` et
-  `fireviewer.simple-measured-map-upload-contract.v1` ;
+- `fireviewer.simple-measured-map-package.v2` et
+  `fireviewer.simple-measured-map-upload-contract.v2` ;
 - `fireviewer.observed-perimeter-package.v1` et
   `fireviewer.observed-perimeter-upload-contract.v1`.
 
 Le backend et le frontend importent le dossier extrait du ZIP, contrôlent ces
-contrats, chaque hash, les 20 captures et toutes les vues de timeline. Ils ne
-convertissent et ne reconstruisent aucune donnée.
+contrats, chaque hash, la scène Blender autonome et toutes les vues de timeline.
+Ils ne convertissent et ne reconstruisent aucune donnée.
 
 Une simulation, un dataset ou un replay lie ensuite les artefacts immuables via
 [`scene-consumer-input.schema.json`](./contracts/spatial/v1/scene-consumer-input.schema.json).

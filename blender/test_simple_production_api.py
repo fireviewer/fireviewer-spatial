@@ -44,19 +44,13 @@ class _FakeEngine:
         else:
             plan_id = plan.zone_id
         root = self.config.work_root / "jobs" / plan_id
-        gallery_root = root / "gallery"
-        gallery_root.mkdir(parents=True, exist_ok=True)
+        root.mkdir(parents=True, exist_ok=True)
         progress_callback(0.25, "Sources validées")
-        gallery = []
-        for index in range(20):
-            path = gallery_root / f"capture-{index:02d}.png"
-            path.write_bytes(b"png" + bytes([index]))
-            gallery.append((str(path), f"Capture {index + 1}"))
         archive = root / "fireviewer-zone.zip"
         with zipfile.ZipFile(archive, "w") as bundle:
             bundle.writestr("zone.usda", "#usda 1.0\n")
         progress_callback(1.0, "Terminé")
-        yield "Terminé — 20 captures.", str(archive), gallery
+        yield "Terminé — scène autonome sans captures.", str(archive), []
 
 
 def _fixture(tmp_path: Path) -> tuple[TestClient, tuple[float, float]]:
@@ -150,10 +144,9 @@ def test_fixed_assets_are_validated_before_async_production(tmp_path: Path) -> N
         time.sleep(0.01)
     assert payload["state"] == "completed", payload
     assert payload["progress"] == 1.0
-    assert len(payload["captures"]) == 20
+    assert payload["captures"] == []
     assert payload["archive_url"] == f"/v1/jobs/{job_id}/archive"
     assert client.get(payload["archive_url"]).status_code == 200
-    assert client.get(payload["captures"][0]["url"]).content == b"png\x00"
 
 
 def test_api_rejects_invalid_inputs_auth_and_perimeter_type(
@@ -260,5 +253,5 @@ def test_contract_is_locked_and_contains_no_gradio_surface() -> None:
         "gradio": "forbidden",
         "job_state": "memory_plus_hash_locked_files_below_work_root",
     }
-    assert contract["map_production"]["capture_count"] == 20
+    assert contract["map_production"]["capture_count"] == 0
     assert contract["acceptance"]["automatic_human_acceptance"] is False

@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-import render_simple_zone_gallery as zone_gallery
 import simple_production_engine as production
 from fixed_terrain_grid import (
     compile_fixed_terrain_from_canonical_mm,
@@ -208,51 +207,8 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     ) -> list[tuple[str, str]]:
         assert render is True
         (job_root / production.BLEND_NAME).write_bytes(b"blend")
-        gallery_root = job_root / "qa" / "gallery"
-        gallery_root.mkdir(parents=True)
-        receipt = job_root / production.GALLERY_RECEIPT_PATH
-        receipt.parent.mkdir(parents=True, exist_ok=True)
-        items: list[tuple[str, str]] = []
-        records: list[dict[str, object]] = []
-        for index, capture in enumerate(
-            zone_gallery.build_capture_plan(500, 500), start=1
-        ):
-            image = gallery_root / f"{capture['capture_id']}.png"
-            image.write_bytes(b"png")
-            records.append(
-                {**capture, "artifact": zone_gallery._artifact(image, job_root)}
-            )
-            items.append((str(image), f"capture {index}"))
-            if callback is not None:
-                callback(index, image.stem)
-        gallery_receipt: dict[str, object] = {
-            "schema": zone_gallery.SCHEMA,
-            "status": zone_gallery.STATUS,
-            "human_review_required": True,
-            "accepted_human": False,
-            "resolution": [zone_gallery.RESOLUTION, zone_gallery.RESOLUTION],
-            "capture_count": zone_gallery.CAPTURE_COUNT,
-            "zone_stage": zone_gallery._artifact(job_root / "zone.usda", job_root),
-            "zone_plan": zone_gallery._artifact(job_root / "zone-plan.json", job_root),
-            "zone_receipt": zone_gallery._artifact(
-                job_root / "zone.done.json", job_root
-            ),
-            "standalone_blend": zone_gallery._artifact(
-                job_root / production.BLEND_NAME, job_root
-            ),
-            "scene_bounds_m": {"minimum": [0, 0, 0], "maximum": [500, 500, 1]},
-            "instance_counts": {"buildings": 2, "trees": 7},
-            "render_policy": dict(zone_gallery.RENDER_POLICY),
-            "captures": records,
-        }
-        gallery_receipt["capture_set_sha256"] = zone_gallery.hashlib.sha256(
-            zone_gallery._canonical_bytes(records)
-        ).hexdigest()
-        gallery_receipt["receipt_content_sha256"] = zone_gallery.hashlib.sha256(
-            zone_gallery._canonical_bytes(gallery_receipt)
-        ).hexdigest()
-        zone_gallery._write_json(receipt, gallery_receipt)
-        return items
+        assert callback is None
+        return []
 
     monkeypatch.setattr(
         production, "validate_simple_measured_tile_package", fake_validate
@@ -292,7 +248,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     )
     assert all(len(result) == 3 for result in results)
     archive = Path(results[-1][1])
-    assert len(results[-1][2]) == 20
+    assert results[-1][2] == []
     assert archive.is_file()
     assert sum(len(items) for items in prepared_fixed_assets) == 1
     fixed = next(items[0] for items in prepared_fixed_assets if items)
@@ -320,9 +276,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     assert prefix + "zone.done.json" in names
     assert prefix + "zone.blend" in names
     assert prefix + production.FIXED_ASSET_REQUEST_NAME in names
-    assert (
-        len([name for name in names if name.startswith(prefix + "qa/gallery/")]) == 20
-    )
+    assert not any(name.startswith(prefix + "qa/gallery/") for name in names)
     assert any(name.startswith(prefix + "packages/") for name in names)
     assert any(name.startswith(prefix + "provenance/") for name in names)
     assert not any("orthophoto-1m.png" in name for name in names)
@@ -336,7 +290,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     assert any("MNT 0,5 m reçu" in message for message in messages)
     assert any("Placement MNS−MNT mesuré" in message for message in messages)
     assert any("Compression du pack autonome" in message for message in messages)
-    assert any("capture 20/20" in message for message in messages)
+    assert any("scène autonome sans captures" in message for message in messages)
 
 
 def test_expected_request_rejects_a_package_from_another_tile(tmp_path: Path) -> None:
@@ -437,24 +391,6 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
         "huggingface_hub",
         SimpleNamespace(CommitOperationAdd=FakeOperation, HfApi=FakeApi),
     )
-    capture_records = []
-    for index in range(20):
-        relative = f"qa/captures/capture-{index:02d}.png"
-        path = tmp_path / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(f"capture-{index}".encode())
-        capture_records.append(
-            {
-                "capture_id": f"capture-{index:02d}",
-                "category": "overview" if index < 4 else "detail",
-                "artifact": {"path": relative},
-            }
-        )
-    monkeypatch.setattr(
-        production,
-        "verify_gallery",
-        lambda _root: {"captures": capture_records},
-    )
     first = production._publish_dataset_entry(
         config,
         job_root=tmp_path,
@@ -472,7 +408,7 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
     assert first == second
     assert len(commits) == 1
     operations = commits[0]["operations"]
-    assert len(operations) == 23
+    assert len(operations) == 3
     assert all(
         operation.values["path_in_repo"].startswith(
             f"zones/{plan.zone_id}/{receipt['build_id']}/"
@@ -484,28 +420,10 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
             assert b"secret-not-for-files" not in path.read_bytes()
 
 
-def test_gallery_items_preserve_overview_then_detail_order(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_gallery_items_are_empty_and_require_the_standalone_scene(
+    tmp_path: Path,
 ) -> None:
-    captures = [
-        {
-            "capture_id": f"{index:02d}-overview",
-            "category": "overview",
-            "artifact": {"path": f"qa/{index:02d}.png"},
-        }
-        for index in range(4)
-    ] + [
-        {
-            "capture_id": f"{index:02d}-detail",
-            "category": "detail_coverage",
-            "artifact": {"path": f"qa/{index:02d}.png"},
-        }
-        for index in range(4, 20)
-    ]
-    monkeypatch.setattr(
-        production, "verify_gallery", lambda _root: {"captures": captures}
-    )
-    items = production._gallery_items(tmp_path)
-    assert len(items) == 20
-    assert all("overview" in caption for _path, caption in items[:4])
-    assert all("detail_coverage" in caption for _path, caption in items[4:])
+    with pytest.raises(production.SimpleProductionError, match="zone.blend"):
+        production._gallery_items(tmp_path)
+    (tmp_path / production.BLEND_NAME).write_bytes(b"blend")
+    assert production._gallery_items(tmp_path) == []

@@ -22,12 +22,12 @@ Une scène unifiée translate chaque tuile par rapport à l'origine de zone. Les
 instances conservent une altitude monde cohérente avec le terrain ; aucune
 double application du datum vertical n'est admise.
 
-## Captures de contrôle
+## Scène de contrôle
 
-Le reçu de galerie verrouille exactement vingt captures : quatre vues générales
-puis seize détails. Chaque caméra conserve sa pose, son cadrage, sa résolution,
-le package observé et le SHA-256 de l'image. Ces captures sont une preuve de
-contrôle ; elles ne remplacent pas `zone.usda`.
+Le parcours actif importe la scène OpenUSD dans Blender, vérifie les comptes et
+l'orientation des instances, emballe les textures puis scelle `zone.blend`.
+Il ne rend pas de galerie PNG. La compatibilité de lecture des anciennes
+galeries reste isolée aux packages v1 déjà produits.
 
 ## Périmètres et viewer
 
@@ -44,4 +44,4 @@ timeline.
 - absence de chemin machine dans les livrables ;
 - parité entre carte, timeline et build référencé ;
 - ouverture indépendante du ZIP extrait ;
-- vingt captures présentes, lisibles et hashées.
+- `zone.usda` et `zone.blend` présents, liés au contrat et ouvrables après extraction.

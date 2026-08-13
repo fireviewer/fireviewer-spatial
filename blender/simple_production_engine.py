@@ -64,14 +64,7 @@ from produce_simple_measured_tile import (
     validate_simple_measured_tile_package,
 )
 from pyproj import Transformer
-from render_simple_zone_gallery import (
-    BLEND_NAME,
-    CAPTURE_COUNT,
-    verify_gallery,
-)
-from render_simple_zone_gallery import (
-    RECEIPT_PATH as GALLERY_RECEIPT_PATH,
-)
+from render_simple_zone_gallery import BLEND_NAME
 
 SCHEMA = "fireviewer.simple-production-engine.v1"
 PLAN_SCHEMA = "fireviewer.simple-measured-zone-plan.v1"
@@ -87,6 +80,7 @@ ZONE_RECEIPT_NAME = "zone.done.json"
 DATASET_ENTRY_NAME = "dataset-entry.json"
 DATASET_PUBLICATION_NAME = "dataset-publication.json"
 FIXED_ASSET_REQUEST_NAME = "fixed-asset-placements.v1.json"
+CAPTURE_COUNT = 0
 
 
 class SimpleProductionError(RuntimeError):
@@ -917,19 +911,17 @@ def _write_zip(job_root: Path, zone_id: str) -> Path:
 
 
 def _gallery_items(job_root: Path) -> GalleryItems:
-    receipt = verify_gallery(job_root)
-    items: GalleryItems = []
-    for record in receipt["captures"]:
-        artifact = record["artifact"]
-        items.append(
-            (
-                str(job_root / artifact["path"]),
-                f"{record['capture_id']} — {record['category']}",
-            )
-        )
-    if len(items) != CAPTURE_COUNT:
-        raise SimpleProductionError("La galerie validée ne contient pas 20 images")
-    return items
+    if not (job_root / BLEND_NAME).is_file():
+        raise SimpleProductionError("La scène Blender autonome zone.blend est absente")
+    return []
+
+
+def _remove_legacy_gallery(job_root: Path) -> None:
+    gallery_root = job_root / "qa" / "gallery"
+    if gallery_root.exists():
+        shutil.rmtree(gallery_root)
+    legacy_receipt = job_root / "qa" / "zone-gallery-receipt.v1.json"
+    legacy_receipt.unlink(missing_ok=True)
 
 
 def _render_zone_gallery(
@@ -965,7 +957,7 @@ def _render_zone_gallery(
         "--python",
         str(script),
         "--",
-        "render",
+        "pack",
         "--job-root",
         str(job_root),
     )
@@ -993,12 +985,14 @@ def _render_zone_gallery(
     reader = threading.Thread(target=read_output, daemon=True)
     reader.start()
     output_tail: list[str] = []
-    deadline = time.monotonic() + 45 * 60
+    deadline = time.monotonic() + 15 * 60
     stream_done = False
     while not stream_done:
         if time.monotonic() > deadline:
             process.kill()
-            raise SimpleProductionError("Le rendu des 20 captures dépasse 45 minutes")
+            raise SimpleProductionError(
+                "La création de la scène Blender dépasse 15 minutes"
+            )
         try:
             line = messages.get(timeout=1.0)
         except queue.Empty:
@@ -1010,17 +1004,11 @@ def _render_zone_gallery(
             continue
         output_tail.append(line)
         output_tail = output_tail[-120:]
-        if line.startswith("FIREVIEWER_CAPTURE "):
-            fields = line.split(maxsplit=3)
-            if len(fields) >= 3 and "/" in fields[1]:
-                index = int(fields[1].split("/", 1)[0])
-                if progress_callback is not None:
-                    progress_callback(index, fields[2])
     return_code = process.wait(timeout=30)
     reader.join(timeout=5)
     if return_code != 0:
         raise SimpleProductionError(
-            "Le rendu Blender des 20 captures a échoué:\n"
+            "La création de la scène Blender autonome a échoué:\n"
             + "\n".join(output_tail[-30:])
         )
     return _gallery_items(job_root)
@@ -1054,20 +1042,7 @@ def _publish_dataset_entry(
         "byte_count": archive.stat().st_size,
         "sha256": _sha256_file(archive),
     }
-    gallery_receipt = verify_gallery(job_root)
     capture_records: list[dict[str, Any]] = []
-    for index, record in enumerate(gallery_receipt["captures"]):
-        artifact = record["artifact"]
-        capture_path = job_root / artifact["path"]
-        capture_records.append(
-            {
-                "index": index,
-                "caption": f"{record['capture_id']} — {record['category']}",
-                "file": artifact["path"],
-                "byte_count": capture_path.stat().st_size,
-                "sha256": _sha256_file(capture_path),
-            }
-        )
     entry: dict[str, Any] = {
         "schema": "fireviewer.simple-measured-scene-dataset-entry.v1",
         "status": "technical_scene_produced",
@@ -1361,14 +1336,14 @@ class ProductionEngine:
         existing_archive = job_root / ZIP_NAME
         existing_receipt = job_root / ZONE_RECEIPT_NAME
         existing_stage = job_root / ENTRY_STAGE
-        existing_gallery = job_root / GALLERY_RECEIPT_PATH
+        existing_gallery = job_root / "qa" / "zone-gallery-receipt.v1.json"
         existing_blend = job_root / BLEND_NAME
         if (
             existing_archive.is_file()
             and existing_receipt.is_file()
             and existing_stage.is_file()
-            and existing_gallery.is_file()
             and existing_blend.is_file()
+            and not existing_gallery.exists()
         ):
             receipt = _load_json(existing_receipt, "reçu de zone existant")
             if (
@@ -1403,7 +1378,7 @@ class ProductionEngine:
                 f"Déjà produit — {receipt['tile_count']} terrains, "
                 f"{receipt['building_count']} bâtiments, {receipt['tree_count']} arbres, "
                 f"{receipt.get('context_asset_count', 0)} équipements contextuels, "
-                "20 captures revalidées."
+                "scène autonome revalidée."
             )
             yield (
                 completed_message,
@@ -1632,23 +1607,14 @@ class ProductionEngine:
             self.config.portable_root,
             shared_bundle,
         )
+        _remove_legacy_gallery(job_root)
         report(
             0.94,
-            "gallery_render_started",
-            "Rendu Blender — préparation des 20 captures de contrôle",
+            "standalone_scene_pack_started",
+            "Blender — création de la scène autonome sans captures",
             completed_tiles=completed,
         )
-
-        def gallery_progress(index: int, capture_id: str) -> None:
-            report(
-                0.94 + 0.045 * (index / CAPTURE_COUNT),
-                "gallery_render",
-                f"Rendu Blender — capture {index}/{CAPTURE_COUNT}: {capture_id}",
-                completed_tiles=completed,
-                details={"capture_index": index, "capture_count": CAPTURE_COUNT},
-            )
-
-        gallery = self.render_gallery_fn(job_root, True, gallery_progress)
+        gallery = self.render_gallery_fn(job_root, True, None)
         seal_map_upload_package(job_root)
         report(
             0.99, "zip_write", "Compression du pack autonome", completed_tiles=completed
@@ -1683,7 +1649,7 @@ class ProductionEngine:
             f"Terminé — {completed} terrains, {receipt['building_count']} bâtiments, "
             f"{receipt['tree_count']} arbres, "
             f"{receipt.get('context_asset_count', 0)} équipements contextuels, "
-            f"20 captures.{dataset_suffix} "
+            f"scène autonome sans captures.{dataset_suffix} "
             f"Ouvrir {BLEND_NAME} ou {ENTRY_STAGE} après extraction."
         )
         yield (

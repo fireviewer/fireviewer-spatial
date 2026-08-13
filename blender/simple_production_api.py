@@ -286,7 +286,7 @@ def _run_map_job(
                     ]
         with state.lock:
             if record.archive is None or len(record.captures) != CAPTURE_COUNT:
-                raise ApiContractError("production terminée sans ZIP ou 20 captures")
+                raise ApiContractError("production terminée sans ZIP autonome")
             record.state = "completed"
             record.phase = "completed"
             record.progress = 1.0

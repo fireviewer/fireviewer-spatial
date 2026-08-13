@@ -12,7 +12,6 @@ from fixed_terrain_grid import (
     write_fixed_terrain,
 )
 import portable_scene_package as portable
-import render_simple_zone_gallery as gallery
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -63,36 +62,6 @@ def _map_root(root: Path) -> Path:
     )
     write_fixed_terrain(terrain, terrain_root / "terrain.fvtg")
 
-    gallery_root = root / gallery.GALLERY_DIRECTORY
-    gallery_root.mkdir(parents=True)
-    captures: list[dict[str, object]] = []
-    for capture in gallery.build_capture_plan(500, 500):
-        image = gallery_root / f"{capture['capture_id']}.png"
-        image.write_bytes(b"PNG" + str(capture["capture_id"]).encode("ascii"))
-        captures.append({**capture, "artifact": gallery._artifact(image, root)})
-    receipt: dict[str, object] = {
-        "schema": gallery.SCHEMA,
-        "status": gallery.STATUS,
-        "human_review_required": True,
-        "accepted_human": False,
-        "resolution": [gallery.RESOLUTION, gallery.RESOLUTION],
-        "capture_count": gallery.CAPTURE_COUNT,
-        "zone_stage": gallery._artifact(root / "zone.usda", root),
-        "zone_plan": gallery._artifact(root / "zone-plan.json", root),
-        "zone_receipt": gallery._artifact(root / "zone.done.json", root),
-        "standalone_blend": gallery._artifact(root / "zone.blend", root),
-        "scene_bounds_m": {"minimum": [0, 0, 125], "maximum": [500, 500, 125]},
-        "instance_counts": {"buildings": 0, "trees": 12},
-        "render_policy": dict(gallery.RENDER_POLICY),
-        "captures": captures,
-    }
-    receipt["capture_set_sha256"] = hashlib.sha256(
-        gallery._canonical_bytes(captures)
-    ).hexdigest()
-    receipt["receipt_content_sha256"] = hashlib.sha256(
-        gallery._canonical_bytes(receipt)
-    ).hexdigest()
-    _write_json(root / gallery.RECEIPT_PATH, receipt)
     return root
 
 
@@ -167,13 +136,10 @@ def test_map_and_observed_timeline_are_sealed_for_the_same_site_contract(
 ) -> None:
     map_root = _map_root(tmp_path / "map")
     manifest = portable.seal_map_upload_package(map_root)
-    assert manifest["control_gallery"]["capture_count"] == 20
-    assert [item["group"] for item in manifest["control_gallery"]["captures"][:4]] == [
-        "general"
-    ] * 4
-    assert [item["group"] for item in manifest["control_gallery"]["captures"][4:]] == [
-        "detail"
-    ] * 16
+    assert manifest["schema"] == portable.MAP_MANIFEST_SCHEMA
+    assert manifest["standalone_scene"] == "zone.blend"
+    assert manifest["capabilities"]["control_gallery"] is False
+    assert "control_gallery" not in manifest
 
     archive = portable.write_deterministic_package_archive(
         map_root, tmp_path / "map-upload.zip"

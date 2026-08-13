@@ -359,8 +359,8 @@ def _validate_measured_instances(bpy: Any) -> dict[str, int]:
     return counts
 
 
-def render_gallery(job_root: Path | str) -> Path:
-    """Import the unified USD once, pack a Blend and render exactly 20 views."""
+def render_gallery(job_root: Path | str, *, render_captures: bool = True) -> Path:
+    """Import the unified USD, pack a Blend and optionally render legacy views."""
 
     root = _require_root(job_root)
     stage = root / "zone.usda"
@@ -439,47 +439,50 @@ def render_gallery(job_root: Path | str) -> Path:
                 raise SimpleZoneGalleryError(
                     f"Cannot pack image {image.name}: {error}"
                 ) from error
-    gallery_root = root / GALLERY_DIRECTORY
-    gallery_root.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, Any]] = []
-    for index, capture in enumerate(capture_plan, start=1):
-        center_x, center_y = capture["center_xy_m"]
-        target_z = float(capture.get("target_z_m", center_z))
-        target = (center_x, center_y, target_z)
-        if capture["projection"] == "orthographic":
-            camera_data.type = "ORTHO"
-            camera_data.ortho_scale = float(capture["frame_size_m"])
-            camera.location = (
-                center_x,
-                center_y,
-                maximum[2] + max(radius * 1.15, 50.0),
+    if render_captures:
+        gallery_root = root / GALLERY_DIRECTORY
+        gallery_root.mkdir(parents=True, exist_ok=True)
+        for index, capture in enumerate(capture_plan, start=1):
+            center_x, center_y = capture["center_xy_m"]
+            target_z = float(capture.get("target_z_m", center_z))
+            target = (center_x, center_y, target_z)
+            if capture["projection"] == "orthographic":
+                camera_data.type = "ORTHO"
+                camera_data.ortho_scale = float(capture["frame_size_m"])
+                camera.location = (
+                    center_x,
+                    center_y,
+                    maximum[2] + max(radius * 1.15, 50.0),
+                )
+            else:
+                camera_data.type = "PERSP"
+                camera_data.lens = float(capture["lens_mm"])
+                azimuth = math.radians(float(capture["azimuth_degrees"]))
+                distance_m = float(capture.get("distance_m", radius * 1.15))
+                elevation_m = float(capture.get("elevation_m", radius * 0.90))
+                camera.location = (
+                    center_x + math.cos(azimuth) * distance_m,
+                    center_y + math.sin(azimuth) * distance_m,
+                    (
+                        target_z + elevation_m
+                        if "target_z_m" in capture
+                        else maximum[2] + elevation_m
+                    ),
+                )
+            _look_at(camera, target)
+            image_path = gallery_root / f"{capture['capture_id']}.png"
+            bpy.context.scene.render.filepath = str(image_path)
+            bpy.ops.render.render(write_still=True)
+            if _png_dimensions(image_path) != (RESOLUTION, RESOLUTION):
+                raise SimpleZoneGalleryError(
+                    "Blender emitted an invalid gallery capture"
+                )
+            records.append({**capture, "artifact": _artifact(image_path, root)})
+            print(
+                f"FIREVIEWER_CAPTURE {index}/{CAPTURE_COUNT} {capture['capture_id']}",
+                flush=True,
             )
-        else:
-            camera_data.type = "PERSP"
-            camera_data.lens = float(capture["lens_mm"])
-            azimuth = math.radians(float(capture["azimuth_degrees"]))
-            distance_m = float(capture.get("distance_m", radius * 1.15))
-            elevation_m = float(capture.get("elevation_m", radius * 0.90))
-            camera.location = (
-                center_x + math.cos(azimuth) * distance_m,
-                center_y + math.sin(azimuth) * distance_m,
-                (
-                    target_z + elevation_m
-                    if "target_z_m" in capture
-                    else maximum[2] + elevation_m
-                ),
-            )
-        _look_at(camera, target)
-        image_path = gallery_root / f"{capture['capture_id']}.png"
-        bpy.context.scene.render.filepath = str(image_path)
-        bpy.ops.render.render(write_still=True)
-        if _png_dimensions(image_path) != (RESOLUTION, RESOLUTION):
-            raise SimpleZoneGalleryError("Blender emitted an invalid gallery capture")
-        records.append({**capture, "artifact": _artifact(image_path, root)})
-        print(
-            f"FIREVIEWER_CAPTURE {index}/{CAPTURE_COUNT} {capture['capture_id']}",
-            flush=True,
-        )
 
     # Keep the standalone Blend on a useful overview rather than the last
     # detail capture, and save only after the lighting/camera setup is final.
@@ -496,6 +499,9 @@ def render_gallery(job_root: Path | str) -> Path:
     bpy.ops.wm.save_as_mainfile(
         filepath=str(blend_path), check_existing=False, compress=True
     )
+
+    if not render_captures:
+        return blend_path
 
     receipt: dict[str, Any] = {
         "schema": SCHEMA,
@@ -611,18 +617,19 @@ def _parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     if "--" in values:
         values = values[values.index("--") + 1 :]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("render", "verify"))
+    parser.add_argument("command", choices=("pack", "render", "verify"))
     parser.add_argument("--job-root", required=True, type=Path)
     return parser.parse_args(values)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     options = _parse_arguments(argv)
-    result = (
-        render_gallery(options.job_root)
-        if options.command == "render"
-        else verify_gallery(options.job_root)
-    )
+    if options.command == "pack":
+        result = render_gallery(options.job_root, render_captures=False)
+    elif options.command == "render":
+        result = render_gallery(options.job_root)
+    else:
+        result = verify_gallery(options.job_root)
     print(
         json.dumps(
             result if isinstance(result, dict) else {"receipt": str(result)},

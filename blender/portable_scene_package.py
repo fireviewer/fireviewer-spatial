@@ -29,8 +29,10 @@ except ImportError:  # pragma: no cover - package import
 
 
 INVENTORY_SCHEMA = "fireviewer.portable-package-inventory.v1"
-MAP_MANIFEST_SCHEMA = "fireviewer.simple-measured-map-package.v1"
-MAP_CONTRACT_SCHEMA = "fireviewer.simple-measured-map-upload-contract.v1"
+MAP_MANIFEST_SCHEMA = "fireviewer.simple-measured-map-package.v2"
+MAP_CONTRACT_SCHEMA = "fireviewer.simple-measured-map-upload-contract.v2"
+LEGACY_MAP_MANIFEST_SCHEMA = "fireviewer.simple-measured-map-package.v1"
+LEGACY_MAP_CONTRACT_SCHEMA = "fireviewer.simple-measured-map-upload-contract.v1"
 PERIMETER_MANIFEST_SCHEMA = "fireviewer.observed-perimeter-package.v1"
 PERIMETER_CONTRACT_SCHEMA = "fireviewer.observed-perimeter-upload-contract.v1"
 MAP_CONTRACT_PATH = "contracts/map-contract.json"
@@ -38,6 +40,7 @@ PERIMETER_CONTRACT_PATH = "contracts/perimeter-contract.json"
 MANIFEST_NAME = "manifest.json"
 INVENTORY_NAME = "dependency-inventory.json"
 MAP_ENTRY_STAGE = "zone.usda"
+MAP_STANDALONE_SCENE = "zone.blend"
 MAP_RECEIPT_NAME = "zone.done.json"
 PERIMETER_STAGE_NAME = "geographic-perimeters.usda"
 PERIMETER_TIMELINE_NAME = "fire-progression-timeline.json"
@@ -359,7 +362,12 @@ def seal_map_upload_package(root: Path | str) -> dict[str, Any]:
         raise PortableScenePackageError("zone.usda is missing")
     inventory = _inventory(package_root, _map_payload_paths(package_root), "map")
     by_path = _inventory_by_path(inventory, "map")
-    for required in (MAP_ENTRY_STAGE, MAP_RECEIPT_NAME, "zone-plan.json"):
+    for required in (
+        MAP_ENTRY_STAGE,
+        MAP_STANDALONE_SCENE,
+        MAP_RECEIPT_NAME,
+        "zone-plan.json",
+    ):
         if required not in by_path:
             raise PortableScenePackageError(f"map package is missing {required}")
     inventory_bytes = _json_bytes(inventory)
@@ -379,7 +387,6 @@ def seal_map_upload_package(root: Path | str) -> dict[str, Any]:
     ):
         raise PortableScenePackageError("map production bounds are invalid")
     minimum_height, maximum_height = _map_height_range(package_root, by_path)
-    control_gallery = _map_control_gallery(package_root, by_path)
     spatial_reference = {
         "horizontal_crs": "EPSG:2154",
         "vertical_datum": "NGF-IGN69",
@@ -404,6 +411,8 @@ def seal_map_upload_package(root: Path | str) -> dict[str, Any]:
         "map_build_id": build_id,
         "entry_stage": MAP_ENTRY_STAGE,
         "entry_stage_sha256": by_path[MAP_ENTRY_STAGE]["sha256"],
+        "standalone_scene": MAP_STANDALONE_SCENE,
+        "standalone_scene_sha256": by_path[MAP_STANDALONE_SCENE]["sha256"],
         "zone_receipt": {
             "path": MAP_RECEIPT_NAME,
             "sha256": by_path[MAP_RECEIPT_NAME]["sha256"],
@@ -415,11 +424,10 @@ def seal_map_upload_package(root: Path | str) -> dict[str, Any]:
             "accepted_human": False,
             "automatic_publication": False,
         },
-        "control_gallery": control_gallery,
         "capabilities": {
             "openusd_scene": True,
             "embedded_assets": True,
-            "control_gallery": True,
+            "control_gallery": False,
             "perimeter_layers_separate": True,
         },
     }
@@ -434,15 +442,16 @@ def seal_map_upload_package(root: Path | str) -> dict[str, Any]:
             "manifest_sha256": _sha256_bytes(manifest_bytes),
             "entry_stage": MAP_ENTRY_STAGE,
             "entry_stage_sha256": by_path[MAP_ENTRY_STAGE]["sha256"],
+            "standalone_scene": MAP_STANDALONE_SCENE,
+            "standalone_scene_sha256": by_path[MAP_STANDALONE_SCENE]["sha256"],
             "zone_receipt": MAP_RECEIPT_NAME,
             "zone_receipt_sha256": by_path[MAP_RECEIPT_NAME]["sha256"],
         },
         "spatial_reference": spatial_reference,
-        "control_gallery": control_gallery,
         "release": {
             "upload_allowed": True,
             "automatic_publication": False,
-            "initial_site_state": "previewable_after_server_validation",
+            "initial_site_state": "downloadable_after_server_validation",
             "accepted_human": False,
         },
         "reuse": {
@@ -504,7 +513,7 @@ def validate_map_upload_package(root: Path | str) -> MapPackageReference:
     package = contract.get("package")
     spatial = contract.get("spatial_reference")
     publication = manifest.get("publication")
-    control_gallery = manifest.get("control_gallery")
+    capabilities = manifest.get("capabilities")
     if (
         not isinstance(package, dict)
         or not isinstance(spatial, dict)
@@ -514,12 +523,19 @@ def validate_map_upload_package(root: Path | str) -> MapPackageReference:
         or package.get("map_build_id") != manifest.get("map_build_id")
         or package.get("entry_stage_sha256")
         != by_path.get(MAP_ENTRY_STAGE, {}).get("sha256")
+        or package.get("standalone_scene") != MAP_STANDALONE_SCENE
+        or manifest.get("standalone_scene") != MAP_STANDALONE_SCENE
+        or package.get("standalone_scene_sha256")
+        != by_path.get(MAP_STANDALONE_SCENE, {}).get("sha256")
+        or manifest.get("standalone_scene_sha256")
+        != by_path.get(MAP_STANDALONE_SCENE, {}).get("sha256")
         or package.get("zone_receipt_sha256")
         != by_path.get(MAP_RECEIPT_NAME, {}).get("sha256")
         or spatial != manifest.get("spatial_reference")
-        or not isinstance(control_gallery, dict)
-        or contract.get("control_gallery") != control_gallery
-        or control_gallery != _map_control_gallery(package_root, by_path)
+        or "control_gallery" in manifest
+        or "control_gallery" in contract
+        or not isinstance(capabilities, dict)
+        or capabilities.get("control_gallery") is not False
         or not isinstance(publication, dict)
         or publication.get("automatic_publication") is not False
     ):
@@ -610,9 +626,16 @@ def read_map_reference_from_archive(archive_path: Path | str) -> MapPackageRefer
         package = contract.get("package")
         spatial = contract.get("spatial_reference")
         control_gallery = contract.get("control_gallery")
+        current_contract = (
+            manifest.get("schema") == MAP_MANIFEST_SCHEMA
+            and contract.get("schema") == MAP_CONTRACT_SCHEMA
+        )
+        legacy_contract = (
+            manifest.get("schema") == LEGACY_MAP_MANIFEST_SCHEMA
+            and contract.get("schema") == LEGACY_MAP_CONTRACT_SCHEMA
+        )
         if (
-            manifest.get("schema") != MAP_MANIFEST_SCHEMA
-            or contract.get("schema") != MAP_CONTRACT_SCHEMA
+            not (current_contract or legacy_contract)
             or not isinstance(inventory_reference, dict)
             or inventory_reference.get("sha256") != _sha256_bytes(inventory_raw)
             or inventory_reference.get("file_count") != len(by_path)
@@ -623,10 +646,28 @@ def read_map_reference_from_archive(archive_path: Path | str) -> MapPackageRefer
             or package.get("zone_receipt_sha256")
             != by_path.get(MAP_RECEIPT_NAME, {}).get("sha256")
             or not isinstance(spatial, dict)
-            or not isinstance(control_gallery, dict)
-            or manifest.get("control_gallery") != control_gallery
         ):
             raise PortableScenePackageError("map archive metadata is not bound")
+        if current_contract:
+            capabilities = manifest.get("capabilities")
+            if (
+                package.get("standalone_scene") != MAP_STANDALONE_SCENE
+                or manifest.get("standalone_scene") != MAP_STANDALONE_SCENE
+                or package.get("standalone_scene_sha256")
+                != by_path.get(MAP_STANDALONE_SCENE, {}).get("sha256")
+                or manifest.get("standalone_scene_sha256")
+                != by_path.get(MAP_STANDALONE_SCENE, {}).get("sha256")
+                or "control_gallery" in manifest
+                or "control_gallery" in contract
+                or not isinstance(capabilities, dict)
+                or capabilities.get("control_gallery") is not False
+            ):
+                raise PortableScenePackageError("map standalone scene is not bound")
+        elif (
+            not isinstance(control_gallery, dict)
+            or manifest.get("control_gallery") != control_gallery
+        ):
+            raise PortableScenePackageError("legacy map gallery is not bound")
         bounds = _finite_bounds(spatial.get("bounds_l93_m"), 4, "map bounds")
         origin = _finite_bounds(spatial.get("local_origin_l93_m"), 3, "map origin")
         return MapPackageReference(

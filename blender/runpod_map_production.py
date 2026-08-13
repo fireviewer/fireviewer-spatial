@@ -1,6 +1,6 @@
 """RunPod Serverless entrypoint for FireViewer map production.
 
-The handler returns only small immutable metadata.  ZIP and captures are
+The handler returns only small immutable metadata. The standalone ZIP is
 published by the production engine to the configured private Hugging Face
 dataset; no large payload is returned through the RunPod queue API.
 """
@@ -224,7 +224,7 @@ def _produce(
             archive_path = Path(archive)
         if items:
             gallery = items
-    if archive_path is None or not archive_path.is_file() or len(gallery) != 20:
+    if archive_path is None or not archive_path.is_file() or gallery:
         raise RunPodMapContractError("Le moteur n'a pas publié le pack complet")
     job_root = archive_path.parent
     publication = json.loads(
@@ -232,9 +232,9 @@ def _produce(
     )
     receipt = json.loads((job_root / "zone.done.json").read_text(encoding="utf-8"))
     captures = publication.get("captures")
-    if not isinstance(captures, list) or len(captures) != 20:
+    if captures != []:
         raise RunPodMapContractError(
-            "La publication privée ne contient pas 20 captures"
+            "La publication privée contient une galerie obsolète"
         )
     remote_root = publication["path_in_repo"]
     return {
