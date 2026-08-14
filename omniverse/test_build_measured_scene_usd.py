@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import struct
 import sys
@@ -939,6 +939,71 @@ def test_linked_bundle_uses_startup_validated_embedded_assets_without_rehash(
     assert source_link.resolve() == prototype.resolve()
     assert texture_link.resolve() == texture.resolve()
     assert calls == {prototype.resolve(): 0, texture.resolve(): 0}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="linked bundle is a Linux worker mode")
+def test_linked_bundle_validates_lexical_source_name_and_detects_target_tamper(
+    fixture_root, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, terrain, prototype = fixture_root
+    embedded = prototype.with_name("embedded-normalized-model.usdc")
+    prototype.rename(embedded)
+    library = _library(_hash_bytes(embedded.read_bytes()))
+    for asset in library["assets"]:
+        asset["usd"]["path"] = "prototypes/embedded-normalized-model.usdc"
+    texture = embedded.parent / "textures" / "source.png"
+    measured.remember_validated_file_hash(embedded, _hash_bytes(embedded.read_bytes()))
+    measured.remember_validated_file_hash(texture, _hash_bytes(texture.read_bytes()))
+    shared = root / "shared" / "lexical-name-prototypes"
+    monkeypatch.setenv(measured.PROTOTYPE_BUNDLE_MODE_ENV, "linked")
+
+    package = _build(
+        root,
+        terrain,
+        embedded,
+        "linked-lexical-name-scene",
+        library=library,
+        asset_bundle_root=shared,
+    )
+    receipt = measured.validate_measured_scene_package(package.output_root)
+
+    for record in receipt["prototypes"]:
+        source_link = shared / record["source_usd"]["path"]
+        wrapper = shared / record["wrapper"]["path"]
+        assert source_link.name == "source.usdc"
+        assert source_link.resolve() == embedded.resolve()
+        assert source_link.name != embedded.name
+        assert b"@source.usdc@" in wrapper.read_bytes()
+
+    embedded.write_bytes(embedded.read_bytes() + b"\n# tampered\n")
+    with pytest.raises(measured.MeasuredSceneError, match="bundle bytes differ"):
+        measured.validate_measured_scene_package(package.output_root)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="linked bundle is a Linux worker mode")
+def test_linked_bundle_rejects_a_symlinked_parent_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = tmp_path / "bundle"
+    outside = tmp_path / "outside"
+    bundle.mkdir()
+    outside.mkdir()
+    target = outside / "source.usd"
+    target.write_bytes(PROTOTYPE_BYTES)
+    (bundle / "tree").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv(measured.PROTOTYPE_BUNDLE_MODE_ENV, "linked")
+
+    with pytest.raises(measured.MeasuredSceneError, match="escapes portable root"):
+        measured._validate_bundle_artifact(
+            bundle,
+            {
+                "path": "tree/source.usd",
+                "sha256": _hash_bytes(PROTOTYPE_BYTES),
+                "byte_count": len(PROTOTYPE_BYTES),
+            },
+            label="prototype tree source USD",
+            expected_prefix=PurePosixPath("tree"),
+        )
 
 
 def test_concurrent_shared_bundle_hashes_each_source_artifact_once(

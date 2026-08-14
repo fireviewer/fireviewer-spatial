@@ -2319,22 +2319,25 @@ def _validate_bundle_artifact(
             raise MeasuredSceneError(
                 f"{label} external bundle link is forbidden outside worker mode"
             )
-        path = lexical_path.resolve(strict=True)
+        resolved_path = lexical_path.resolve(strict=True)
     else:
-        path = lexical_path.resolve()
-        _inside(root, path, f"{label} bundle file")
-    if not path.is_file():
+        resolved_path = lexical_path.resolve()
+        _inside(root, resolved_path, f"{label} bundle file")
+    if not resolved_path.is_file():
         raise MeasuredSceneError(f"{label} bundle file is missing")
     expected_bytes = _integer(
         record.get("byte_count"), f"{label} bundle byte_count", minimum=1
     )
     expected_hash = _require_sha256(record.get("sha256"), f"{label} bundle sha256")
     if (
-        path.stat().st_size != expected_bytes
-        or _cached_sha256_file(path) != expected_hash
+        resolved_path.stat().st_size != expected_bytes
+        or _cached_sha256_file(resolved_path) != expected_hash
     ):
         raise MeasuredSceneError(f"{label} bundle bytes differ from receipt")
-    return path, relative.as_posix()
+    # USD references, suffix checks and wrapper reconstruction are properties of
+    # the portable bundle path.  A linked worker target may intentionally keep its
+    # immutable image name, which must not leak into the authored wrapper.
+    return lexical_path, relative.as_posix()
 
 
 def _validate_prototype_bundle(
