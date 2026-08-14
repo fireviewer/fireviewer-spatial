@@ -41,12 +41,16 @@ Le job utilise :
 
 - l'image immuable `pilot-v1-20260814-r24-lightning` ;
 - `Machine.CPU_X_8`, non interruptible, avec une durée maximale bornée ;
-- une Data Connection Lightning montée sous `/lightning-work` pour les
-  checkpoints reprenables des tuiles ;
-- le disque local rapide `/lightning-scratch/fireviewer-map-production` pour
-  l'assemblage, `zone.blend` et le ZIP ;
+- les répertoires locaux éphémères `/lightning-work` et `/lightning-scratch`
+  créés dans l'image pour les tuiles, l'assemblage, `zone.blend` et le ZIP ;
 - le jeton `HF_TOKEN` injecté uniquement au job ;
 - quatre workers de tuiles et huit workers légers de prototypes.
+
+Les Data Connections ne sont pas utilisées comme système de fichiers de
+travail : un montage indisponible ne doit jamais bloquer une production. La
+requête et la progression restent persistées côté backend, et le ZIP final est
+publié sur Hugging Face. Si la machine Lightning est interrompue avant cette
+publication, une nouvelle exécution recommence la production depuis le début.
 
 Le backend Vercel reçoit exclusivement des variables serveur :
 
@@ -56,7 +60,6 @@ FV_MAP_LIGHTNING_USER_ID=<identifiant programme Lightning>
 FV_MAP_LIGHTNING_API_KEY=<clé programme Lightning>
 FV_MAP_LIGHTNING_TEAMSPACE=<teamspace>
 FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260814-r24-lightning
-FV_MAP_LIGHTNING_CHECKPOINT_CONNECTION=<data connection>
 FV_MAP_LIGHTNING_MAX_RUNTIME_SECONDS=86400
 FV_MAP_CALLBACK_BASE_URL=https://fireviewer-api.vercel.app
 FV_MAP_CALLBACK_SIGNING_SECRET=<secret serveur aléatoire>
