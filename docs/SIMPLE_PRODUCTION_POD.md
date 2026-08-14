@@ -1,88 +1,93 @@
-# Déploiement RunPod Serverless de la production simple
+# Déploiement Lightning Batch Job de la production simple
 
-La production de cartes est un job RunPod Serverless asynchrone. L'endpoint
-Flex garde `workersMin=0` et `workersMax=1` : aucun worker cartographique ne
-reste actif entre deux demandes et aucune requête HTTP n'attend la fin du job.
-À l'intérieur d'un job, le moteur traite au maximum quatre tuiles en parallèle.
-Les 294 assets immuables sont validés une seule fois au démarrage du processus
-worker. Les tuiles ne les recopient et ne les re-hashent plus : leur bundle
-partagé est un index de liens vers les assets embarqués. Les quatre tuiles
-simultanées utilisent ainsi les neuf vCPU sans multiplier les gros fichiers sur
-le volume réseau.
+La production de cartes est un Batch Job Lightning asynchrone. Elle ne crée ni
+Deployment, ni replica, ni worker permanent. Le backend lance une machine CPU
+8 cœurs / 32 Go uniquement pour la durée du calcul et l'arrête explicitement
+sur demande de l'administrateur. Le premier contrôle réel utilise une machine
+non interruptible.
+
+À l'intérieur du job, le moteur traite au maximum quatre tuiles de 500 m en
+parallèle. Les 294 assets immuables sont présents dans l'image et validés une
+fois au démarrage. Les tuiles utilisent un bundle partagé versionné : elles ne
+recopient et ne re-hashent pas la bibliothèque entière.
 
 L'administration appelle uniquement le backend FireViewer :
 
 ```text
 POST /api/v1/admin/map-jobs
 GET  /api/v1/admin/map-jobs/{job_id}
+POST /api/v1/admin/map-jobs/{job_id}/cancel
+GET  /api/v1/admin/map-jobs/{job_id}/captures
 GET  /api/v1/admin/map-jobs/{job_id}/download
 ```
 
-Le backend transmet la demande à la file native RunPod (`/run`), puis lit son
-état réel (`/status/{id}`). Le worker produit les tuiles, `zone.usda`,
-`zone.blend` et le ZIP autonome, puis redescend à zéro. Le résultat est publié
-dans la dataset Hugging Face privée configurée. Le navigateur ne reçoit ni le
-jeton RunPod ni le jeton Hugging Face.
+Le backend crée un nom de job déterministe à partir de la requête et de la clé
+d'idempotence, puis lance le Batch Job via `lightning-sdk`. La requête, les
+petits événements de progression et le résultat final sont stockés dans le
+Blob privé déjà utilisé par FireViewer. Un jeton HMAC propre au job autorise
+uniquement ses callbacks. Le navigateur ne reçoit ni les identifiants
+Lightning, ni le jeton Hugging Face, ni le jeton de callback.
 
-## Déploiement
+## Image et stockage
 
 Le module déployable est
-[`runpod_map_production.py`](../blender/runpod_map_production.py), embarqué par
-[`Dockerfile.runpod-map-production`](../deploy/Dockerfile.runpod-map-production).
-L'image runtime contient Blender 4.5.3, OpenUSD et les assets validés. Elle ne
-télécharge aucune donnée géographique avant le démarrage d'un job.
+[`lightning_map_production.py`](../blender/lightning_map_production.py), embarqué
+par
+[`Dockerfile.lightning-map-production`](../deploy/Dockerfile.lightning-map-production).
+L'image runtime contient Blender 4.5.3, OpenUSD, le générateur et les assets
+validés. Elle ne télécharge aucune donnée géographique pendant sa construction.
 
-Ressources privées requises :
+Le job utilise :
 
-- endpoint RunPod queue-based Flex avec zéro worker minimum et un maximum ;
-- volume réseau monté sous `/runpod-volume` pour les checkpoints de tuiles et
-  les petits reçus reprenables ;
-- disque éphémère local `/tmp/fireviewer-map-production` pour assembler
-  `zone.blend`, matérialiser le ZIP autonome et le compresser ;
-- secret runtime `HF_TOKEN` et variable `FIREVIEWER_HF_DATASET_ID` ;
-- image immuable `pilot-v1-20260814-r23-runpod`.
+- l'image immuable `pilot-v1-20260814-r24-lightning` ;
+- `Machine.CPU_X_8`, non interruptible, avec une durée maximale bornée ;
+- une Data Connection Lightning montée sous `/lightning-work` pour les
+  checkpoints reprenables des tuiles ;
+- le disque local rapide `/lightning-scratch/fireviewer-map-production` pour
+  l'assemblage, `zone.blend` et le ZIP ;
+- le jeton `HF_TOKEN` injecté uniquement au job ;
+- quatre workers de tuiles et huit workers légers de prototypes.
 
-Le backend Vercel reçoit exclusivement :
+Le backend Vercel reçoit exclusivement des variables serveur :
 
 ```text
-FV_MAP_PRODUCTION_PROVIDER=runpod
-FV_MAP_RUNPOD_ENDPOINT_ID=<endpoint queue RunPod>
-FV_MAP_RUNPOD_API_KEY=<secret serveur>
+FV_MAP_PRODUCTION_PROVIDER=lightning
+FV_MAP_LIGHTNING_USER_ID=<identifiant programme Lightning>
+FV_MAP_LIGHTNING_API_KEY=<clé programme Lightning>
+FV_MAP_LIGHTNING_TEAMSPACE=<teamspace>
+FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260814-r24-lightning
+FV_MAP_LIGHTNING_CHECKPOINT_CONNECTION=<data connection>
+FV_MAP_LIGHTNING_MAX_RUNTIME_SECONDS=86400
+FV_MAP_CALLBACK_BASE_URL=https://fireviewer-api.vercel.app
+FV_MAP_CALLBACK_SIGNING_SECRET=<secret serveur aléatoire>
+FV_MAP_HF_DATASET_ID=fireviewer/simple-measured-scenes-v1
 FV_MAP_HF_TOKEN=<secret serveur>
 ```
 
 ## Contrat de sortie
 
-La production active rend zéro capture et le contrat RunPod expose toujours
-`captures: []`. Le ZIP contient au minimum :
+La production active rend zéro capture et expose toujours `captures: []`. Le
+ZIP contient au minimum :
 
 - `zone.usda`, scène OpenUSD unifiée ;
 - `zone.blend`, scène Blender autonome avec textures emballées ;
 - `packages/<tile>/`, chaque terrain de 500 m ;
-- `shared/prototype-bundles/v1-<sha256>/`, le lot causal actif des assets
-  réellement utilisés, chacun incorporé une seule fois comme fichier normal
-  dans le ZIP ;
+- `shared/prototype-bundles/v1-<sha256>/`, les assets réellement utilisés,
+  incorporés une seule fois dans le ZIP ;
 - `provenance/<tile>/`, les reçus source compacts ;
 - `zone-context.json`, `zone-plan.json` et `zone.done.json`.
 
 Les MNT, MNS et orthophotos bruts sont supprimés après validation des tuiles et
 n'entrent jamais dans l'archive. Les contrats actifs sont
 `fireviewer.simple-measured-map-package.v2` et
-`fireviewer.simple-measured-map-upload-contract.v2`. Ils lient directement
-`zone.blend` et interdisent une galerie héritée dans un nouveau package.
-
-Les anciens packages v1 avec vingt captures restent lisibles pour compatibilité,
-mais ne sont plus produits.
+`fireviewer.simple-measured-map-upload-contract.v2`.
 
 ## Publication
 
-Le worker publie atomiquement dans la dataset privée
-`fireviewer/simple-measured-scenes-v1` uniquement le ZIP final,
-`zone.done.json` et `dataset-entry.json`. Le staging local est ensuite supprimé.
-La réponse admin expose un lien temporaire vers le ZIP.
-La mise en ligne publique sur une fiche incident reste une décision explicite
-de l'administrateur après import et contrôle ; le job ne publie jamais seul une
-carte au public.
+Le job publie dans la dataset privée `fireviewer/simple-measured-scenes-v1`
+uniquement le ZIP final et ses petits reçus. Le backend délivre ensuite une URL
+Hugging Face signée à l'administrateur authentifié. La publication sur une
+fiche incident reste une action admin séparée.
 
-Les périmètres observés restent un flux séparé. Ils peuvent référencer le ZIP de
-carte et produire leurs GLB de timeline sans reconstruire la carte.
+Les périmètres observés restent un flux distinct. Ils peuvent référencer le ZIP
+de carte et produire leur timeline sans reconstruire la carte.

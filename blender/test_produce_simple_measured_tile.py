@@ -22,6 +22,7 @@ if str(BLENDER_ROOT) not in sys.path:
     sys.path.insert(0, str(BLENDER_ROOT))
 
 import produce_simple_measured_tile as simple  # noqa: E402
+import build_measured_scene_usd as measured  # noqa: E402
 
 
 D_TEST_ROOT = Path(
@@ -565,6 +566,77 @@ def test_selected_embedded_usdz_does_not_require_a_separate_bundled_texture(
             library,
             {"review_batch": asset_root},
         )
+
+
+def test_selected_assets_reuse_the_startup_validated_hash_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    source = asset_root / "tree.usdc"
+    texture = asset_root / "tree.png"
+    source.write_bytes(b"immutable-usd")
+    texture.write_bytes(b"immutable-texture")
+    source_hash = _hash_file(source)
+    texture_hash = _hash_file(texture)
+    library = tmp_path / "asset-library.json"
+    _write_json(
+        library,
+        {
+            "assets": [
+                {
+                    "asset_id": "tree-01",
+                    "usd": _artifact(
+                        "review_batch", source.name, source_hash, source.stat().st_size
+                    ),
+                    "texture": _artifact(
+                        "review_batch",
+                        texture.name,
+                        texture_hash,
+                        texture.stat().st_size,
+                    ),
+                }
+            ]
+        },
+    )
+    scene_receipt = {
+        "prototypes": [
+            {
+                "asset_id": "tree-01",
+                "source_usd": {
+                    "path": source.name,
+                    "sha256": source_hash,
+                    "byte_count": source.stat().st_size,
+                },
+                "texture": {
+                    "path": texture.name,
+                    "sha256": texture_hash,
+                    "byte_count": texture.stat().st_size,
+                },
+                "material": {"implementation": "preview_surface_texture"},
+            }
+        ]
+    }
+    measured.remember_validated_file_hash(source, source_hash)
+    measured.remember_validated_file_hash(texture, texture_hash)
+    calls = 0
+    original_sha256_file = measured.sha256_file
+
+    def counted_sha256_file(path: Path) -> str:
+        nonlocal calls
+        if Path(path).resolve() in {source.resolve(), texture.resolve()}:
+            calls += 1
+        return original_sha256_file(Path(path))
+
+    monkeypatch.setattr(measured, "sha256_file", counted_sha256_file)
+    for _ in range(8):
+        simple._validate_selected_assets(
+            scene_receipt,
+            library,
+            {"review_batch": asset_root},
+        )
+
+    assert calls == 0
 
 
 def test_context_hash_is_part_of_reuse_identity(tile_fixture) -> None:

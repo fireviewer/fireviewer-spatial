@@ -1,0 +1,16 @@
+**
+
+!fireviewer-spatial/
+!fireviewer-spatial/requirements.lightning-map-production.txt
+!fireviewer-spatial/blender/
+!fireviewer-spatial/blender/**
+!fireviewer-spatial/omniverse/
+!fireviewer-spatial/omniverse/**
+fireviewer-spatial/blender/test_*.py
+fireviewer-spatial/omniverse/test_*.py
+
+**/__pycache__/**
+**/*.pyc
+**/.pytest_cache/**
+**/.ruff_cache/**
+**/*.part

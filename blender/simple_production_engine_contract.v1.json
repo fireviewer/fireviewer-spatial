@@ -24,7 +24,7 @@
     "database": "forbidden"
   },
   "container": {
-    "runtime": "pod_or_docker_only",
+    "runtime": "lightning_batch_job_or_local_docker",
     "geographic_download_at_build": "forbidden",
     "terrain_compilation_at_build": "forbidden",
     "python_dependencies": "embedded_and_import_checked",
@@ -32,9 +32,9 @@
     "openusd": "bundled_with_blender_and_smoke_checked",
     "assets": "complete_294_reference_catalog_with_real_usd_or_deterministic_real_usd_fallback_embedded_and_hash_checked_at_start",
     "production_scripts": "embedded_and_presence_checked",
-    "checkpoint_volume": "/runpod-volume/fireviewer-map-production",
-    "local_assembly_volume": "/tmp/fireviewer-map-production",
-    "port": 7860
+    "checkpoint_volume": "/lightning-work/fireviewer-map-production",
+    "local_assembly_volume": "/lightning-scratch/fireviewer-map-production",
+    "port": null
   },
   "cleanup": {
     "after_each_validated_tile": [

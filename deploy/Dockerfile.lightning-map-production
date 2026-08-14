@@ -1,0 +1,22 @@
+FROM fireviewer-map-base:pilot-v1-20260811-r12
+
+ENV FIREVIEWER_TILE_WORKERS=4 \
+    FIREVIEWER_PROTOTYPE_WORKERS=8 \
+    FIREVIEWER_PROTOTYPE_BUNDLE_MODE=linked \
+    FIREVIEWER_WORK_ROOT=/lightning-work/fireviewer-map-production \
+    FIREVIEWER_SCRATCH_ROOT=/lightning-scratch/fireviewer-map-production \
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260814-r24-lightning
+
+COPY fireviewer-spatial/requirements.lightning-map-production.txt /opt/fireviewer/requirements.lightning.txt
+RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.lightning.txt
+
+COPY fireviewer-spatial/blender/ /opt/fireviewer/fireviewer-spatial/blender/
+COPY fireviewer-spatial/omniverse/ /opt/fireviewer/fireviewer-spatial/omniverse/
+
+RUN mkdir -p /lightning-work/fireviewer-map-production /lightning-scratch/fireviewer-map-production \
+    && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-assets-only \
+    && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-runtime-only
+
+HEALTHCHECK NONE
+
+CMD ["python", "/opt/fireviewer/fireviewer-spatial/blender/lightning_map_production.py"]

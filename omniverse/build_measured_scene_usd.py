@@ -222,6 +222,17 @@ def remember_validated_file_hash(path: Path | str, digest: str) -> None:
     _remember_file_hash(resolved, digest)
 
 
+def validated_file_sha256(path: Path | str) -> str:
+    """Return a cached SHA-256 while retaining filesystem tamper detection.
+
+    Container startup seeds this cache for the immutable embedded asset
+    library. Tile validators can therefore verify catalogue digests without
+    rereading the same USD and texture for every tile.
+    """
+
+    return _cached_sha256_file(Path(path))
+
+
 def _cached_sha256_file(path: Path) -> str:
     """Hash one stable file once per process, including concurrent callers."""
 

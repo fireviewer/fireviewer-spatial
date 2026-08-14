@@ -1,0 +1,200 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+import lightning_map_production as worker
+from simple_production_engine import ProductionConfig
+
+
+REQUEST = {
+    "latitude": 43.9,
+    "longitude": 4.5,
+    "side_km": 0.5,
+    "fixed_asset_placements": None,
+}
+
+
+def _environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    values = {
+        "FIREVIEWER_MAP_JOB_ID": "map-" + "a" * 32,
+        "FIREVIEWER_MAP_REQUEST_URL": "https://api.example/request",
+        "FIREVIEWER_MAP_PROGRESS_URL": "https://api.example/progress",
+        "FIREVIEWER_MAP_RESULT_URL": "https://api.example/result",
+        "FIREVIEWER_MAP_CALLBACK_TOKEN": "b" * 64,
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+def test_callback_fetches_hash_locked_request_and_posts_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _environment(monkeypatch)
+    observed: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        assert request.headers["X-FireViewer-Map-Token"] == "b" * 64
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "schema": worker.REQUEST_SCHEMA,
+                    "job_id": "map-" + "a" * 32,
+                    "request_sha256": worker.request_sha256(REQUEST),
+                    "request": REQUEST,
+                },
+            )
+        return httpx.Response(204)
+
+    original_client = httpx.Client
+    monkeypatch.setattr(
+        worker.httpx,
+        "Client",
+        lambda **kwargs: original_client(
+            headers=kwargs.get("headers"),
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    callback = worker.CallbackClient()
+    assert callback.fetch_request() == REQUEST
+    callback.progress(
+        0.5,
+        "Tuile 1/1",
+        phase="terrain",
+        current_tile=1,
+        tile_count=1,
+        force=True,
+    )
+    progress = json.loads(observed[-1].content)
+    assert progress["schema"] == worker.PROGRESS_SCHEMA
+    assert progress["sequence"] == 0
+    assert progress["current_tile"] == 1
+
+
+def test_callback_rejects_request_hash_divergence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _environment(monkeypatch)
+    handler = lambda _request: httpx.Response(  # noqa: E731
+        200,
+        json={
+            "schema": worker.REQUEST_SCHEMA,
+            "job_id": "map-" + "a" * 32,
+            "request_sha256": "0" * 64,
+            "request": REQUEST,
+        },
+    )
+    original_client = httpx.Client
+    monkeypatch.setattr(
+        worker.httpx,
+        "Client",
+        lambda **kwargs: original_client(
+            headers=kwargs.get("headers"),
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    with pytest.raises(worker.LightningMapContractError, match="Hash"):
+        worker.CallbackClient().fetch_request()
+
+
+def test_job_publishes_result_without_captures_and_cleans_local_scratch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "work"
+    scratch = tmp_path / "scratch"
+    assets = tmp_path / "assets.json"
+    review = tmp_path / "assets"
+    blender = tmp_path / "blender"
+    work.mkdir()
+    scratch.mkdir()
+    review.mkdir()
+    assets.write_text("{}", encoding="utf-8")
+    blender.write_bytes(b"blender")
+    config = ProductionConfig(
+        work_root=work,
+        portable_root=tmp_path,
+        asset_library=assets,
+        review_batch=review,
+        elevation_revision="elevation-v1",
+        orthophoto_revision="ortho-v1",
+        context_revision="context-v1",
+        blender=blender,
+        dataset_id="fireviewer/simple-measured-scenes-v1",
+        scratch_root=scratch,
+    )
+
+    class FakeCallback:
+        job_id = "map-" + "a" * 32
+
+        def __init__(self) -> None:
+            self.progress_records: list[dict[str, Any]] = []
+            self.result_record: dict[str, Any] | None = None
+
+        def fetch_request(self) -> dict[str, Any]:
+            return dict(REQUEST)
+
+        def progress(self, fraction: float, message: str, **details: Any) -> None:
+            self.progress_records.append(
+                {"fraction": fraction, "message": message, **details}
+            )
+
+        def result(self, payload: dict[str, Any]) -> None:
+            self.result_record = payload
+
+    callback = FakeCallback()
+
+    class FakeEngine:
+        asset_library_payload: dict[str, Any] = {}
+
+        def __init__(self, received: ProductionConfig) -> None:
+            assert received is config
+
+        def run(self, *_args: Any, progress_callback: Any, **_kwargs: Any) -> Any:
+            progress_callback(0.5, "Tuile 1/1 — terrain")
+            root = scratch / "jobs" / "GPS-TEST"
+            root.mkdir(parents=True)
+            archive = root / "fireviewer-zone.zip"
+            archive.write_bytes(b"zip")
+            (root / "dataset-publication.json").write_text(
+                json.dumps(
+                    {
+                        "captures": [],
+                        "path_in_repo": "zones/GPS-TEST/build",
+                        "dataset_id": "fireviewer/simple-measured-scenes-v1",
+                        "commit_oid": "d" * 40,
+                        "archive_sha256": "e" * 64,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "zone.done.json").write_text(
+                json.dumps(
+                    {
+                        "zone_id": "GPS-TEST",
+                        "build_id": "c" * 64,
+                        "tile_count": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            yield "Terminé", str(archive), []
+
+    monkeypatch.setattr(worker, "CallbackClient", lambda: callback)
+    monkeypatch.setattr(worker.ProductionConfig, "from_environment", lambda: config)
+    monkeypatch.setattr(worker, "ProductionEngine", FakeEngine)
+    monkeypatch.setattr(
+        worker, "normalize_fixed_assets", lambda request, _catalog: request
+    )
+    result = worker.run()
+    assert result["schema"] == worker.RESULT_SCHEMA
+    assert result["captures"] == []
+    assert callback.result_record == result
+    assert callback.progress_records[-1]["state"] == "completed"
+    assert not (scratch / "jobs" / "GPS-TEST").exists()

@@ -36,6 +36,7 @@ for _module_root in (BLENDER_ROOT, OMNIVERSE_ROOT):
 from build_measured_scene_usd import (
     TerrainReference,
     build_measured_scene_usd,
+    validated_file_sha256,
     validate_measured_scene_package,
 )
 from fixed_asset_placement import (
@@ -974,7 +975,7 @@ def _validate_selected_assets(
             or not isinstance(expected_bytes, int)
             or expected_bytes <= 0
             or target.stat().st_size != expected_bytes
-            or _sha256_file(target) != expected_hash
+            or validated_file_sha256(target) != expected_hash
             or bundled.get("sha256") != expected_hash
             or bundled.get("byte_count") != expected_bytes
         ):
