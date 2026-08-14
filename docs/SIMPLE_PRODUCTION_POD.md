@@ -4,6 +4,10 @@ La production de cartes est un job RunPod Serverless asynchrone. L'endpoint
 Flex garde `workersMin=0` et `workersMax=1` : aucun worker cartographique ne
 reste actif entre deux demandes et aucune requête HTTP n'attend la fin du job.
 À l'intérieur d'un job, le moteur traite au maximum quatre tuiles en parallèle.
+Le bundle USD partagé est publié par lots de huit prototypes au maximum ; un
+prototype commun à plusieurs tuiles n'est écrit et hashé qu'une seule fois.
+Ces deux limites utilisent les neuf vCPU du worker sans multiplier les copies
+sur le volume réseau.
 
 L'administration appelle uniquement le backend FireViewer :
 
@@ -32,7 +36,7 @@ Ressources privées requises :
 - endpoint RunPod queue-based Flex avec zéro worker minimum et un maximum ;
 - volume réseau monté sous `/runpod-volume` pour les checkpoints reprenables ;
 - secret runtime `HF_TOKEN` et variable `FIREVIEWER_HF_DATASET_ID` ;
-- image immuable `pilot-v1-20260814-r16-runpod`.
+- image immuable `pilot-v1-20260814-r17-runpod`.
 
 Le backend Vercel reçoit exclusivement :
 

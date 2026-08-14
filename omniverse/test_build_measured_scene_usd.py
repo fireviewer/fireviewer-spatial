@@ -927,6 +927,40 @@ def test_unrelated_shared_prototypes_publish_without_one_global_lock(
     assert measured._SHARED_PROTOTYPE_LOCKS == {}
 
 
+def test_one_scene_publishes_its_prototype_batch_in_parallel(
+    tmp_path: Path, monkeypatch
+) -> None:
+    entered = threading.Barrier(2)
+    published: list[str] = []
+    progress: list[tuple[int, int, str]] = []
+    published_lock = threading.Lock()
+
+    def publish(_bundle_root: Path, prototype: SimpleNamespace) -> None:
+        entered.wait(timeout=2.0)
+        with published_lock:
+            published.append(prototype.asset_id)
+
+    monkeypatch.setattr(measured, "_PROTOTYPE_WORKER_LIMIT", 2)
+    monkeypatch.setattr(measured, "_publish_shared_prototype_with_slot", publish)
+    prototypes = [
+        SimpleNamespace(family="trees", asset_id="tree_a"),
+        SimpleNamespace(family="buildings", asset_id="building_b"),
+    ]
+
+    measured._publish_shared_prototypes(
+        tmp_path / "shared",
+        prototypes,
+        progress_callback=lambda completed, total, asset_id: progress.append(
+            (completed, total, asset_id)
+        ),
+    )
+
+    assert sorted(published) == ["building_b", "tree_a"]
+    assert [item[0] for item in progress] == [1, 2]
+    assert {item[1] for item in progress} == {2}
+    assert {item[2] for item in progress} == {"building_b", "tree_a"}
+
+
 def test_shared_bundle_texture_tamper_invalidates_existing_scene(fixture_root) -> None:
     root, terrain, prototype = fixture_root
     shared = root / "shared" / "scene-prototypes"

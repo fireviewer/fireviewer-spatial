@@ -12,6 +12,7 @@
     "tile_size_m": 500,
     "mode": "bounded_parallel",
     "max_parallel_tiles": 4,
+    "max_parallel_prototype_io": 8,
     "resume": "reuse_valid_published_tiles_and_remove_owned_staging",
     "generator": "simple_measured_tile_pilot_identical",
     "terrain": "FVTG fixed grid",

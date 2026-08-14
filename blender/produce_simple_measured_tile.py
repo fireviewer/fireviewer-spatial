@@ -1286,6 +1286,11 @@ def produce_simple_measured_tile(
             tile_id=tile_id,
             root_stage="terrain-tile.usda",
         )
+        _emit_progress(
+            progress_callback,
+            "prototype_bundle_started",
+            tile_id=tile_id,
+        )
         scene = build_measured_scene_usd(
             TerrainReference(
                 staging / "terrain-tile.usda", origin, terrain.z_origin_mm
@@ -1297,6 +1302,16 @@ def produce_simple_measured_tile(
             asset_roots=roots,
             asset_bundle_root=shared_bundle,
             usage="technical_pilot_non_final",
+            prototype_progress_callback=lambda completed, total, asset_id: (
+                _emit_progress(
+                    progress_callback,
+                    "prototype_bundle_progress",
+                    tile_id=tile_id,
+                    prototype_completed=completed,
+                    prototype_total=total,
+                    asset_id=asset_id,
+                )
+            ),
         )
         scene_receipt = validate_measured_scene_package(scene.output_root)
         _emit_progress(

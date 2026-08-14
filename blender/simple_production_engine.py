@@ -1554,6 +1554,8 @@ class ProductionEngine:
             "ground_texture_baked": (0.68, "Texture sol orthophoto cuite"),
             "placement_measured": (0.78, "Placement MNS−MNT mesuré"),
             "terrain_usd_exported": (0.84, "Terrain OpenUSD exporté"),
+            "prototype_bundle_started": (0.85, "Lot d'assets USD démarré"),
+            "prototype_bundle_progress": (0.90, "Assets USD publiés en parallèle"),
             "scene_usd_built": (0.92, "Scène OpenUSD assemblée"),
             "tile_staging_validated": (0.97, "Package de tuile rehashé"),
             "tile_published": (1.00, "Package de tuile publié"),
@@ -1602,6 +1604,16 @@ class ProductionEngine:
                 ):
                     if isinstance(details.get(key), int):
                         suffixes.append(f"{details[key]} {label_key}")
+                prototype_completed = details.get("prototype_completed")
+                prototype_total = details.get("prototype_total")
+                if (
+                    isinstance(prototype_completed, int)
+                    and isinstance(prototype_total, int)
+                    and prototype_total > 0
+                ):
+                    suffixes.append(
+                        f"{prototype_completed}/{prototype_total} prototypes"
+                    )
                 message = f"Tuile {tile_index + 1}/{total} — {label}"
                 if suffixes:
                     message += " — " + ", ".join(suffixes)

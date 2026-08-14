@@ -1,8 +1,9 @@
 FROM fireviewer-map-base:pilot-v1-20260811-r12
 
 ENV FIREVIEWER_TILE_WORKERS=4 \
+    FIREVIEWER_PROTOTYPE_WORKERS=8 \
     FIREVIEWER_WORK_ROOT=/runpod-volume/fireviewer-map-production \
-    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260814-r16-runpod
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260814-r17-runpod
 
 COPY fireviewer-spatial/requirements.runpod-map-production.txt /opt/fireviewer/requirements.runpod.txt
 RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.runpod.txt

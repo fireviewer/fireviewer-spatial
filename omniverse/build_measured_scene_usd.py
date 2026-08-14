@@ -31,6 +31,7 @@ import threading
 import unicodedata
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -74,6 +75,26 @@ FAMILY_PRIMS = {
 
 class MeasuredSceneError(ValueError):
     """Inputs cannot be reconciled into a measured portable scene."""
+
+
+def _prototype_worker_limit() -> int:
+    default = max(1, min(8, (os.cpu_count() or 2) - 1))
+    raw = os.environ.get("FIREVIEWER_PROTOTYPE_WORKERS", str(default)).strip()
+    try:
+        requested = int(raw)
+    except ValueError as error:
+        raise MeasuredSceneError(
+            "FIREVIEWER_PROTOTYPE_WORKERS must be an integer"
+        ) from error
+    if requested < 1 or requested > 32:
+        raise MeasuredSceneError(
+            "FIREVIEWER_PROTOTYPE_WORKERS must be between 1 and 32"
+        )
+    return requested
+
+
+_PROTOTYPE_WORKER_LIMIT = _prototype_worker_limit()
+_PROTOTYPE_IO_SLOTS = threading.BoundedSemaphore(_PROTOTYPE_WORKER_LIMIT)
 
 
 @dataclass(frozen=True)
@@ -135,6 +156,7 @@ class _Prototype:
 
 
 SelectionApi = Callable[..., Mapping[str, Any]]
+PrototypeProgressCallback = Callable[[int, int, str], None]
 
 
 def canonical_json_bytes(value: Any, *, pretty: bool = False) -> bytes:
@@ -1740,6 +1762,50 @@ def _publish_shared_prototype_locked(bundle_root: Path, prototype: _Prototype) -
         raise
 
 
+def _publish_shared_prototype_with_slot(
+    bundle_root: Path, prototype: _Prototype
+) -> None:
+    with _PROTOTYPE_IO_SLOTS:
+        _publish_shared_prototype(bundle_root, prototype)
+
+
+def _publish_shared_prototypes(
+    bundle_root: Path,
+    prototypes: Sequence[_Prototype],
+    *,
+    progress_callback: PrototypeProgressCallback | None = None,
+) -> None:
+    """Publish one zone-level prototype batch with bounded process-wide I/O."""
+
+    ordered = sorted(prototypes, key=lambda value: (value.family, value.asset_id))
+    total = len(ordered)
+    if total == 0:
+        return
+    worker_count = min(_PROTOTYPE_WORKER_LIMIT, total)
+    if worker_count == 1:
+        for completed, prototype in enumerate(ordered, start=1):
+            _publish_shared_prototype_with_slot(bundle_root, prototype)
+            if progress_callback is not None:
+                progress_callback(completed, total, prototype.asset_id)
+        return
+
+    futures: dict[Future[None], str] = {}
+    with ThreadPoolExecutor(
+        max_workers=worker_count, thread_name_prefix="fireviewer-prototype"
+    ) as executor:
+        for prototype in ordered:
+            future = executor.submit(
+                _publish_shared_prototype_with_slot, bundle_root, prototype
+            )
+            futures[future] = prototype.asset_id
+        completed = 0
+        for future in as_completed(futures):
+            future.result()
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total, futures[future])
+
+
 def build_measured_scene_usd(
     terrain: TerrainReference,
     placement_inventory: Path | str | Mapping[str, Any],
@@ -1751,6 +1817,7 @@ def build_measured_scene_usd(
     asset_bundle_root: Path | str | None = None,
     usage: str = "technical_pilot_non_final",
     selection_api: SelectionApi | None = None,
+    prototype_progress_callback: PrototypeProgressCallback | None = None,
     contract_path: Path | str | None = None,
 ) -> MeasuredScenePackage:
     """Build one portable measured scene and its fail-closed receipt."""
@@ -2122,8 +2189,11 @@ def build_measured_scene_usd(
     try:
         if bundle_scope == "explicit_shared":
             bundle_root.mkdir(parents=True, exist_ok=True)
-            for _key, prototype in sorted(prototypes.items()):
-                _publish_shared_prototype(bundle_root, prototype)
+            _publish_shared_prototypes(
+                bundle_root,
+                list(prototypes.values()),
+                progress_callback=prototype_progress_callback,
+            )
             prototype_payloads: dict[tuple[str, str], dict[str, bytes]] = {}
         else:
             prototype_payloads = {
