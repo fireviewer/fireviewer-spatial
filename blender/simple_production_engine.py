@@ -60,6 +60,7 @@ from produce_simple_measured_tile import (
     produce_simple_measured_tile,
     validate_simple_measured_tile_package,
 )
+from build_measured_scene_usd import remember_validated_file_hash
 from pyproj import Transformer
 from render_simple_zone_gallery import BLEND_NAME
 
@@ -99,6 +100,7 @@ class ProductionConfig:
     tile_workers: int = 4
     blender: Path = Path("/opt/blender/blender")
     dataset_id: str | None = None
+    scratch_root: Path | None = None
 
     @classmethod
     def from_environment(cls) -> ProductionConfig:
@@ -131,6 +133,11 @@ class ProductionConfig:
             tile_workers=int(os.environ.get("FIREVIEWER_TILE_WORKERS", "4")),
             blender=Path(os.environ.get("FIREVIEWER_BLENDER", "/opt/blender/blender")),
             dataset_id=(os.environ.get("FIREVIEWER_HF_DATASET_ID", "").strip() or None),
+            scratch_root=(
+                Path(value)
+                if (value := os.environ.get("FIREVIEWER_SCRATCH_ROOT", "").strip())
+                else None
+            ),
         )
 
 
@@ -310,14 +317,17 @@ def validate_embedded_assets(config: ProductionConfig) -> dict[str, Any]:
                 raise SimpleProductionError("Chemin d'asset embarqué invalide")
             target = review_batch.joinpath(*PurePosixPath(relative).parts).resolve()
             _inside(review_batch, target, "asset embarqué")
+            expected_sha256 = record.get("sha256")
+            actual_sha256 = _sha256_file(target) if target.is_file() else None
             if (
                 not target.is_file()
                 or target.stat().st_size != record.get("byte_count")
-                or _sha256_file(target) != record.get("sha256")
+                or actual_sha256 != expected_sha256
             ):
                 raise SimpleProductionError(
                     f"Asset embarqué absent ou altéré: {asset['asset_id']}.{role}"
                 )
+            remember_validated_file_hash(target, actual_sha256)
             checked += 1
     return {
         "asset_count": summary["asset_count"],
@@ -433,6 +443,10 @@ def validate_production_config(config: ProductionConfig) -> dict[str, Any]:
     work = _absolute(config.work_root, "volume de travail", exists=False)
     _inside(portable, work, "volume de travail")
     work.mkdir(parents=True, exist_ok=True)
+    if config.scratch_root is not None:
+        scratch = _absolute(config.scratch_root, "volume local rapide", exists=False)
+        _inside(portable, scratch, "volume local rapide")
+        scratch.mkdir(parents=True, exist_ok=True)
     for label, revision in (
         ("révision élévation", config.elevation_revision),
         ("révision orthophoto", config.orthophoto_revision),
@@ -986,8 +1000,65 @@ def _write_zone_receipt(
     return payload
 
 
-def _write_zip(job_root: Path, zone_id: str) -> Path:
-    destination = job_root / ZIP_NAME
+def _scratch_job_path(config: ProductionConfig, zone_id: str) -> Path | None:
+    if config.scratch_root is None:
+        return None
+    scratch = _absolute(config.scratch_root, "volume local rapide", exists=False)
+    destination = scratch / "jobs" / zone_id
+    _inside(scratch, destination, "staging local du job")
+    return destination
+
+
+def _prepare_scratch_job(config: ProductionConfig, zone_id: str) -> Path | None:
+    destination = _scratch_job_path(config, zone_id)
+    if destination is None:
+        return None
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=False)
+    return destination
+
+
+def _prepare_local_assembly(job_root: Path, scratch_job: Path) -> Path:
+    """Mirror immutable checkpoint files with links on the worker-local disk."""
+
+    job = job_root.resolve(strict=True)
+    scratch = scratch_job.resolve(strict=True)
+    excluded_roots = {"sources", "download"}
+    excluded_files = {
+        STATUS_NAME,
+        ZIP_NAME,
+        BLEND_NAME,
+        DATASET_ENTRY_NAME,
+        DATASET_PUBLICATION_NAME,
+    }
+    for source in sorted(
+        job.rglob("*"), key=lambda value: value.relative_to(job).as_posix()
+    ):
+        relative = source.relative_to(job)
+        if relative.parts[0] in excluded_roots or source.name in excluded_files:
+            continue
+        target = scratch / relative
+        _inside(scratch, target, "assemblage local")
+        if source.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if not source.is_file():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(source.resolve(strict=True))
+    return scratch
+
+
+def _write_zip(
+    job_root: Path,
+    zone_id: str,
+    *,
+    destination: Path | None = None,
+) -> Path:
+    destination = job_root / ZIP_NAME if destination is None else destination
+    destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.part")
     excluded_roots = {"sources", "download"}
     excluded_files = {STATUS_NAME, ZIP_NAME, temporary.name}
@@ -1019,6 +1090,20 @@ def _write_zip(job_root: Path, zone_id: str) -> Path:
     return destination
 
 
+def _copy_result_sidecars(source_root: Path, destination_root: Path) -> None:
+    if source_root.resolve() == destination_root.resolve():
+        return
+    for name in (
+        ZONE_RECEIPT_NAME,
+        DATASET_ENTRY_NAME,
+        DATASET_PUBLICATION_NAME,
+    ):
+        source = source_root / name
+        if not source.is_file():
+            raise SimpleProductionError(f"Métadonnée finale absente: {name}")
+        shutil.copyfile(source, destination_root / name)
+
+
 def _gallery_items(job_root: Path) -> GalleryItems:
     if not (job_root / BLEND_NAME).is_file():
         raise SimpleProductionError("La scène Blender autonome zone.blend est absente")
@@ -1041,7 +1126,17 @@ def _render_zone_gallery(
 ) -> GalleryItems:
     if not render:
         return _gallery_items(job_root)
-    runtime_root = job_root / "qa" / "blender-runtime"
+    configured_scratch = _scratch_job_path(config, job_root.name)
+    external_scratch = (
+        configured_scratch
+        if configured_scratch is not None
+        and configured_scratch.resolve() != job_root.resolve()
+        else None
+    )
+    runtime_root = (external_scratch or job_root) / "qa" / "blender-runtime"
+    blend_output = (
+        external_scratch / BLEND_NAME if external_scratch is not None else None
+    )
     runtime_paths = {
         "TEMP": runtime_root / "temp",
         "TMP": runtime_root / "temp",
@@ -1070,6 +1165,8 @@ def _render_zone_gallery(
         "--job-root",
         str(job_root),
     )
+    if blend_output is not None:
+        command += ("--blend-output", str(blend_output))
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -1120,6 +1217,12 @@ def _render_zone_gallery(
             "La création de la scène Blender autonome a échoué:\n"
             + "\n".join(output_tail[-30:])
         )
+    if blend_output is not None:
+        if not blend_output.is_file():
+            raise SimpleProductionError("La scène Blender locale est absente")
+        published_blend = job_root / BLEND_NAME
+        published_blend.unlink(missing_ok=True)
+        published_blend.symlink_to(blend_output.resolve(strict=True))
     return _gallery_items(job_root)
 
 
@@ -1182,21 +1285,19 @@ def _publish_dataset_entry(
     }
     entry["entry_sha256"] = hashlib.sha256(_canonical_bytes(entry)).hexdigest()
     entry_path = job_root / DATASET_ENTRY_NAME
-    _write_json(entry_path, entry)
     publication_path = job_root / DATASET_PUBLICATION_NAME
     if publication_path.is_file():
         publication = _load_json(publication_path, "reçu de publication dataset")
-        if (
-            publication.get("dataset_id") != config.dataset_id
-            or publication.get("zone_id") != plan.zone_id
-            or publication.get("build_id") != build_id
-            or publication.get("archive_sha256") != archive_record["sha256"]
-            or publication.get("entry_sha256") != entry["entry_sha256"]
-        ):
-            raise SimpleProductionError(
-                "Le reçu de publication dataset existant est incohérent"
-            )
+        _validate_existing_publication(
+            config,
+            plan=plan,
+            receipt=receipt,
+            publication=publication,
+            archive_sha256=archive_record["sha256"],
+        )
         return publication
+
+    _write_json(entry_path, entry)
 
     try:
         from huggingface_hub import CommitOperationAdd, HfApi
@@ -1255,6 +1356,50 @@ def _publish_dataset_entry(
     }
     _write_json(publication_path, publication)
     return publication
+
+
+def _validate_existing_publication(
+    config: ProductionConfig,
+    *,
+    plan: ZonePlan,
+    receipt: Mapping[str, Any],
+    publication: Mapping[str, Any],
+    archive_sha256: str | None = None,
+) -> dict[str, Any]:
+    build_id = receipt.get("build_id")
+    remote_root = f"zones/{plan.zone_id}/{build_id}"
+    expected = {
+        "schema": "fireviewer.simple-measured-scene-dataset-publication.v1",
+        "status": "published_private",
+        "dataset_id": config.dataset_id,
+        "zone_id": plan.zone_id,
+        "build_id": build_id,
+        "path_in_repo": remote_root,
+        "captures": [],
+    }
+    if any(publication.get(key) != value for key, value in expected.items()):
+        raise SimpleProductionError(
+            "Le reçu de publication dataset existant est incohérent"
+        )
+    for key in ("archive_sha256", "entry_sha256"):
+        value = publication.get(key)
+        if not isinstance(value, str) or len(value) != 64:
+            raise SimpleProductionError(
+                "Le reçu de publication dataset existant est incohérent"
+            )
+    commit_oid = publication.get("commit_oid")
+    if not isinstance(commit_oid, str) or not commit_oid:
+        raise SimpleProductionError(
+            "Le reçu de publication dataset existant est incohérent"
+        )
+    if (
+        archive_sha256 is not None
+        and publication.get("archive_sha256") != archive_sha256
+    ):
+        raise SimpleProductionError(
+            "Le reçu de publication dataset existant est incohérent"
+        )
+    return dict(publication)
 
 
 class ProductionEngine:
@@ -1447,6 +1592,45 @@ class ProductionEngine:
         else:
             _write_json(plan_path, plan_payload)
 
+        existing_receipt = job_root / ZONE_RECEIPT_NAME
+        existing_publication = job_root / DATASET_PUBLICATION_NAME
+        if (
+            self.config.dataset_id is not None
+            and existing_receipt.is_file()
+            and existing_publication.is_file()
+        ):
+            receipt = _load_json(existing_receipt, "reçu de zone existant")
+            if (
+                receipt.get("schema") != ZONE_RECEIPT_SCHEMA
+                or receipt.get("zone_id") != plan.zone_id
+                or receipt.get("tile_count") != len(plan.tiles)
+            ):
+                raise SimpleProductionError("La production existante est incohérente")
+            publication = _validate_existing_publication(
+                self.config,
+                plan=plan,
+                receipt=receipt,
+                publication=_load_json(
+                    existing_publication, "reçu de publication dataset"
+                ),
+            )
+            report(
+                1.0,
+                "dataset_publication_reused",
+                "Déjà publié — résultat privé Hugging Face réutilisé",
+                completed_tiles=len(plan.tiles),
+            )
+            yield (
+                f"Déjà publié — {receipt['tile_count']} terrains, "
+                f"{receipt['building_count']} bâtiments, "
+                f"{receipt['tree_count']} arbres, résultat privé revalidé.",
+                str(job_root / ZIP_NAME),
+                [],
+            )
+            return
+
+        scratch_job = _prepare_scratch_job(self.config, plan.zone_id)
+
         removed_staging = _remove_interrupted_staging(job_root)
         if removed_staging:
             report(
@@ -1457,7 +1641,6 @@ class ProductionEngine:
             )
 
         existing_archive = job_root / ZIP_NAME
-        existing_receipt = job_root / ZONE_RECEIPT_NAME
         existing_stage = job_root / ENTRY_STAGE
         existing_gallery = job_root / "qa" / "zone-gallery-receipt.v1.json"
         existing_blend = job_root / BLEND_NAME
@@ -1789,19 +1972,29 @@ class ProductionEngine:
             self.config.portable_root,
             shared_bundle,
         )
+        assembly_root = (
+            _prepare_local_assembly(job_root, scratch_job)
+            if scratch_job is not None
+            else job_root
+        )
         _remove_legacy_gallery(job_root)
+        if assembly_root != job_root:
+            _remove_legacy_gallery(assembly_root)
         report(
             0.94,
             "standalone_scene_pack_started",
             "Blender — création de la scène autonome sans captures",
             completed_tiles=completed,
         )
-        gallery = self.render_gallery_fn(job_root, True, None)
-        seal_map_upload_package(job_root)
+        gallery = self.render_gallery_fn(assembly_root, True, None)
+        seal_map_upload_package(assembly_root)
         report(
             0.99, "zip_write", "Compression du pack autonome", completed_tiles=completed
         )
-        archive = _write_zip(job_root, plan.zone_id)
+        archive = _write_zip(
+            assembly_root,
+            plan.zone_id,
+        )
         publication = None
         if self.config.dataset_id is not None:
             report(
@@ -1812,11 +2005,12 @@ class ProductionEngine:
             )
             publication = _publish_dataset_entry(
                 self.config,
-                job_root=job_root,
+                job_root=assembly_root,
                 plan=plan,
                 receipt=receipt,
                 archive=archive,
             )
+            _copy_result_sidecars(assembly_root, job_root)
         _status(
             job_root,
             state="completed",

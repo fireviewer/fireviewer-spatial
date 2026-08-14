@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from threading import Lock
@@ -224,9 +225,16 @@ def _produce(
             archive_path = Path(archive)
         if items:
             gallery = items
-    if archive_path is None or not archive_path.is_file() or gallery:
+    if archive_path is None or gallery:
         raise RunPodMapContractError("Le moteur n'a pas publié le pack complet")
     job_root = archive_path.parent
+    if (
+        not (job_root / "dataset-publication.json").is_file()
+        or not (job_root / "zone.done.json").is_file()
+    ):
+        raise RunPodMapContractError("Les reçus finaux du pack sont absents")
+    if archive_path.exists() and not archive_path.is_file():
+        raise RunPodMapContractError("Le pack complet n'est pas un fichier")
     publication = json.loads(
         (job_root / "dataset-publication.json").read_text(encoding="utf-8")
     )
@@ -237,7 +245,7 @@ def _produce(
             "La publication privée contient une galerie obsolète"
         )
     remote_root = publication["path_in_repo"]
-    return {
+    result = {
         "schema": RESULT_SCHEMA,
         "status": "technical_scene_produced",
         "request_sha256": request_sha256(request),
@@ -265,6 +273,23 @@ def _produce(
             for record in captures
         ],
     }
+    _cleanup_local_result(engine.config, archive_path)
+    return result
+
+
+def _cleanup_local_result(config: ProductionConfig, archive_path: Path) -> None:
+    configured_scratch = getattr(config, "scratch_root", None)
+    if configured_scratch is None:
+        return
+    scratch = Path(configured_scratch).resolve(strict=True)
+    result_root = archive_path.parent.resolve(strict=True)
+    try:
+        relative = result_root.relative_to(scratch)
+    except ValueError:
+        return
+    if len(relative.parts) != 2 or relative.parts[0] != "jobs":
+        raise RunPodMapContractError("Le résultat local sort du staging de job")
+    shutil.rmtree(result_root)
 
 
 def handler(job: Mapping[str, Any]) -> dict[str, Any]:

@@ -359,7 +359,12 @@ def _validate_measured_instances(bpy: Any) -> dict[str, int]:
     return counts
 
 
-def render_gallery(job_root: Path | str, *, render_captures: bool = True) -> Path:
+def render_gallery(
+    job_root: Path | str,
+    *,
+    render_captures: bool = True,
+    blend_output: Path | str | None = None,
+) -> Path:
     """Import the unified USD, pack a Blend and optionally render legacy views."""
 
     root = _require_root(job_root)
@@ -430,7 +435,16 @@ def render_gallery(job_root: Path | str, *, render_captures: bool = True) -> Pat
     camera_data.clip_start = max(0.1, radius / 100_000.0)
     camera_data.clip_end = max(10_000.0, radius * 12.0)
 
-    blend_path = root / BLEND_NAME
+    if blend_output is not None and render_captures:
+        raise SimpleZoneGalleryError(
+            "A local Blend output is only valid for capture-free packaging"
+        )
+    blend_path = (
+        root / BLEND_NAME
+        if blend_output is None
+        else Path(blend_output).resolve(strict=False)
+    )
+    blend_path.parent.mkdir(parents=True, exist_ok=True)
     for image in bpy.data.images:
         if image.source == "FILE" and image.filepath:
             try:
@@ -619,16 +633,29 @@ def _parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("pack", "render", "verify"))
     parser.add_argument("--job-root", required=True, type=Path)
+    parser.add_argument("--blend-output", type=Path)
     return parser.parse_args(values)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     options = _parse_arguments(argv)
     if options.command == "pack":
-        result = render_gallery(options.job_root, render_captures=False)
+        result = render_gallery(
+            options.job_root,
+            render_captures=False,
+            blend_output=options.blend_output,
+        )
     elif options.command == "render":
+        if options.blend_output is not None:
+            raise SimpleZoneGalleryError(
+                "--blend-output is only supported by the pack command"
+            )
         result = render_gallery(options.job_root)
     else:
+        if options.blend_output is not None:
+            raise SimpleZoneGalleryError(
+                "--blend-output is not supported by the verify command"
+            )
         result = verify_gallery(options.job_root)
     print(
         json.dumps(

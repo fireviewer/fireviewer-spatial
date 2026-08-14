@@ -185,6 +185,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
         orthophoto_revision="orthophoto-test",
         context_revision="context-test",
         tile_workers=3,
+        scratch_root=tmp_path / "scratch",
     )
     config.work_root.mkdir()
     config.review_batch.mkdir(parents=True)
@@ -356,6 +357,12 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     receipt = json.loads(
         (job_root / production.ZONE_RECEIPT_NAME).read_text(encoding="utf-8")
     )
+    network_job_root = config.work_root / "jobs" / receipt["zone_id"]
+    assert network_job_root != job_root
+    assert (network_job_root / "packages").is_dir()
+    assert (network_job_root / production.ZONE_RECEIPT_NAME).is_file()
+    assert not (network_job_root / production.ZIP_NAME).exists()
+    assert not (network_job_root / production.BLEND_NAME).exists()
     assert receipt["tile_count"] > 1
     assert len(prepared_fixed_assets) == receipt["tile_count"]
     assert receipt["building_count"] == 2 * receipt["tile_count"]
@@ -478,6 +485,7 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
             self.values = dict(kwargs)
 
     monkeypatch.setenv("HF_TOKEN", "secret-not-for-files")
+    monkeypatch.setenv("FIREVIEWER_IMAGE_REFERENCE", "worker:r17")
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
@@ -490,6 +498,7 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
         receipt=receipt,
         archive=archive,
     )
+    monkeypatch.setenv("FIREVIEWER_IMAGE_REFERENCE", "worker:r18")
     second = production._publish_dataset_entry(
         config,
         job_root=tmp_path,
@@ -510,6 +519,37 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
     for path in tmp_path.iterdir():
         if path.is_file():
             assert b"secret-not-for-files" not in path.read_bytes()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="worker links are Linux-only")
+def test_local_assembly_and_zip_materialize_linked_files_once(tmp_path: Path) -> None:
+    network = tmp_path / "network" / "jobs" / "GPS-LINKED"
+    scratch = tmp_path / "scratch" / "jobs" / "GPS-LINKED"
+    embedded = tmp_path / "image" / "tree.usd"
+    embedded.parent.mkdir(parents=True)
+    embedded.write_bytes(b"immutable-usd")
+    (network / "packages" / "tile" / "scene").mkdir(parents=True)
+    (network / "packages" / "tile" / "scene" / "scene.usda").write_bytes(b"#usda 1.0\n")
+    prototype = network / "shared" / "prototypes" / "tree" / "source.usd"
+    prototype.parent.mkdir(parents=True)
+    prototype.symlink_to(embedded)
+    (network / production.PLAN_NAME).write_text("{}", encoding="utf-8")
+    scratch.mkdir(parents=True)
+
+    assembly = production._prepare_local_assembly(network, scratch)
+    assert (assembly / "shared/prototypes/tree/source.usd").is_symlink()
+    archive = production._write_zip(assembly, "GPS-LINKED")
+
+    with zipfile.ZipFile(archive) as bundle:
+        info = bundle.getinfo("fireviewer-GPS-LINKED/shared/prototypes/tree/source.usd")
+        assert info.external_attr >> 16 == 0o100644
+        assert bundle.read(info) == b"immutable-usd"
+        assert (
+            bundle.namelist().count(
+                "fireviewer-GPS-LINKED/shared/prototypes/tree/source.usd"
+            )
+            == 1
+        )
 
 
 def test_gallery_items_are_empty_and_require_the_standalone_scene(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -105,3 +106,106 @@ def test_production_result_is_capture_free(tmp_path, monkeypatch) -> None:
     assert result["schema"] == worker.RESULT_SCHEMA
     assert result["captures"] == []
     assert result["archive"]["path"].endswith("/fireviewer-zone.zip")
+
+
+def test_production_accepts_published_resume_without_local_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_root = tmp_path / "network" / "jobs" / "GPS-TEST"
+    job_root.mkdir(parents=True)
+    (job_root / "dataset-publication.json").write_text(
+        json.dumps(
+            {
+                "dataset_id": "fireviewer/simple-measured-scenes-v1",
+                "commit_oid": "d" * 40,
+                "path_in_repo": "zones/test/build",
+                "archive_sha256": "e" * 64,
+                "captures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (job_root / "zone.done.json").write_text(
+        json.dumps(
+            {
+                "zone_id": "GPS-TEST",
+                "build_id": "c" * 64,
+                "tile_count": 1,
+                "degraded_mns_tile_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class ResumedEngine(FakeEngine):
+        def run(self, *_args, **_kwargs):
+            yield "Déjà publié", str(job_root / "fireviewer-zone.zip"), []
+
+    monkeypatch.setattr(worker, "_engine", ResumedEngine)
+    result = worker.handler(
+        {
+            "id": "resume_test",
+            "input": {
+                "operation": "produce_map",
+                "request": {"latitude": 43.9, "longitude": 4.5, "side_km": 0.5},
+            },
+        }
+    )
+
+    assert result["zone_id"] == "GPS-TEST"
+    assert not (job_root / "fireviewer-zone.zip").exists()
+
+
+def test_production_removes_only_the_worker_local_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch = tmp_path / "scratch"
+    job_root = scratch / "jobs" / "GPS-LOCAL"
+    archive = job_root / "fireviewer-zone.zip"
+    job_root.mkdir(parents=True)
+    archive.write_bytes(b"portable-zone")
+    (job_root / "dataset-publication.json").write_text(
+        json.dumps(
+            {
+                "dataset_id": "fireviewer/simple-measured-scenes-v1",
+                "commit_oid": "d" * 40,
+                "path_in_repo": "zones/test/build",
+                "archive_sha256": "e" * 64,
+                "captures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (job_root / "zone.done.json").write_text(
+        json.dumps(
+            {
+                "zone_id": "GPS-LOCAL",
+                "build_id": "c" * 64,
+                "tile_count": 1,
+                "degraded_mns_tile_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class LocalEngine(FakeEngine):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config.scratch_root = scratch
+
+        def run(self, *_args, **_kwargs):
+            yield "Terminé", str(archive), []
+
+    monkeypatch.setattr(worker, "_engine", LocalEngine)
+    result = worker.handler(
+        {
+            "id": "local_cleanup_test",
+            "input": {
+                "operation": "produce_map",
+                "request": {"latitude": 43.9, "longitude": 4.5, "side_km": 0.5},
+            },
+        }
+    )
+
+    assert result["zone_id"] == "GPS-LOCAL"
+    assert not job_root.exists()

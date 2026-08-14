@@ -4,10 +4,11 @@ La production de cartes est un job RunPod Serverless asynchrone. L'endpoint
 Flex garde `workersMin=0` et `workersMax=1` : aucun worker cartographique ne
 reste actif entre deux demandes et aucune requête HTTP n'attend la fin du job.
 À l'intérieur d'un job, le moteur traite au maximum quatre tuiles en parallèle.
-Le bundle USD partagé est publié par lots de huit prototypes au maximum ; un
-prototype commun à plusieurs tuiles n'est écrit et hashé qu'une seule fois.
-Ces deux limites utilisent les neuf vCPU du worker sans multiplier les copies
-sur le volume réseau.
+Les 294 assets immuables sont validés une seule fois au démarrage du processus
+worker. Les tuiles ne les recopient et ne les re-hashent plus : leur bundle
+partagé est un index de liens vers les assets embarqués. Les quatre tuiles
+simultanées utilisent ainsi les neuf vCPU sans multiplier les gros fichiers sur
+le volume réseau.
 
 L'administration appelle uniquement le backend FireViewer :
 
@@ -34,9 +35,12 @@ télécharge aucune donnée géographique avant le démarrage d'un job.
 Ressources privées requises :
 
 - endpoint RunPod queue-based Flex avec zéro worker minimum et un maximum ;
-- volume réseau monté sous `/runpod-volume` pour les checkpoints reprenables ;
+- volume réseau monté sous `/runpod-volume` pour les checkpoints de tuiles et
+  les petits reçus reprenables ;
+- disque éphémère local `/tmp/fireviewer-map-production` pour assembler
+  `zone.blend`, matérialiser le ZIP autonome et le compresser ;
 - secret runtime `HF_TOKEN` et variable `FIREVIEWER_HF_DATASET_ID` ;
-- image immuable `pilot-v1-20260814-r17-runpod`.
+- image immuable `pilot-v1-20260814-r18-runpod`.
 
 Le backend Vercel reçoit exclusivement :
 
@@ -55,7 +59,8 @@ La production active rend zéro capture et le contrat RunPod expose toujours
 - `zone.usda`, scène OpenUSD unifiée ;
 - `zone.blend`, scène Blender autonome avec textures emballées ;
 - `packages/<tile>/`, chaque terrain de 500 m ;
-- `shared/prototypes/`, les assets réellement utilisés ;
+- `shared/prototypes/`, les assets réellement utilisés, chacun incorporé une
+  seule fois comme fichier normal dans le ZIP ;
 - `provenance/<tile>/`, les reçus source compacts ;
 - `zone-context.json`, `zone-plan.json` et `zone.done.json`.
 
@@ -71,8 +76,9 @@ mais ne sont plus produits.
 ## Publication
 
 Le worker publie atomiquement dans la dataset privée
-`fireviewer/simple-measured-scenes-v1` : le ZIP, `zone.done.json` et
-`dataset-entry.json`. La réponse admin expose un lien temporaire vers le ZIP.
+`fireviewer/simple-measured-scenes-v1` uniquement le ZIP final,
+`zone.done.json` et `dataset-entry.json`. Le staging local est ensuite supprimé.
+La réponse admin expose un lien temporaire vers le ZIP.
 La mise en ligne publique sur une fiche incident reste une décision explicite
 de l'administrateur après import et contrôle ; le job ne publie jamais seul une
 carte au public.

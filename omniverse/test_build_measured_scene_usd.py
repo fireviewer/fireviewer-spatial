@@ -856,6 +856,46 @@ def test_explicit_shared_bundle_is_immutable_idempotent_and_not_duplicated(
         }
 
 
+@pytest.mark.skipif(os.name == "nt", reason="linked bundle is a Linux worker mode")
+def test_linked_bundle_uses_startup_validated_embedded_assets_without_rehash(
+    fixture_root, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, terrain, prototype = fixture_root
+    shared = root / "shared" / "scene-prototypes"
+    texture = prototype.parent / "textures" / "source.png"
+    prototype_hash = _hash_bytes(prototype.read_bytes())
+    texture_hash = _hash_bytes(texture.read_bytes())
+    measured.remember_validated_file_hash(prototype, prototype_hash)
+    measured.remember_validated_file_hash(texture, texture_hash)
+    original_sha256_file = measured.sha256_file
+    calls = {prototype.resolve(): 0, texture.resolve(): 0}
+
+    def counted_sha256_file(path: Path) -> str:
+        resolved = path.resolve()
+        if resolved in calls:
+            calls[resolved] += 1
+        return original_sha256_file(path)
+
+    monkeypatch.setenv(measured.PROTOTYPE_BUNDLE_MODE_ENV, "linked")
+    monkeypatch.setattr(measured, "sha256_file", counted_sha256_file)
+    package = _build(
+        root,
+        terrain,
+        prototype,
+        "linked-scene",
+        asset_bundle_root=shared,
+    )
+    receipt = measured.validate_measured_scene_package(package.output_root)
+    source_link = shared / receipt["prototypes"][0]["source_usd"]["path"]
+    texture_link = shared / receipt["prototypes"][0]["texture"]["path"]
+
+    assert source_link.is_symlink()
+    assert texture_link.is_symlink()
+    assert source_link.resolve() == prototype.resolve()
+    assert texture_link.resolve() == texture.resolve()
+    assert calls == {prototype.resolve(): 0, texture.resolve(): 0}
+
+
 def test_concurrent_shared_bundle_hashes_each_source_artifact_once(
     fixture_root, monkeypatch
 ) -> None:

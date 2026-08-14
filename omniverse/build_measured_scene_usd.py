@@ -47,6 +47,8 @@ _FILE_HASH_IN_FLIGHT: dict[
     tuple[str, tuple[int, int, int, int, int]], threading.Event
 ] = {}
 _FILE_HASH_CACHE_LIMIT = 4096
+PROTOTYPE_BUNDLE_MODE_ENV = "FIREVIEWER_PROTOTYPE_BUNDLE_MODE"
+PROTOTYPE_BUNDLE_MODES = {"copy", "linked"}
 
 CONTRACT_SCHEMA = "fireviewer.measured-scene-usd-contract.v1"
 ALGORITHM = "fireviewer.measured-scene-usd-builder.v1"
@@ -207,6 +209,17 @@ def _remember_file_hash(path: Path, digest: str) -> None:
         _FILE_HASH_CACHE.move_to_end(cache_key)
         while len(_FILE_HASH_CACHE) > _FILE_HASH_CACHE_LIMIT:
             _FILE_HASH_CACHE.popitem(last=False)
+
+
+def remember_validated_file_hash(path: Path | str, digest: str) -> None:
+    """Seed the process cache after the immutable image startup validation."""
+
+    if not SHA256_RE.fullmatch(digest):
+        raise MeasuredSceneError("validated file SHA-256 is invalid")
+    resolved = Path(path).resolve(strict=True)
+    if not resolved.is_file():
+        raise MeasuredSceneError(f"validated file is missing: {resolved}")
+    _remember_file_hash(resolved, digest)
 
 
 def _cached_sha256_file(path: Path) -> str:
@@ -1672,6 +1685,31 @@ def _prototype_payloads(prototype: _Prototype) -> dict[str, bytes]:
     return payloads
 
 
+def _prototype_bundle_mode() -> str:
+    mode = os.environ.get(PROTOTYPE_BUNDLE_MODE_ENV, "copy").strip().lower()
+    if mode not in PROTOTYPE_BUNDLE_MODES:
+        raise MeasuredSceneError(
+            f"{PROTOTYPE_BUNDLE_MODE_ENV} must be one of "
+            + ", ".join(sorted(PROTOTYPE_BUNDLE_MODES))
+        )
+    if mode == "linked" and os.name == "nt":
+        raise MeasuredSceneError(
+            "linked prototype bundles are only supported in the Linux worker"
+        )
+    return mode
+
+
+def _linked_prototype_sources(prototype: _Prototype) -> dict[str, Path]:
+    sources = {prototype.source_relative: prototype.source_path}
+    if prototype.texture_path is not None:
+        if prototype.texture_relative is None:
+            raise MeasuredSceneError(
+                f"prototype texture receipt is incomplete: {prototype.asset_id}"
+            )
+        sources[prototype.texture_relative] = prototype.texture_path
+    return sources
+
+
 def _prototype_artifact_hashes(
     prototype: _Prototype,
 ) -> dict[str, tuple[int, str]]:
@@ -1740,8 +1778,14 @@ def _publish_shared_prototype_locked(bundle_root: Path, prototype: _Prototype) -
     if staging.exists():
         raise MeasuredSceneError(f"shared prototype staging already exists: {staging}")
     try:
-        payloads = _prototype_payloads(prototype)
-        if set(payloads) != set(artifacts):
+        mode = _prototype_bundle_mode()
+        payloads = (
+            _prototype_payloads(prototype)
+            if mode == "copy"
+            else {prototype.wrapper_relative: prototype.wrapper_bytes}
+        )
+        linked_sources = {} if mode == "copy" else _linked_prototype_sources(prototype)
+        if set(payloads) | set(linked_sources) != set(artifacts):
             raise MeasuredSceneError(
                 f"prototype payload layout differs: {prototype.asset_id}"
             )
@@ -1752,6 +1796,20 @@ def _publish_shared_prototype_locked(bundle_root: Path, prototype: _Prototype) -
             _inside(staging, target.resolve(), "shared prototype output")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
+        for relative, source in linked_sources.items():
+            expected_bytes, expected_hash = artifacts[relative]
+            resolved_source = source.resolve(strict=True)
+            if (
+                resolved_source.stat().st_size != expected_bytes
+                or _cached_sha256_file(resolved_source) != expected_hash
+            ):
+                raise MeasuredSceneError(
+                    f"prototype changed while linking: {prototype.asset_id}"
+                )
+            within_asset = PurePosixPath(relative).relative_to(prototype.asset_id)
+            target = staging.joinpath(*within_asset.parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(resolved_source)
         os.replace(staging, asset_root)
         for relative, (_expected_bytes, expected_hash) in artifacts.items():
             within_asset = PurePosixPath(relative).relative_to(prototype.asset_id)
@@ -2248,8 +2306,17 @@ def _validate_bundle_artifact(
     relative = _portable_catalog_path(record.get("path"), f"{label} bundle path")
     if relative.parts[: len(expected_prefix.parts)] != expected_prefix.parts:
         raise MeasuredSceneError(f"{label} bundle path is outside its prototype")
-    path = root.joinpath(*relative.parts).resolve()
-    _inside(root, path, f"{label} bundle file")
+    lexical_path = root.joinpath(*relative.parts)
+    _inside(root, lexical_path.absolute(), f"{label} bundle file")
+    if lexical_path.is_symlink():
+        if _prototype_bundle_mode() != "linked":
+            raise MeasuredSceneError(
+                f"{label} external bundle link is forbidden outside worker mode"
+            )
+        path = lexical_path.resolve(strict=True)
+    else:
+        path = lexical_path.resolve()
+        _inside(root, path, f"{label} bundle file")
     if not path.is_file():
         raise MeasuredSceneError(f"{label} bundle file is missing")
     expected_bytes = _integer(

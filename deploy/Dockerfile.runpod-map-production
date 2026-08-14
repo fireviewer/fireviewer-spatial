@@ -2,8 +2,10 @@ FROM fireviewer-map-base:pilot-v1-20260811-r12
 
 ENV FIREVIEWER_TILE_WORKERS=4 \
     FIREVIEWER_PROTOTYPE_WORKERS=8 \
+    FIREVIEWER_PROTOTYPE_BUNDLE_MODE=linked \
     FIREVIEWER_WORK_ROOT=/runpod-volume/fireviewer-map-production \
-    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260814-r17-runpod
+    FIREVIEWER_SCRATCH_ROOT=/tmp/fireviewer-map-production \
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260814-r18-runpod
 
 COPY fireviewer-spatial/requirements.runpod-map-production.txt /opt/fireviewer/requirements.runpod.txt
 RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.runpod.txt
@@ -11,7 +13,7 @@ RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.runpod
 COPY fireviewer-spatial/blender/ /opt/fireviewer/fireviewer-spatial/blender/
 COPY fireviewer-spatial/omniverse/ /opt/fireviewer/fireviewer-spatial/omniverse/
 
-RUN mkdir -p /runpod-volume/fireviewer-map-production \
+RUN mkdir -p /runpod-volume/fireviewer-map-production /tmp/fireviewer-map-production \
     && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-assets-only \
     && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-runtime-only
 
