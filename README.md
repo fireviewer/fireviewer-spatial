@@ -66,6 +66,10 @@ interpolation ni prédiction n'est inventée. Les GLB sont uniquement des vues
 dérivées pour le navigateur. L'USD, le JSON normalisé et la timeline restent
 les données de référence.
 
+## Reconstructions rétrospectives
+
+Les packs FireViewer de juillet 2026 constituent une famille distincte des périmètres observés. Les géométries marquées `reconstructed` sont dérivées de bilans de surface, secteurs, cartes et observations disponibles : elles ne sont ni des observations directes, ni des contours officiels, ni des prévisions. Une reconstruction ne doit jamais être publiée sous le contrat `observed-perimeter`.
+
 ## Upload, simulation et datasets
 
 [`portable_scene_package.py`](./blender/portable_scene_package.py) inventorie et
@@ -118,9 +122,9 @@ En développement Windows, les temporaires du pipeline doivent être dirigés
 vers `D:` :
 
 ```powershell
-$env:TEMP = 'D:\Dev\project\fireviewer-repositories\fireviewer-work\temp'
+$env:TEMP = 'C:\FireViewerWorkspace\temp'
 $env:TMP = $env:TEMP
-$env:PYTHONPYCACHEPREFIX = 'D:\Dev\project\fireviewer-repositories\fireviewer-work\cache\pycache'
+$env:PYTHONPYCACHEPREFIX = 'C:\FireViewerWorkspace\cache\pycache'
 
 python -m pytest -q
 python -m ruff check .
@@ -140,3 +144,11 @@ ont été retirées localement ; `ground-context` et les ressources du pipeline
 définitif restent des dépendances externes hashées. Le code est sous
 AGPL-3.0-or-later ; la documentation est sous CC BY 4.0. Les données IGN et les
 autres sources externes conservent leurs licences et attributions propres.
+
+## Identité et contact
+
+FireViewer est un projet distinct de recherche et développement maintenu par **Unicorn Who Dev**.
+
+> FireViewer n’est ni un service d’alerte, ni une source officielle, ni un outil de conduite des secours. Les sorties et artefacts de ce dépôt exigent leur provenance, leurs gates propres et, lorsqu’ils concernent un incident, une validation humaine.
+
+Contact public, provenance, droits, sécurité et demandes de retrait : [unicornwhodev@gmail.com](mailto:unicornwhodev@gmail.com).
