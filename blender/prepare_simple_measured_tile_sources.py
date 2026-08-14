@@ -8,6 +8,7 @@ import json
 import math
 import os
 import shutil
+import threading
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ MNT_LAYER = "IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93"
 MNS_LAYER = "IGNF_LIDAR-HD_MNS_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93"
 ORTHOPHOTO_LAYER = "ORTHOIMAGERY.ORTHOPHOTOS"
 HASH_LENGTH = 64
+_HTTP_LOCAL = threading.local()
 
 
 class SimpleMeasuredTileSourceError(RuntimeError):
@@ -160,9 +162,15 @@ def wms_url(layer: str, bounds: Sequence[int], size: int, image_format: str) -> 
 
 
 def _default_http_get(url: str) -> bytes:
-    response = requests.get(
+    session = getattr(_HTTP_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update(
+            {"User-Agent": "FireViewer/simple-measured-tile-sources-v1"}
+        )
+        _HTTP_LOCAL.session = session
+    response = session.get(
         url,
-        headers={"User-Agent": "FireViewer/simple-measured-tile-sources-v1"},
         timeout=(20, 180),
     )
     response.raise_for_status()

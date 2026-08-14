@@ -1,6 +1,7 @@
 FROM fireviewer-map-base:pilot-v1-20260811-r12
 
 ENV FIREVIEWER_TILE_WORKERS=4 \
+    FIREVIEWER_SOURCE_WORKERS=8 \
     FIREVIEWER_PROTOTYPE_WORKERS=8 \
     FIREVIEWER_PROTOTYPE_BUNDLE_MODE=linked \
     FIREVIEWER_WORK_ROOT=/runpod-volume/fireviewer-map-production \

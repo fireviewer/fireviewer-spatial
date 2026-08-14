@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
 from typing import Any
 
 import httpx
@@ -101,6 +102,67 @@ def test_callback_rejects_request_hash_divergence(
     )
     with pytest.raises(worker.LightningMapContractError, match="Hash"):
         worker.CallbackClient().fetch_request()
+
+
+def test_callback_coalesces_concurrent_progress_without_reusing_sequences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _environment(monkeypatch)
+    observed: list[dict[str, Any]] = []
+    observed_lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            with observed_lock:
+                observed.append(json.loads(request.content))
+        return httpx.Response(204)
+
+    original_client = httpx.Client
+    monkeypatch.setattr(
+        worker.httpx,
+        "Client",
+        lambda **kwargs: original_client(
+            headers=kwargs.get("headers"),
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    monotonic_values = iter([100.0] + [101.0] * 8 + [111.0])
+    monkeypatch.setattr(worker.time, "monotonic", lambda: next(monotonic_values))
+    callback = worker.CallbackClient()
+
+    callback.progress(
+        0.1,
+        "first",
+        phase="sources",
+        current_tile=0,
+        tile_count=625,
+    )
+    threads = [
+        threading.Thread(
+            target=callback.progress,
+            args=(0.2 + index / 1000, f"coalesced-{index}"),
+            kwargs={
+                "phase": "sources",
+                "current_tile": index,
+                "tile_count": 625,
+            },
+        )
+        for index in range(8)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    callback.progress(
+        0.3,
+        "later",
+        phase="terrain",
+        current_tile=1,
+        tile_count=625,
+    )
+
+    assert [payload["sequence"] for payload in observed] == [0, 1]
+    assert [payload["message"] for payload in observed] == ["first", "later"]
 
 
 def test_job_publishes_result_without_captures_and_cleans_local_scratch(

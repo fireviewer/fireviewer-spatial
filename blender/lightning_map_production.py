@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -28,6 +29,7 @@ from simple_production_engine import ProductionConfig, ProductionEngine, plan_zo
 REQUEST_SCHEMA = "fireviewer.map-production-request.v1"
 PROGRESS_SCHEMA = "fireviewer.map-production-progress.v1"
 RESULT_SCHEMA = "fireviewer.map-production-result.v1"
+PROGRESS_MIN_INTERVAL_SECONDS = 10.0
 
 
 class LightningMapContractError(ValueError):
@@ -51,6 +53,7 @@ class CallbackClient:
         self.sequence = 0
         self._last_sent_at = 0.0
         self._last_progress = -1.0
+        self._progress_lock = threading.Lock()
         self._client = httpx.Client(
             headers={"X-FireViewer-Map-Token": self.token},
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
@@ -103,28 +106,25 @@ class CallbackClient:
     ) -> None:
         now = time.monotonic()
         bounded = max(0.0, min(1.0, float(fraction)))
-        if (
-            not force
-            and now - self._last_sent_at < 2.0
-            and bounded - self._last_progress < 0.002
-        ):
-            return
-        payload = {
-            "schema": PROGRESS_SCHEMA,
-            "job_id": self.job_id,
-            "sequence": self.sequence,
-            "state": state,
-            "phase": phase,
-            "progress": bounded,
-            "message": str(message),
-            "current_tile": current_tile,
-            "tile_count": tile_count,
-            "error": error,
-        }
+        with self._progress_lock:
+            if not force and now - self._last_sent_at < PROGRESS_MIN_INTERVAL_SECONDS:
+                return
+            payload = {
+                "schema": PROGRESS_SCHEMA,
+                "job_id": self.job_id,
+                "sequence": self.sequence,
+                "state": state,
+                "phase": phase,
+                "progress": bounded,
+                "message": str(message),
+                "current_tile": current_tile,
+                "tile_count": tile_count,
+                "error": error,
+            }
+            self.sequence += 1
+            self._last_sent_at = now
+            self._last_progress = max(self._last_progress, bounded)
         self._request("POST", self.progress_url, payload=payload)
-        self.sequence += 1
-        self._last_sent_at = now
-        self._last_progress = bounded
 
     def result(self, payload: dict[str, Any]) -> None:
         self._request("POST", self.result_url, payload=payload)

@@ -87,7 +87,9 @@ def test_config_defaults_to_four_workers_and_rejects_more(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("FIREVIEWER_TILE_WORKERS", raising=False)
+    monkeypatch.delenv("FIREVIEWER_SOURCE_WORKERS", raising=False)
     assert production.ProductionConfig.from_environment().tile_workers == 4
+    assert production.ProductionConfig.from_environment().source_workers == 8
     config = production.ProductionConfig(
         work_root=tmp_path,
         portable_root=tmp_path,
@@ -97,6 +99,20 @@ def test_config_defaults_to_four_workers_and_rejects_more(
         orthophoto_revision="orthophoto-test",
         context_revision="context-test",
         tile_workers=5,
+    )
+    with pytest.raises(production.SimpleProductionError, match="Limites du pod"):
+        production.validate_production_config(config)
+
+    config = production.ProductionConfig(
+        work_root=tmp_path,
+        portable_root=tmp_path,
+        asset_library=tmp_path / "asset-library.json",
+        review_batch=tmp_path / "assets",
+        elevation_revision="elevation-test",
+        orthophoto_revision="orthophoto-test",
+        context_revision="context-test",
+        tile_workers=4,
+        source_workers=3,
     )
     with pytest.raises(production.SimpleProductionError, match="Limites du pod"):
         production.validate_production_config(config)
@@ -265,6 +281,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
         encoding="utf-8",
     )
     prepared_fixed_assets: list[list[dict[str, object]]] = []
+    prepared_source_roots: list[Path] = []
 
     def fake_context(**kwargs: object) -> SimpleNamespace:
         path = Path(kwargs["output_path"])
@@ -273,6 +290,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
 
     def fake_prepare(**kwargs: object) -> SimpleNamespace:
         prepared_fixed_assets.append(list(kwargs["fixed_asset_placements"]))
+        prepared_source_roots.append(Path(kwargs["output_root"]))
         callback = kwargs["progress_callback"]
         callback("download_mnt_started", {"tile_id": kwargs["tile_id"]})
         callback(
@@ -425,6 +443,12 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     assert not (network_job_root / production.BLEND_NAME).exists()
     assert receipt["tile_count"] > 1
     assert len(prepared_fixed_assets) == receipt["tile_count"]
+    assert all(
+        root.is_relative_to(
+            (config.scratch_root / "jobs" / receipt["zone_id"]).resolve()
+        )
+        for root in prepared_source_roots
+    )
     assert receipt["building_count"] == 2 * receipt["tile_count"]
     assert receipt["tree_count"] == 7 * receipt["tile_count"]
     assert receipt["accepted_human"] is False
@@ -445,7 +469,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     assert {request["tile_id"] for request in validated_requests} == expected_tile_ids
     messages = [message for _fraction, message in progress_events]
     assert any("Moteur embarqué validé" in message for message in messages)
-    assert any("3 tuiles simultanées" in message for message in messages)
+    assert any("8 acquisitions et 3 compilations" in message for message in messages)
     assert any("MNT 0,5 m reçu" in message for message in messages)
     assert any("Placement MNS−MNT mesuré" in message for message in messages)
     assert any("Compression du pack autonome" in message for message in messages)

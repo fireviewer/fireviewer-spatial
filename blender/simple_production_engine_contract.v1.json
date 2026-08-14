@@ -12,6 +12,7 @@
     "tile_size_m": 500,
     "mode": "bounded_parallel",
     "max_parallel_tiles": 4,
+    "max_parallel_source_acquisitions": 8,
     "max_parallel_prototype_io": 8,
     "resume": "reuse_valid_published_tiles_and_remove_owned_staging",
     "generator": "simple_measured_tile_pilot_identical",
@@ -33,7 +34,7 @@
     "assets": "complete_294_reference_catalog_with_real_usd_or_deterministic_real_usd_fallback_embedded_and_hash_checked_at_start",
     "production_scripts": "embedded_and_presence_checked",
     "checkpoint_volume": "/lightning-work/fireviewer-map-production",
-    "local_assembly_volume": "/lightning-scratch/fireviewer-map-production",
+    "local_source_and_assembly_volume": "/lightning-scratch/fireviewer-map-production",
     "port": null
   },
   "cleanup": {

@@ -100,6 +100,7 @@ class ProductionConfig:
     max_side_m: int = 15_000
     max_tiles: int = 900
     tile_workers: int = 4
+    source_workers: int = 8
     blender: Path = Path("/opt/blender/blender")
     dataset_id: str | None = None
     scratch_root: Path | None = None
@@ -133,6 +134,7 @@ class ProductionConfig:
             max_side_m=int(os.environ.get("FIREVIEWER_MAX_SIDE_M", "15000")),
             max_tiles=int(os.environ.get("FIREVIEWER_MAX_TILES", "900")),
             tile_workers=int(os.environ.get("FIREVIEWER_TILE_WORKERS", "4")),
+            source_workers=int(os.environ.get("FIREVIEWER_SOURCE_WORKERS", "8")),
             blender=Path(os.environ.get("FIREVIEWER_BLENDER", "/opt/blender/blender")),
             dataset_id=(os.environ.get("FIREVIEWER_HF_DATASET_ID", "").strip() or None),
             scratch_root=(
@@ -485,6 +487,7 @@ def validate_production_config(config: ProductionConfig) -> dict[str, Any]:
         config.max_side_m < TILE_SIZE_M
         or config.max_tiles < 1
         or not 1 <= config.tile_workers <= 4
+        or not config.tile_workers <= config.source_workers <= 16
     ):
         raise SimpleProductionError("Limites du pod invalides")
     portable = _absolute(config.portable_root, "racine portable", exists=True)
@@ -777,7 +780,7 @@ def _bounded_parallel_tile_results(
 ) -> Iterator[str | None]:
     """Run a rolling bounded queue; yield ``None`` when only a heartbeat is due."""
 
-    if not 2 <= worker_count <= 4 or worker_count > len(pending_tiles):
+    if not 2 <= worker_count <= 16 or worker_count > len(pending_tiles):
         raise SimpleProductionError("Configuration de production parallèle invalide")
     pending_iterator = iter(pending_tiles)
     executor = ThreadPoolExecutor(
@@ -1813,6 +1816,8 @@ class ProductionEngine:
 
         asset_roots = {"review_batch": self.config.review_batch}
         shared_bundle = _prototype_bundle_root(job_root, self.asset_summary)
+        source_storage_root = scratch_job if scratch_job is not None else job_root
+        production_slots = threading.BoundedSemaphore(self.config.tile_workers)
         completed = 0
         source_phase = {
             "download_mnt_started": (0.04, "MNT 0,5 m — téléchargement"),
@@ -1917,7 +1922,7 @@ class ProductionEngine:
                     "tile_reused", {"tile_id": tile.tile_id}, table=production_phase
                 )
             else:
-                source_root = job_root / "sources" / tile.tile_id
+                source_root = source_storage_root / "sources" / tile.tile_id
                 sources = self.prepare_sources_fn(
                     output_root=source_root,
                     zone_id=plan.zone_id,
@@ -1936,41 +1941,42 @@ class ProductionEngine:
                         phase, details, table=source_phase
                     ),
                 )
-                package = self.produce_tile_fn(
-                    mnt_05m=sources.mnt,
-                    mns_05m=sources.mns,
-                    orthophoto_1m=sources.orthophoto,
-                    elevation_source_receipt=sources.elevation_receipt,
-                    orthophoto_source_receipt=sources.orthophoto_receipt,
-                    placement_context=sources.placement_context,
-                    asset_library=self.config.asset_library,
-                    asset_roots=asset_roots,
-                    portable_root=self.config.portable_root,
-                    asset_bundle_root=shared_bundle,
-                    output_root=package_root,
-                    zone_id=plan.zone_id,
-                    tile_id=tile.tile_id,
-                    tile_origin_l93_m=tile.origin_l93_m,
-                    progress_callback=lambda phase, details: tile_report(
-                        phase, details, table=production_phase
-                    ),
-                )
-                validate_simple_measured_tile_package(
-                    package.output_root,
-                    expected_request=_expected_request_from_receipt(
-                        package.output_root,
-                        plan=plan,
-                        tile=tile,
+                with production_slots:
+                    package = self.produce_tile_fn(
+                        mnt_05m=sources.mnt,
+                        mns_05m=sources.mns,
+                        orthophoto_1m=sources.orthophoto,
+                        elevation_source_receipt=sources.elevation_receipt,
+                        orthophoto_source_receipt=sources.orthophoto_receipt,
+                        placement_context=sources.placement_context,
                         asset_library=self.config.asset_library,
                         asset_roots=asset_roots,
                         portable_root=self.config.portable_root,
                         asset_bundle_root=shared_bundle,
-                    ),
-                    asset_library=self.config.asset_library,
-                    asset_roots=asset_roots,
-                )
+                        output_root=package_root,
+                        zone_id=plan.zone_id,
+                        tile_id=tile.tile_id,
+                        tile_origin_l93_m=tile.origin_l93_m,
+                        progress_callback=lambda phase, details: tile_report(
+                            phase, details, table=production_phase
+                        ),
+                    )
+                    validate_simple_measured_tile_package(
+                        package.output_root,
+                        expected_request=_expected_request_from_receipt(
+                            package.output_root,
+                            plan=plan,
+                            tile=tile,
+                            asset_library=self.config.asset_library,
+                            asset_roots=asset_roots,
+                            portable_root=self.config.portable_root,
+                            asset_bundle_root=shared_bundle,
+                        ),
+                        asset_library=self.config.asset_library,
+                        asset_roots=asset_roots,
+                    )
                 _copy_provenance(sources, job_root / "provenance" / tile.tile_id)
-                _remove_sources(job_root, sources.root)
+                _remove_sources(source_storage_root, sources.root)
             with tile_progress_lock:
                 tile_progress[tile_index] = 1.0
                 completed_tiles.add(tile_index)
@@ -2005,7 +2011,7 @@ class ProductionEngine:
                 details={"tile_id": tile.tile_id, "tile_index": tile_index + 1},
             )
 
-        worker_count = min(self.config.tile_workers, len(pending_tiles))
+        worker_count = min(self.config.source_workers, len(pending_tiles))
         if not pending_tiles:
             report(
                 0.90,
@@ -2021,7 +2027,8 @@ class ProductionEngine:
             report(
                 0.08,
                 "parallel_tile_production",
-                f"Production parallèle — {worker_count} tuiles simultanées",
+                f"Pipeline parallèle — {worker_count} acquisitions et "
+                f"{self.config.tile_workers} compilations au maximum",
             )
             for tile_id in _bounded_parallel_tile_results(
                 pending_tiles,
@@ -2037,9 +2044,13 @@ class ProductionEngine:
                         fraction,
                         "parallel_tile_heartbeat",
                         f"Production active — {done_count}/{total} tuiles terminées, "
-                        f"{worker_count} au maximum en cours",
+                        f"{worker_count} acquisitions et {self.config.tile_workers} "
+                        "compilations au maximum en cours",
                         completed_tiles=done_count,
-                        details={"max_active_tile_count": worker_count},
+                        details={
+                            "max_active_source_count": worker_count,
+                            "max_active_tile_count": self.config.tile_workers,
+                        },
                     )
                     continue
                 yield f"Tuile {done_count}/{total} terminée — {tile_id}", None, []

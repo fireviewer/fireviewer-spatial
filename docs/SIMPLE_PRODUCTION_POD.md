@@ -6,10 +6,11 @@ Deployment, ni replica, ni worker permanent. Le backend lance une machine CPU
 sur demande de l'administrateur. Le premier contrôle réel utilise une machine
 non interruptible.
 
-À l'intérieur du job, le moteur traite au maximum quatre tuiles de 500 m en
-parallèle. Les 294 assets immuables sont présents dans l'image et validés une
-fois au démarrage. Les tuiles utilisent un bundle partagé versionné : elles ne
-recopient et ne re-hashent pas la bibliothèque entière.
+À l'intérieur du job, le moteur maintient au maximum huit acquisitions de
+sources et quatre compilations de tuiles de 500 m en parallèle. Les 294 assets
+immuables sont présents dans l'image et validés une fois au démarrage. Les
+tuiles utilisent un bundle partagé versionné : elles ne recopient et ne
+re-hashent pas la bibliothèque entière.
 
 L'administration appelle uniquement le backend FireViewer :
 
@@ -39,13 +40,14 @@ validés. Elle ne télécharge aucune donnée géographique pendant sa construct
 
 Le job utilise :
 
-- l'image immuable `pilot-v1-20260814-r30-lightning`, qui embarque
+- l'image immuable `pilot-v1-20260815-r31-lightning`, qui embarque
   `fireviewer.mns-mnt-placement-algorithm.v2` ;
 - `Machine.CPU_X_8`, non interruptible, avec une durée maximale bornée ;
 - les répertoires locaux éphémères `/lightning-work` et `/lightning-scratch`
   créés dans l'image pour les tuiles, l'assemblage, `zone.blend` et le ZIP ;
 - le jeton `HF_TOKEN` injecté uniquement au job ;
-- quatre workers de tuiles et huit workers légers de prototypes.
+- huit workers d'acquisition de sources, quatre workers de compilation de
+  tuiles et huit workers légers de prototypes.
 
 Les Data Connections ne sont pas utilisées comme système de fichiers de
 travail : un montage indisponible ne doit jamais bloquer une production. La
@@ -60,7 +62,7 @@ FV_MAP_PRODUCTION_PROVIDER=lightning
 FV_MAP_LIGHTNING_USER_ID=<identifiant programme Lightning>
 FV_MAP_LIGHTNING_API_KEY=<clé programme Lightning>
 FV_MAP_LIGHTNING_TEAMSPACE=<teamspace>
-FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260814-r30-lightning
+FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260815-r31-lightning
 FV_MAP_LIGHTNING_MAX_RUNTIME_SECONDS=86400
 FV_MAP_CALLBACK_BASE_URL=https://fireviewer-api.vercel.app
 FV_MAP_CALLBACK_SIGNING_SECRET=<secret serveur aléatoire>
