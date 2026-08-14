@@ -172,3 +172,175 @@ def test_tree_instance_gate_rejects_non_uniform_or_non_upright_scales() -> None:
                 context=SimpleNamespace(scene=SimpleNamespace(objects=[tilted]))
             )
         )
+
+
+def test_standalone_blend_is_written_atomically_without_inner_compression(
+    zone_root: Path,
+) -> None:
+    output = zone_root / gallery.BLEND_NAME
+    calls: list[dict[str, object]] = []
+
+    def save_as_mainfile(**kwargs: object) -> set[str]:
+        calls.append(kwargs)
+        Path(str(kwargs["filepath"])).write_bytes(b"standalone-blend")
+        return {"FINISHED"}
+
+    bpy = SimpleNamespace(
+        ops=SimpleNamespace(wm=SimpleNamespace(save_as_mainfile=save_as_mainfile))
+    )
+
+    gallery._save_standalone_blend(bpy, output)
+
+    assert output.read_bytes() == b"standalone-blend"
+    assert calls == [
+        {
+            "filepath": str(zone_root / ".zone.blend.part.blend"),
+            "check_existing": False,
+            "compress": False,
+        }
+    ]
+    assert not (zone_root / ".zone.blend.part.blend").exists()
+
+
+def test_pack_scene_images_ignores_orphan_usd_import_images(
+    zone_root: Path,
+) -> None:
+    packed: list[str] = []
+
+    class ImageRecord:
+        source = "FILE"
+        filepath = "/tmp/usd_textures_tmp/deleted.jpg"
+
+        def __init__(self, name: str, *, orphan: bool) -> None:
+            self.name = name
+            self.orphan = orphan
+
+        def pack(self) -> None:
+            if self.orphan:
+                raise RuntimeError("deleted USD importer temporary")
+            packed.append(self.name)
+
+    used = ImageRecord("bound-texture.png", orphan=False)
+    orphan = ImageRecord("orphan-import-texture.jpg", orphan=True)
+    material = SimpleNamespace(
+        node_tree=SimpleNamespace(nodes=[SimpleNamespace(image=used, node_tree=None)])
+    )
+    scene = SimpleNamespace(
+        objects=[SimpleNamespace(data=SimpleNamespace(materials=[material]))],
+        world=None,
+    )
+    bpy = SimpleNamespace(
+        context=SimpleNamespace(scene=scene),
+        data=SimpleNamespace(images=[used, orphan]),
+    )
+
+    gallery._pack_scene_images(bpy, zone_root)
+
+    assert packed == ["bound-texture.png"]
+
+
+def test_pack_scene_images_fails_for_missing_bound_texture(
+    zone_root: Path,
+) -> None:
+    class MissingImage:
+        source = "FILE"
+        filepath = "/tmp/missing-bound.png"
+        name = "missing-bound.png"
+        has_data = False
+
+        @staticmethod
+        def pack() -> None:
+            raise RuntimeError("missing")
+
+    material = SimpleNamespace(
+        node_tree=SimpleNamespace(
+            nodes=[SimpleNamespace(image=MissingImage(), node_tree=None)]
+        )
+    )
+    bpy = SimpleNamespace(
+        context=SimpleNamespace(
+            scene=SimpleNamespace(
+                objects=[SimpleNamespace(data=SimpleNamespace(materials=[material]))],
+                world=None,
+            )
+        )
+    )
+
+    with pytest.raises(
+        gallery.SimpleZoneGalleryError,
+        match="Cannot recover scene image missing-bound.png",
+    ):
+        gallery._pack_scene_images(bpy, zone_root)
+
+
+def test_pack_scene_images_keeps_usdz_texture_already_packed_by_blender(
+    zone_root: Path,
+) -> None:
+    class PackedUsdzImage:
+        source = "FILE"
+        filepath = "/tmp/usd_textures_tmp/deleted.jpg"
+        name = "premium-usdz-texture.jpg"
+        has_data = False
+        packed_file = object()
+
+        @staticmethod
+        def pack() -> None:
+            raise AssertionError("an already-packed USDZ texture must not be repacked")
+
+    image = PackedUsdzImage()
+    material = SimpleNamespace(
+        node_tree=SimpleNamespace(nodes=[SimpleNamespace(image=image, node_tree=None)])
+    )
+    bpy = SimpleNamespace(
+        context=SimpleNamespace(
+            scene=SimpleNamespace(
+                objects=[SimpleNamespace(data=SimpleNamespace(materials=[material]))],
+                world=None,
+            )
+        )
+    )
+
+    gallery._pack_scene_images(bpy, zone_root)
+
+
+def test_pack_scene_images_recovers_loaded_pixels_after_usd_temp_cleanup(
+    zone_root: Path,
+) -> None:
+    class RecoverableImage:
+        source = "FILE"
+        filepath = "/tmp/usd_textures_tmp/deleted.jpg"
+        name = "deleted-import-texture.jpg"
+        has_data = True
+
+        def __init__(self) -> None:
+            self.packed_payload: bytes | None = None
+
+        def pack(self, data: bytes | None = None, data_len: int = 0) -> None:
+            if data is None:
+                raise RuntimeError("USD temporary was removed")
+            assert data_len == len(data)
+            self.packed_payload = data
+
+        @staticmethod
+        def save(*, filepath: str, quality: int, save_copy: bool) -> None:
+            assert quality == 100
+            assert save_copy is True
+            Path(filepath).write_bytes(b"recovered-pixels")
+
+    image = RecoverableImage()
+    material = SimpleNamespace(
+        node_tree=SimpleNamespace(nodes=[SimpleNamespace(image=image, node_tree=None)])
+    )
+    bpy = SimpleNamespace(
+        context=SimpleNamespace(
+            scene=SimpleNamespace(
+                objects=[SimpleNamespace(data=SimpleNamespace(materials=[material]))],
+                world=None,
+            )
+        )
+    )
+
+    gallery._pack_scene_images(bpy, zone_root)
+
+    assert image.packed_payload == b"recovered-pixels"
+    assert not list(zone_root.glob(".blend-pack-*"))

@@ -39,7 +39,8 @@ validés. Elle ne télécharge aucune donnée géographique pendant sa construct
 
 Le job utilise :
 
-- l'image immuable `pilot-v1-20260814-r24-lightning` ;
+- l'image immuable `pilot-v1-20260814-r30-lightning`, qui embarque
+  `fireviewer.mns-mnt-placement-algorithm.v2` ;
 - `Machine.CPU_X_8`, non interruptible, avec une durée maximale bornée ;
 - les répertoires locaux éphémères `/lightning-work` et `/lightning-scratch`
   créés dans l'image pour les tuiles, l'assemblage, `zone.blend` et le ZIP ;
@@ -59,7 +60,7 @@ FV_MAP_PRODUCTION_PROVIDER=lightning
 FV_MAP_LIGHTNING_USER_ID=<identifiant programme Lightning>
 FV_MAP_LIGHTNING_API_KEY=<clé programme Lightning>
 FV_MAP_LIGHTNING_TEAMSPACE=<teamspace>
-FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260814-r24-lightning
+FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260814-r30-lightning
 FV_MAP_LIGHTNING_MAX_RUNTIME_SECONDS=86400
 FV_MAP_CALLBACK_BASE_URL=https://fireviewer-api.vercel.app
 FV_MAP_CALLBACK_SIGNING_SECRET=<secret serveur aléatoire>

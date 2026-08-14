@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 import sys
 import threading
 import zipfile
@@ -664,3 +665,49 @@ def test_gallery_items_are_empty_and_require_the_standalone_scene(
         production._gallery_items(tmp_path)
     (tmp_path / production.BLEND_NAME).write_bytes(b"blend")
     assert production._gallery_items(tmp_path) == []
+
+
+def test_blender_pack_surfaces_python_output_when_blend_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = production.ProductionConfig(
+        work_root=tmp_path / "work",
+        portable_root=tmp_path,
+        asset_library=tmp_path / "asset-library.json",
+        review_batch=tmp_path / "assets",
+        elevation_revision="elevation-test",
+        orthophoto_revision="orthophoto-test",
+        context_revision="context-test",
+        blender=Path("/opt/blender/blender"),
+    )
+    job_root = tmp_path / "job"
+    job_root.mkdir()
+    commands: list[tuple[str, ...]] = []
+
+    class FakeProcess:
+        stdout = StringIO("Python traceback from Blender\nprecise failure\n")
+
+        @staticmethod
+        def kill() -> None:
+            return None
+
+        @staticmethod
+        def poll() -> int:
+            return 0
+
+        @staticmethod
+        def wait(timeout: float) -> int:
+            del timeout
+            return 0
+
+    def fake_popen(command: tuple[str, ...], **_kwargs: object) -> FakeProcess:
+        commands.append(command)
+        return FakeProcess()
+
+    monkeypatch.setattr(production.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(production.SimpleProductionError, match="precise failure"):
+        production._render_zone_gallery(config, job_root, True, None)
+
+    assert commands
+    assert commands[0][commands[0].index("--python-exit-code") + 1] == "1"

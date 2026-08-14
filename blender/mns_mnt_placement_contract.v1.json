@@ -18,9 +18,9 @@
     "height_quantization": "source_metres_to_signed_millimetres_half_away_from_zero",
     "negative_hag_tolerance_cm": 50,
     "negative_hag_hard_limit_cm": 100,
-    "maximum_negative_outlier_count_per_520x520_window": 8,
-    "maximum_negative_outlier_fraction": 0.00005,
-    "negative_hag_policy": "clamp_negative_to_zero; allow at most 8 isolated samples and fraction at most 0.00005 between -50cm and -100cm with explicit diagnostics; reject any sample below -100cm or a larger outlier population",
+    "maximum_negative_outlier_count_per_520x520_window": 32,
+    "maximum_negative_outlier_fraction": 0.000125,
+    "negative_hag_policy": "clamp_negative_to_zero; allow at most 32 sparse samples and fraction at most 0.000125 between -50cm and -100cm with explicit diagnostics; reject any sample below -100cm or a larger outlier population",
     "maximum_hag_cm": 65534
   },
   "hag": {
@@ -41,6 +41,7 @@
   "buildings": {
     "identity": "stable_source_footprint_id_or_hash_of_global_HAG_component_cells",
     "one_classification_per_owned_HAG_component": true,
+    "confirmed_footprint_segmentation": "each_disconnected_four_connected_HAG_component_inside_a_semantic_footprint_is_a_distinct_measured_building_candidate",
     "fallback_without_footprints": "classify_every_four_connected_HAG_component_at_or_above_2m",
     "autodetection_metrics": [
       "height_dispersion_p90_p10",
@@ -54,6 +55,7 @@
     "morphology_only_policy": "fail_closed_ambiguous_never_valid_and_never_removes_tree_candidates",
     "semantic_confirmation": "approved building mask or univocally matched SIG footprint; temporary orthophoto may confirm class but never author XY Z footprint dimensions or height",
     "SIG_footprint_role": "confirmation_mask_only_with_bidirectional_univocal_overlap_matching",
+    "SIG_footprint_cardinality": "one_semantic_footprint_may_confirm_multiple_distinct_MNS_minus_MNT_roof_components_without_merging_them",
     "geometry_authority": "matched_HAG_component_pixels_only",
     "height": "nearest_rank_p95_of_MNS_minus_MNT_samples",
     "ground": "lower_median_MNT_sample",
@@ -68,6 +70,14 @@
     },
     "local_maximum_radius_m": 1,
     "segmentation": "eight_connected_integer_marker_watershed",
+    "flat_woody_plateau_segmentation": {
+      "minimum_measured_plateau_area_m2": 32,
+      "global_marker_spacing_m": 4,
+      "scope": "accepted_woody_context_only",
+      "evidence": "markers_are_added_only_on_measured_eligible_MNS_minus_MNT_local_maximum_pixels",
+      "partition": "nearest_global_lattice_marker_within_the_measured_plateau_watershed_region",
+      "seam_policy": "global_EPSG_2154_integer_lattice_and_distinct_lattice_markers_never_merge"
+    },
     "minimum_crown_area_m2": {
       "default": 4,
       "accepted_woody_context_at_or_above_200cm": 1,
@@ -79,7 +89,7 @@
     "quota": "forbidden",
     "thinning": "forbidden",
     "statuses": ["valid", "ambiguous", "rejected"],
-    "seam_merge": "global_peak_ids_plus_cross_boundary_label_evidence"
+    "seam_merge": "global_peak_ids_plus_cross_boundary_label_evidence; distinct_peak_ids_observed_in_both_processing_halos_are_never_merged_on_a_watershed_tie"
   },
   "context_assets": {
     "input": "stable SIG feature IDs, geometries and scalar metadata plus optional exact fixed user placements projected from the locked WGS84 request",

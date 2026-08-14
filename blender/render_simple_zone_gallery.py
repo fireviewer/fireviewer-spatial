@@ -14,6 +14,7 @@ import math
 import os
 import struct
 import sys
+import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -317,6 +318,26 @@ def _configure_scene(bpy: Any) -> None:
         background.inputs["Strength"].default_value = 0.8
 
 
+def _save_standalone_blend(bpy: Any, blend_path: Path) -> None:
+    """Write the standalone scene atomically without redundant compression."""
+
+    temporary = blend_path.with_name(f".{blend_path.name}.part.blend")
+    temporary.unlink(missing_ok=True)
+    result = bpy.ops.wm.save_as_mainfile(
+        filepath=str(temporary), check_existing=False, compress=False
+    )
+    if (
+        "FINISHED" not in result
+        or not temporary.is_file()
+        or temporary.stat().st_size <= 0
+    ):
+        temporary.unlink(missing_ok=True)
+        raise SimpleZoneGalleryError(
+            "Blender failed to write the standalone scene atomically"
+        )
+    os.replace(temporary, blend_path)
+
+
 def _validate_measured_instances(bpy: Any) -> dict[str, int]:
     """Reject warped or tilted tree instances before any visual receipt."""
 
@@ -357,6 +378,88 @@ def _validate_measured_instances(bpy: Any) -> dict[str, int]:
                     f"Tree instance {index} is not upright after axis conversion"
                 )
     return counts
+
+
+def _node_tree_images(node_tree: Any, visited: set[int]) -> dict[int, Any]:
+    """Return file images reachable from one material/world node tree."""
+
+    if node_tree is None:
+        return {}
+    identity = id(node_tree)
+    if identity in visited:
+        return {}
+    visited.add(identity)
+    images: dict[int, Any] = {}
+    for node in node_tree.nodes:
+        image = getattr(node, "image", None)
+        if image is not None:
+            images[id(image)] = image
+        child_tree = getattr(node, "node_tree", None)
+        images.update(_node_tree_images(child_tree, visited))
+    return images
+
+
+def _pack_scene_images(bpy: Any, recovery_root: Path) -> None:
+    """Pack only textures reachable from the imported scene.
+
+    Blender's USD importer may leave orphan image datablocks pointing at its
+    already-deleted ``usd_textures_tmp`` directory. Those images belong to
+    materials outside the referenced prototype scope and must not make a
+    standalone scene fail. Images actually bound to scene objects remain
+    mandatory and are packed fail-closed.
+    """
+
+    materials: dict[int, Any] = {}
+    for obj in bpy.context.scene.objects:
+        data = getattr(obj, "data", None)
+        for material in getattr(data, "materials", ()) or ():
+            if material is not None:
+                materials[id(material)] = material
+    images: dict[int, Any] = {}
+    visited: set[int] = set()
+    for material in materials.values():
+        images.update(_node_tree_images(getattr(material, "node_tree", None), visited))
+    world = getattr(bpy.context.scene, "world", None)
+    images.update(_node_tree_images(getattr(world, "node_tree", None), visited))
+
+    with tempfile.TemporaryDirectory(
+        prefix=".blend-pack-", dir=str(recovery_root)
+    ) as temporary_directory:
+        temporary_root = Path(temporary_directory)
+        for index, image in enumerate(
+            sorted(images.values(), key=lambda value: value.name)
+        ):
+            if image.source != "FILE" or not image.filepath:
+                continue
+            # USDZ textures are already packed by Blender's importer. Their
+            # lexical file path still points at the importer's deleted
+            # ``usd_textures_tmp`` directory, so calling ``pack()`` again
+            # incorrectly tries to reopen a file that no longer exists.
+            if bool(getattr(image, "packed_file", None)):
+                continue
+            try:
+                image.pack()
+                continue
+            except RuntimeError as source_error:
+                if not bool(getattr(image, "has_data", False)):
+                    raise SimpleZoneGalleryError(
+                        f"Cannot recover scene image {image.name}: {source_error}"
+                    ) from source_error
+
+            suffix = Path(str(image.filepath)).suffix.lower()
+            if not suffix or len(suffix) > 8 or not suffix.removeprefix(".").isalnum():
+                suffix = ".png"
+            recovered = temporary_root / f"{index:04d}{suffix}"
+            try:
+                image.save(filepath=str(recovered), quality=100, save_copy=True)
+                payload = recovered.read_bytes()
+                if not payload:
+                    raise OSError("recovered image is empty")
+                image.pack(data=payload, data_len=len(payload))
+            except (OSError, RuntimeError) as recovery_error:
+                raise SimpleZoneGalleryError(
+                    f"Cannot recover scene image {image.name}: {recovery_error}"
+                ) from recovery_error
 
 
 def render_gallery(
@@ -445,14 +548,7 @@ def render_gallery(
         else Path(blend_output).resolve(strict=False)
     )
     blend_path.parent.mkdir(parents=True, exist_ok=True)
-    for image in bpy.data.images:
-        if image.source == "FILE" and image.filepath:
-            try:
-                image.pack()
-            except RuntimeError as error:
-                raise SimpleZoneGalleryError(
-                    f"Cannot pack image {image.name}: {error}"
-                ) from error
+    _pack_scene_images(bpy, blend_path.parent)
     records: list[dict[str, Any]] = []
     if render_captures:
         gallery_root = root / GALLERY_DIRECTORY
@@ -510,9 +606,7 @@ def render_gallery(
         maximum[2] + radius * 0.90,
     )
     _look_at(camera, (width_m / 2.0, height_m / 2.0, center_z))
-    bpy.ops.wm.save_as_mainfile(
-        filepath=str(blend_path), check_existing=False, compress=True
-    )
+    _save_standalone_blend(bpy, blend_path)
 
     if not render_captures:
         return blend_path

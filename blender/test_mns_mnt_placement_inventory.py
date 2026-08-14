@@ -329,6 +329,46 @@ def test_adjacent_confirmations_do_not_share_boundary_pixels() -> None:
     assert result.inventory["buildings"]["non_univocal_confirmation_count"] == 0
 
 
+def test_one_semantic_footprint_keeps_distinct_measured_roof_components() -> None:
+    mnt, mns = _base_pair()
+    component_origins = [
+        (700_040, 6_600_040),
+        (700_050, 6_600_040),
+        (700_060, 6_600_040),
+    ]
+    for component_west, component_south in component_origins:
+        for global_y in range(component_south, component_south + 4):
+            for global_x in range(component_west, component_west + 4):
+                _set_height_cell(mnt, mns, ORIGIN, global_x, global_y, 7.0)
+
+    result = build_placement_inventory(
+        mnt,
+        mns,
+        tile_origin_l93_m=ORIGIN,
+        zone_id="FR-multi-roof",
+        building_footprints=[
+            {
+                "source_id": "BAT-campus",
+                "geometry": mapping(box(700_039, 6_600_039, 700_064, 6_600_045)),
+            }
+        ],
+    )
+
+    buildings = result.inventory["buildings"]
+    confirmed = [
+        candidate
+        for candidate in buildings["candidates"]
+        if candidate["confirmed_source_id"] == "BAT-campus"
+    ]
+    assert len(confirmed) == 3
+    assert buildings["confirmed_hag_component_count"] == 3
+    assert buildings["multi_component_confirmation_count"] == 1
+    assert buildings["non_univocal_confirmation_count"] == 0
+    assert len({candidate["candidate_id"] for candidate in confirmed}) == 3
+    assert all(candidate["status"] == "valid" for candidate in confirmed)
+    assert all(candidate["footprint_area_m2"] == 16 for candidate in confirmed)
+
+
 def test_isolated_negative_hag_outliers_are_clamped_and_recorded() -> None:
     mnt, mns = _base_pair()
     for row, column in ((20, 30), (200, 250), (510, 519)):
@@ -351,9 +391,34 @@ def test_isolated_negative_hag_outliers_are_clamped_and_recorded() -> None:
     assert int(result.hag_core_cm.min()) == 0
 
 
+def test_sparse_realistic_negative_hag_cluster_is_clamped_and_recorded() -> None:
+    mnt, mns = _base_pair()
+    samples = tuple(
+        (row, column) for row in range(303, 307) for column in range(133, 136)
+    )
+    for row, column in samples:
+        mns[row, column] = mnt[row, column] - 0.632
+
+    result = build_placement_inventory(
+        mnt,
+        mns,
+        tile_origin_l93_m=ORIGIN,
+        zone_id="FR-sparse-negative-cluster",
+        context_masks={"vegetation": np.zeros(SHAPE, dtype=bool)},
+    )
+
+    assert result.inventory["hag"]["minimum_source_delta_mm"] == -633
+    assert result.inventory["hag"]["negative_source_sample_count_clamped"] == 12
+    assert result.inventory["hag"]["negative_outlier_below_tolerance_count"] == 12
+    assert result.inventory["hag"]["negative_outlier_fraction"] == round(
+        12 / (520 * 520), 12
+    )
+    assert int(result.hag_core_cm.min()) == 0
+
+
 def test_negative_hag_outlier_population_is_fail_closed() -> None:
     mnt, mns = _base_pair()
-    mns.flat[:9] = mnt.flat[:9] - 0.51
+    mns.flat[:33] = mnt.flat[:33] - 0.51
 
     with pytest.raises(PlacementInventoryError, match="too many samples"):
         build_placement_inventory(
@@ -387,7 +452,7 @@ def test_negative_hag_diagnostics_are_validated() -> None:
         context_masks={"vegetation": np.zeros(SHAPE, dtype=bool)},
     )
     tampered = copy.deepcopy(result.inventory)
-    tampered["hag"]["negative_outlier_below_tolerance_count"] = 9
+    tampered["hag"]["negative_outlier_below_tolerance_count"] = 33
     tampered["inventory_sha256"] = "0" * 64
 
     with pytest.raises(PlacementInventoryError, match="diagnostics violate"):
@@ -622,6 +687,71 @@ def test_watershed_assigns_the_complete_measured_crown_to_its_peak() -> None:
     assert trees["candidates"][0]["observed_crown_area_m2"] == 121
 
 
+def test_flat_woody_canopy_plateau_gets_global_measured_markers() -> None:
+    mnt, mns = _base_pair()
+    plateau_cells: list[tuple[int, int]] = []
+    for global_y in range(6_600_100, 6_600_160):
+        for global_x in range(700_100, 700_160):
+            plateau_cells.append((global_x, global_y))
+            _set_height_cell(mnt, mns, ORIGIN, global_x, global_y, 8.0)
+    vegetation = _vegetation_mask(ORIGIN, plateau_cells)
+
+    first = build_placement_inventory(
+        mnt,
+        mns,
+        tile_origin_l93_m=ORIGIN,
+        zone_id="FR-flat-forest",
+        context_masks={"vegetation": vegetation},
+    )
+    second = build_placement_inventory(
+        mnt.copy(),
+        mns.copy(),
+        tile_origin_l93_m=ORIGIN,
+        zone_id="FR-flat-forest",
+        context_masks={"vegetation": vegetation.copy()},
+    )
+
+    trees = first.inventory["trees"]
+    assert trees["eligible_pixel_count"] == 3_600
+    assert trees["source_count"] == 225
+    assert trees["valid_count"] == 225
+    assert trees["split_flat_woody_plateau_count_processing_window"] == 1
+    assert trees["flat_woody_plateau_extra_marker_count_processing_window"] == 224
+    assert (
+        sum(candidate["observed_crown_area_m2"] for candidate in trees["candidates"])
+        == 3_600
+    )
+    assert (
+        max(candidate["observed_crown_area_m2"] for candidate in trees["candidates"])
+        <= 36
+    )
+    assert canonical_json_bytes(first.inventory) == canonical_json_bytes(
+        second.inventory
+    )
+
+
+def test_small_flat_woody_crown_is_not_split() -> None:
+    mnt, mns = _base_pair()
+    crown_cells: list[tuple[int, int]] = []
+    for global_y in range(6_600_100, 6_600_105):
+        for global_x in range(700_100, 700_105):
+            crown_cells.append((global_x, global_y))
+            _set_height_cell(mnt, mns, ORIGIN, global_x, global_y, 8.0)
+
+    result = build_placement_inventory(
+        mnt,
+        mns,
+        tile_origin_l93_m=ORIGIN,
+        zone_id="FR-flat-crown",
+        context_masks={"vegetation": _vegetation_mask(ORIGIN, crown_cells)},
+    )
+
+    trees = result.inventory["trees"]
+    assert trees["source_count"] == 1
+    assert trees["valid_count"] == 1
+    assert trees["split_flat_woody_plateau_count_processing_window"] == 0
+
+
 def test_hag_autodetection_separates_flat_roof_from_tree_crown() -> None:
     mnt, mns = _base_pair()
     for global_y in range(6_600_020, 6_600_028):
@@ -780,6 +910,60 @@ def test_adjacent_tiles_share_peak_id_and_half_open_ownership_then_merge() -> No
     assert group["owner_tiles"] == [left.inventory["tile_id"]]
     assert group["member_candidate_ids"] == [left_candidates[0]["candidate_id"]]
     assert group["total_owned_core_area_m2"] == 49
+
+
+def test_flat_woody_plateau_uses_the_same_global_markers_across_tiles() -> None:
+    left_origin = (700_000, 6_600_000)
+    right_origin = (700_500, 6_600_000)
+    plateau_cells = [
+        (global_x, global_y)
+        for global_y in range(6_600_200, 6_600_240)
+        for global_x in range(700_480, 700_520)
+    ]
+
+    def build(origin: tuple[int, int]):
+        mnt, mns = _base_pair()
+        visible_cells = [
+            (global_x, global_y)
+            for global_x, global_y in plateau_cells
+            if origin[0] - 10 <= global_x < origin[0] + 510
+        ]
+        for global_x, global_y in visible_cells:
+            _set_height_cell(mnt, mns, origin, global_x, global_y, 8.0)
+        return build_placement_inventory(
+            mnt,
+            mns,
+            tile_origin_l93_m=origin,
+            zone_id="FR-flat-forest-seam",
+            context_masks={
+                "vegetation": _vegetation_mask(origin, visible_cells),
+            },
+        )
+
+    left = build(left_origin)
+    right = build(right_origin)
+    left_owned = {
+        tuple(candidate["peak_cell_l93"])
+        for candidate in left.inventory["trees"]["candidates"]
+    }
+    right_owned = {
+        tuple(candidate["peak_cell_l93"])
+        for candidate in right.inventory["trees"]["candidates"]
+    }
+    left_fragments = {
+        fragment["candidate_id"] for fragment in left.inventory["trees"]["fragments"]
+    }
+    right_fragments = {
+        fragment["candidate_id"] for fragment in right.inventory["trees"]["fragments"]
+    }
+
+    assert len(left_owned) == 50
+    assert len(right_owned) == 50
+    assert left_owned.isdisjoint(right_owned)
+    assert left_fragments & right_fragments
+    merged = merge_tree_inventories([left.inventory, right.inventory])
+    assert merged["candidate_group_count"] == 100
+    assert merged["shared_seam_key_count"] > 0
 
 
 def test_rejects_corrupt_grids_masks_and_duplicate_source_ids() -> None:

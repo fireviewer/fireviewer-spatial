@@ -38,6 +38,7 @@ from rasterio.features import shapes as raster_shapes
 from rasterio.transform import from_origin
 from scipy.ndimage import (
     binary_erosion,
+    distance_transform_edt,
     find_objects,
     label,
     maximum_filter,
@@ -50,7 +51,7 @@ from shapely.ops import unary_union
 
 SCHEMA = "fireviewer.mns-mnt-placement-inventory.v1"
 CONTRACT_SCHEMA = "fireviewer.mns-mnt-placement-contract.v1"
-ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v1"
+ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v2"
 HAG_SCHEMA = "fireviewer.placement-hag-1m.v1"
 CRS = "EPSG:2154"
 RESOLUTION_M = 1
@@ -64,13 +65,15 @@ NODATA_UINT16 = 65_535
 MAX_HAG_CM = NODATA_UINT16 - 1
 NEGATIVE_HAG_TOLERANCE_CM = 50
 NEGATIVE_HAG_HARD_LIMIT_CM = 100
-NEGATIVE_HAG_MAX_OUTLIER_COUNT = 8
-NEGATIVE_HAG_MAX_OUTLIER_FRACTION = 0.00005
+NEGATIVE_HAG_MAX_OUTLIER_COUNT = 32
+NEGATIVE_HAG_MAX_OUTLIER_FRACTION = 0.000125
 MIN_HEIGHT_CM = 200
 WOODY_CONTEXT_MIN_HEIGHT_CM = 100
 MIN_CROWN_AREA_M2 = 4
 WOODY_CONTEXT_TALL_MIN_CROWN_AREA_M2 = 1
 WOODY_CONTEXT_LOW_MIN_CROWN_AREA_M2 = 2
+FLAT_WOODY_PLATEAU_MIN_AREA_M2 = 32
+FLAT_WOODY_PLATEAU_MARKER_SPACING_M = 4
 _CONNECTIVITY_8 = np.ones((3, 3), dtype=bool)
 _CONNECTIVITY_4 = np.array(
     [[False, True, False], [True, True, True], [False, True, False]], dtype=bool
@@ -938,7 +941,8 @@ def _autodetect_building_inventory(
     ) - minimum_filter(hag_cm, size=3, mode="nearest").astype("int32")
     confirmed_pixel_claims = np.zeros_like(hag_cm, dtype="uint16")
     confirmed_inputs: list[tuple[Mapping[str, Any], np.ndarray, int]] = []
-    confirmation_component_ids: dict[str, set[int]] = defaultdict(set)
+    confirmation_component_ids: dict[str, set[str]] = defaultdict(set)
+    directly_segmented_confirmation_ids: set[str] = set()
     for confirmation in footprint_confirmations:
         confirmation_mask = np.asarray(confirmation["mask"], dtype=bool)
         footprint_pixel_count = int(np.count_nonzero(confirmation_mask))
@@ -948,13 +952,30 @@ def _autodetect_building_inventory(
         intersection_count = int(np.count_nonzero(confirmed_pixels))
         if intersection_count < 4 or intersection_count / footprint_pixel_count < 0.25:
             continue
-        confirmed_inputs.append(
-            (confirmation, confirmed_pixels.copy(), footprint_pixel_count)
+        component_labels, component_count = label(
+            confirmed_pixels, structure=_CONNECTIVITY_4
         )
-        confirmed_pixel_claims[confirmed_pixels] += 1
-        confirmation_component_ids[str(confirmation["source_id"])].add(
-            len(confirmed_inputs)
-        )
+        source_id = str(confirmation["source_id"])
+        for component_id, component_slice in enumerate(
+            find_objects(component_labels, max_label=component_count), start=1
+        ):
+            if component_slice is None:
+                continue
+            local_component = component_labels[component_slice] == component_id
+            if int(np.count_nonzero(local_component)) < 4:
+                continue
+            component_mask = np.zeros_like(confirmed_pixels)
+            component_mask[component_slice] = local_component
+            rows, columns = np.nonzero(component_mask)
+            component_source_id = _component_source_id(
+                rows, columns, west=west, south=south
+            )
+            confirmed_inputs.append(
+                (confirmation, component_mask, footprint_pixel_count)
+            )
+            confirmed_pixel_claims[component_mask] += 1
+            confirmation_component_ids[source_id].add(component_source_id)
+            directly_segmented_confirmation_ids.add(source_id)
     elevated_for_morphology = elevated & (confirmed_pixel_claims == 0)
     components, component_count = label(elevated, structure=_CONNECTIVITY_4)
     if confirmed_inputs:
@@ -966,6 +987,10 @@ def _autodetect_building_inventory(
         components[components > 0], minlength=component_count + 1
     )
     confirmation_matches: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    non_univocal_confirmation_ids: set[str] = set()
+    for confirmation, component_mask, _footprint_pixel_count in confirmed_inputs:
+        if np.any(confirmed_pixel_claims[component_mask] > 1):
+            non_univocal_confirmation_ids.add(str(confirmation["source_id"]))
     for confirmation in footprint_confirmations:
         source_id = str(confirmation["source_id"])
         if source_id in confirmation_component_ids:
@@ -1165,6 +1190,9 @@ def _autodetect_building_inventory(
         if matches and not univocal_footprint_match:
             status = "ambiguous"
             reasons = ["building_confirmation_match_not_univocal"]
+            non_univocal_confirmation_ids.update(
+                str(match["source_id"]) for match in matches
+            )
         # A morphology-only ambiguity is deliberately not removed from the
         # tree detector: doing so would silently reduce vegetation because a
         # flat crown can look rectangular in a 1 m HAG.  Only semantically
@@ -1235,14 +1263,16 @@ def _autodetect_building_inventory(
         "instantiated_asset_count": 0,
         "halo_only_footprint_count": halo_only_count,
         "confirmation_source_count": len(footprint_confirmations),
+        "confirmed_hag_component_count": len(confirmed_inputs),
+        "multi_component_confirmation_count": sum(
+            len(confirmation_component_ids[source_id]) > 1
+            for source_id in directly_segmented_confirmation_ids
+        ),
         "unmatched_confirmation_count": sum(
             not confirmation_component_ids.get(str(item["source_id"]))
             for item in footprint_confirmations
         ),
-        "non_univocal_confirmation_count": sum(
-            len(confirmation_component_ids.get(str(item["source_id"]), set())) > 1
-            for item in footprint_confirmations
-        ),
+        "non_univocal_confirmation_count": len(non_univocal_confirmation_ids),
         "thresholds": {
             "minimum_height_cm": MIN_HEIGHT_CM,
             "valid_minimum_area_m2": 16,
@@ -1286,9 +1316,18 @@ def _peak_coordinates(
     *,
     west: int,
     south: int,
-) -> list[tuple[int, int, int, int]]:
+    flat_plateau_split_mask: np.ndarray | None = None,
+) -> tuple[
+    list[tuple[int, int, int, int]],
+    int,
+    int,
+    tuple[tuple[tuple[int, int, int, int], ...], ...],
+]:
     components, component_count = label(candidate_pixels, structure=_CONNECTIVITY_8)
     peaks: list[tuple[int, int, int, int]] = []
+    extra_marker_count = 0
+    split_plateau_count = 0
+    flat_plateau_groups: list[tuple[tuple[int, int, int, int], ...]] = []
     for component_id, component_slice in enumerate(
         find_objects(components, max_label=component_count), start=1
     ):
@@ -1308,9 +1347,38 @@ def _peak_coordinates(
             column = int(columns[finalist])
             global_x, global_y = _global_cell(west, south, row, column)
             choices.append((global_x, global_y, row, column))
-        peaks.append(min(choices))
+        primary = min(choices)
+        selected = {primary}
+        if flat_plateau_split_mask is not None:
+            woody_choices = [
+                choice
+                for choice in choices
+                if bool(flat_plateau_split_mask[choice[2], choice[3]])
+            ]
+            if len(woody_choices) >= FLAT_WOODY_PLATEAU_MIN_AREA_M2:
+                lattice_choices = {
+                    choice
+                    for choice in woody_choices
+                    if choice[0] % FLAT_WOODY_PLATEAU_MARKER_SPACING_M == 0
+                    and choice[1] % FLAT_WOODY_PLATEAU_MARKER_SPACING_M == 0
+                }
+                if lattice_choices:
+                    # Use only the global lattice for a split plateau.  Keeping
+                    # the per-window lexicographic primary as an extra marker
+                    # would make a canopy crossing two tile halos acquire two
+                    # different seam-dependent trees.
+                    selected = lattice_choices
+                    split_plateau_count += 1
+                    flat_plateau_groups.append(tuple(sorted(lattice_choices)))
+        peaks.extend(selected)
+        extra_marker_count += len(selected) - 1
     peaks.sort(key=lambda item: (item[0], item[1]))
-    return peaks
+    return (
+        peaks,
+        extra_marker_count,
+        split_plateau_count,
+        tuple(flat_plateau_groups),
+    )
 
 
 def _seam_keys_by_label(
@@ -1364,7 +1432,18 @@ def _tree_inventory(
         cval=0,
     )
     local_maxima = eligible & (hag_cm == neighbourhood)
-    peaks = _peak_coordinates(local_maxima, hag_cm, west=west, south=south)
+    (
+        peaks,
+        flat_plateau_extra_marker_count,
+        split_flat_plateau_count,
+        flat_plateau_groups,
+    ) = _peak_coordinates(
+        local_maxima,
+        hag_cm,
+        west=west,
+        south=south,
+        flat_plateau_split_mask=eligible & vegetation_mask,
+    )
     # ``watershed_ift`` treats every non-zero marker, including negative
     # values, as a competing basin. Initialising the excluded background to
     # -1 therefore let that basin capture measured crown pixels before the
@@ -1373,11 +1452,16 @@ def _tree_inventory(
     markers = np.zeros(hag_cm.shape, dtype="int32")
     candidate_id_by_label: dict[int, str] = {}
     peak_by_label: dict[int, tuple[int, int, int, int]] = {}
+    marker_label_by_peak: dict[tuple[int, int, int, int], int] = {}
     for marker_id, peak in enumerate(peaks, start=1):
         global_x, global_y, row, column = peak
         markers[row, column] = marker_id
         candidate_id_by_label[marker_id] = _stable_id("tree", global_x, global_y)
         peak_by_label[marker_id] = peak
+        marker_label_by_peak[peak] = marker_id
+    flat_plateau_marker_labels = {
+        marker_label_by_peak[peak] for group in flat_plateau_groups for peak in group
+    }
     if peaks:
         maximum = int(hag_cm[eligible].max())
         cost = np.where(eligible, maximum - hag_cm.astype("int64"), maximum).astype(
@@ -1386,6 +1470,39 @@ def _tree_inventory(
         labels = watershed_ift(cost, markers, structure=_CONNECTIVITY_8).astype(
             "int32", copy=False
         )
+        for group in flat_plateau_groups:
+            group_marker_labels = np.asarray(
+                [marker_label_by_peak[peak] for peak in group], dtype="int32"
+            )
+            region = eligible & np.isin(labels, group_marker_labels)
+            region_rows, region_columns = np.nonzero(region)
+            if region_rows.size == 0:
+                continue
+            row_start = int(region_rows.min())
+            row_stop = int(region_rows.max()) + 1
+            column_start = int(region_columns.min())
+            column_stop = int(region_columns.max()) + 1
+            component_slice = (
+                slice(row_start, row_stop),
+                slice(column_start, column_stop),
+            )
+            local_seed_background = np.ones(
+                (row_stop - row_start, column_stop - column_start), dtype=bool
+            )
+            local_seed_labels = np.zeros(local_seed_background.shape, dtype="int32")
+            for peak in group:
+                marker_id = marker_label_by_peak[peak]
+                row = peak[2] - row_start
+                column = peak[3] - column_start
+                local_seed_background[row, column] = False
+                local_seed_labels[row, column] = marker_id
+            _distances, nearest_indices = distance_transform_edt(
+                local_seed_background, return_indices=True
+            )
+            nearest_labels = local_seed_labels[nearest_indices[0], nearest_indices[1]]
+            local_region = region[component_slice]
+            local_labels = labels[component_slice]
+            local_labels[local_region] = nearest_labels[local_region]
         labels[~eligible] = -1
     else:
         labels = markers
@@ -1449,6 +1566,11 @@ def _tree_inventory(
             "observed_pixel_count": observed_count,
             "touches_processing_edge": touches_processing_edge,
             "seam_keys": keys,
+            "marker_policy": (
+                "flat_woody_plateau_global_lattice"
+                if marker_id in flat_plateau_marker_labels
+                else "measured_local_maximum"
+            ),
         }
         fragments.append(fragment)
         if not owned:
@@ -1497,6 +1619,11 @@ def _tree_inventory(
                 "touches_processing_edge": touches_processing_edge,
                 "vegetation_prior_peak": vegetation_prior_peak,
                 "vegetation_prior_overlap_ratio": round(vegetation_prior_ratio, 6),
+                "marker_policy": (
+                    "flat_woody_plateau_global_lattice"
+                    if marker_id in flat_plateau_marker_labels
+                    else "measured_local_maximum"
+                ),
                 "context_classification": (
                     "low_1_to_3m_vegetation_prior"
                     if height_cm < 300 and vegetation_prior_ratio > 0.0
@@ -1545,6 +1672,12 @@ def _tree_inventory(
             "never_quota_or_unmeasured_authorization"
         ),
         "local_maximum_count_processing_window": len(peaks),
+        "flat_woody_plateau_minimum_area_m2": FLAT_WOODY_PLATEAU_MIN_AREA_M2,
+        "flat_woody_plateau_marker_spacing_m": (FLAT_WOODY_PLATEAU_MARKER_SPACING_M),
+        "split_flat_woody_plateau_count_processing_window": (split_flat_plateau_count),
+        "flat_woody_plateau_extra_marker_count_processing_window": (
+            flat_plateau_extra_marker_count
+        ),
         "candidates": candidates,
         "fragments": fragments,
     }
@@ -2038,6 +2171,8 @@ def merge_tree_inventories(
     owned: dict[str, list[str]] = defaultdict(list)
     core_area_by_candidate: dict[str, int] = defaultdict(int)
     seam_occurrences: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    fragment_tiles_by_candidate: dict[str, set[str]] = defaultdict(set)
+    marker_policy_by_candidate: dict[str, str] = {}
 
     def find(value: str) -> str:
         parent.setdefault(value, value)
@@ -2067,6 +2202,15 @@ def merge_tree_inventories(
         for fragment in inventory["trees"]["fragments"]:
             candidate_id = str(fragment["candidate_id"])
             find(candidate_id)
+            marker_policy = str(fragment.get("marker_policy", "measured_local_maximum"))
+            previous_policy = marker_policy_by_candidate.setdefault(
+                candidate_id, marker_policy
+            )
+            if previous_policy != marker_policy:
+                raise PlacementInventoryError(
+                    f"tree marker policy differs across tiles: {candidate_id}"
+                )
+            fragment_tiles_by_candidate[candidate_id].add(tile_id)
             core_area_by_candidate[candidate_id] += int(fragment["core_pixel_count"])
             for seam_key in fragment["seam_keys"]:
                 seam_occurrences[str(seam_key)].append((tile_id, candidate_id))
@@ -2075,6 +2219,21 @@ def merge_tree_inventories(
         if len(by_tile) < 2:
             continue
         identifiers = sorted({candidate_id for _, candidate_id in occurrences})
+        if len(identifiers) > 1 and (
+            all(
+                marker_policy_by_candidate.get(candidate_id)
+                == "flat_woody_plateau_global_lattice"
+                for candidate_id in identifiers
+            )
+            or all(
+                len(fragment_tiles_by_candidate[candidate_id]) > 1
+                for candidate_id in identifiers
+            )
+        ):
+            # Both labels are already proven global peaks observed by each
+            # neighbouring processing halo.  A watershed tie on one boundary
+            # cell must not collapse those two measured trees into one group.
+            continue
         for candidate_id in identifiers[1:]:
             union(identifiers[0], candidate_id)
     groups: dict[str, set[str]] = defaultdict(set)

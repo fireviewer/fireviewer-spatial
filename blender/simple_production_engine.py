@@ -1245,6 +1245,8 @@ def _render_zone_gallery(
         "--background",
         "--factory-startup",
         "--disable-autoexec",
+        "--python-exit-code",
+        "1",
         "--python",
         str(script),
         "--",
@@ -1304,9 +1306,14 @@ def _render_zone_gallery(
             "La création de la scène Blender autonome a échoué:\n"
             + "\n".join(output_tail[-30:])
         )
+    expected_blend = blend_output if blend_output is not None else job_root / BLEND_NAME
+    if not expected_blend.is_file():
+        details = "\n".join(output_tail[-30:])
+        raise SimpleProductionError(
+            "Blender a terminé sans produire la scène autonome zone.blend"
+            + (f":\n{details}" if details else "")
+        )
     if blend_output is not None:
-        if not blend_output.is_file():
-            raise SimpleProductionError("La scène Blender locale est absente")
         published_blend = job_root / BLEND_NAME
         published_blend.unlink(missing_ok=True)
         published_blend.symlink_to(blend_output.resolve(strict=True))
