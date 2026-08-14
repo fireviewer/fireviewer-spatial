@@ -1185,7 +1185,10 @@ def _copy_result_sidecars(source_root: Path, destination_root: Path) -> None:
         source = source_root / name
         if not source.is_file():
             raise SimpleProductionError(f"Métadonnée finale absente: {name}")
-        shutil.copyfile(source, destination_root / name)
+        destination = destination_root / name
+        if destination.is_file() and source.samefile(destination):
+            continue
+        shutil.copyfile(source, destination)
 
 
 def _gallery_items(job_root: Path) -> GalleryItems:

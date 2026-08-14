@@ -611,6 +611,52 @@ def test_local_assembly_and_zip_materialize_linked_files_once(tmp_path: Path) ->
         )
 
 
+def test_copy_result_sidecars_preserves_same_physical_receipt_and_copies_new_files(
+    tmp_path: Path,
+) -> None:
+    network = tmp_path / "network" / "jobs" / "GPS-LINKED"
+    scratch = tmp_path / "scratch" / "jobs" / "GPS-LINKED"
+    network.mkdir(parents=True)
+    scratch.mkdir(parents=True)
+    receipt = network / production.ZONE_RECEIPT_NAME
+    receipt.write_bytes(b"network-receipt")
+    (scratch / production.ZONE_RECEIPT_NAME).hardlink_to(receipt)
+    (scratch / production.DATASET_ENTRY_NAME).write_bytes(b"dataset-entry")
+    (scratch / production.DATASET_PUBLICATION_NAME).write_bytes(b"publication")
+
+    production._copy_result_sidecars(scratch, network)
+
+    assert receipt.read_bytes() == b"network-receipt"
+    assert (network / production.DATASET_ENTRY_NAME).read_bytes() == b"dataset-entry"
+    assert (
+        network / production.DATASET_PUBLICATION_NAME
+    ).read_bytes() == b"publication"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="worker links are Linux-only")
+def test_copy_result_sidecars_accepts_receipt_linked_by_local_assembly(
+    tmp_path: Path,
+) -> None:
+    network = tmp_path / "network" / "jobs" / "GPS-SYMLINKED"
+    scratch = tmp_path / "scratch" / "jobs" / "GPS-SYMLINKED"
+    network.mkdir(parents=True)
+    scratch.mkdir(parents=True)
+    receipt = network / production.ZONE_RECEIPT_NAME
+    receipt.write_bytes(b"network-receipt")
+    assembly = production._prepare_local_assembly(network, scratch)
+    assert (assembly / production.ZONE_RECEIPT_NAME).is_symlink()
+    (assembly / production.DATASET_ENTRY_NAME).write_bytes(b"dataset-entry")
+    (assembly / production.DATASET_PUBLICATION_NAME).write_bytes(b"publication")
+
+    production._copy_result_sidecars(assembly, network)
+
+    assert receipt.read_bytes() == b"network-receipt"
+    assert (network / production.DATASET_ENTRY_NAME).read_bytes() == b"dataset-entry"
+    assert (
+        network / production.DATASET_PUBLICATION_NAME
+    ).read_bytes() == b"publication"
+
+
 def test_gallery_items_are_empty_and_require_the_standalone_scene(
     tmp_path: Path,
 ) -> None:
