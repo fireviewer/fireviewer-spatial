@@ -32,7 +32,7 @@ Ressources privées requises :
 - endpoint RunPod queue-based Flex avec zéro worker minimum et un maximum ;
 - volume réseau monté sous `/runpod-volume` pour les checkpoints reprenables ;
 - secret runtime `HF_TOKEN` et variable `FIREVIEWER_HF_DATASET_ID` ;
-- image immuable `pilot-v1-20260814-r15-runpod`.
+- image immuable `pilot-v1-20260814-r16-runpod`.
 
 Le backend Vercel reçoit exclusivement :
 
