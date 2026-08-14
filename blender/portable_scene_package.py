@@ -54,7 +54,12 @@ _METADATA_PATHS = {
     MAP_CONTRACT_PATH,
     PERIMETER_CONTRACT_PATH,
 }
-_MAP_EXCLUDED_FILES = {"fireviewer-zone.zip", "job-status.json"}
+_MAP_EXCLUDED_FILES = {
+    "dataset-entry.json",
+    "dataset-publication.json",
+    "fireviewer-zone.zip",
+    "job-status.json",
+}
 _MAP_EXCLUDED_ROOTS = {"sources", "download"}
 _SHA256_LENGTH = 64
 

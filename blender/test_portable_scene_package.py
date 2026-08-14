@@ -168,3 +168,25 @@ def test_map_and_observed_timeline_are_sealed_for_the_same_site_contract(
     (upload_root / "preview" / "frame-0000.glb").write_bytes(b"changed")
     with pytest.raises(portable.PortableScenePackageError, match="dependency changed"):
         portable.validate_perimeter_upload_package(upload_root)
+
+
+def test_map_validation_ignores_dataset_publication_receipts_written_after_sealing(
+    tmp_path: Path,
+) -> None:
+    map_root = _map_root(tmp_path / "map")
+    portable.seal_map_upload_package(map_root)
+
+    _write_json(map_root / "dataset-entry.json", {"status": "prepared"})
+    _write_json(map_root / "dataset-publication.json", {"status": "published"})
+    _write_json(map_root / "job-status.json", {"state": "completed"})
+    (map_root / "fireviewer-zone.zip").write_bytes(b"archive-outside-inventory")
+
+    reference = portable.validate_map_upload_package(map_root)
+    assert reference.zone_id == "GPS-PORTABLE-TEST"
+
+    (map_root / "unexpected-payload.bin").write_bytes(b"must-still-fail-closed")
+    with pytest.raises(
+        portable.PortableScenePackageError,
+        match="dependency inventory does not match",
+    ):
+        portable.validate_map_upload_package(map_root)
