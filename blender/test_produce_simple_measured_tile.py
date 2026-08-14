@@ -518,6 +518,30 @@ def test_corrupt_mns_falls_back_to_explicit_ground_only_tile(tile_fixture) -> No
     assert package.ground_color.is_file()
 
 
+def test_mns_nodata_falls_back_to_explicit_ground_only_tile(tile_fixture) -> None:
+    root, sources, asset_root, library = tile_fixture
+    with rasterio.open(sources["mns"]) as dataset:
+        mns = dataset.read(1)
+        profile = dataset.profile
+    mns[0, 0] = profile["nodata"]
+    with rasterio.open(sources["mns"], "w", **profile) as dataset:
+        dataset.write(mns, 1)
+    elevation = json.loads(sources["elevation_receipt"].read_text(encoding="utf-8"))
+    elevation["mns"]["byte_count"] = sources["mns"].stat().st_size
+    elevation["mns"]["sha256"] = _hash_file(sources["mns"])
+    _write_json(sources["elevation_receipt"], elevation)
+
+    package = _produce(root, sources, asset_root, library, "tile-mns-nodata-fallback")
+    receipt = json.loads(package.receipt.read_text(encoding="utf-8"))
+    reduction = receipt["request"]["sources"]["elevation_reduction"]
+    assert reduction["mns_fallback_applied"] is True
+    assert "nodata" in reduction["mns_fallback_reason"]
+    assert receipt["placement"]["source"]["mode"] == "degraded_mns_fallback"
+    assert receipt["placement"]["building_valid_count"] == 0
+    assert receipt["placement"]["tree_valid_count"] == 0
+    assert package.ground_color.is_file()
+
+
 def test_rejects_c_drive_output_before_reading_sources(tile_fixture) -> None:
     root, sources, asset_root, library = tile_fixture
     with pytest.raises(simple.SimpleMeasuredTileError, match="must stay on D"):

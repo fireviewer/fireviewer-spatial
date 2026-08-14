@@ -398,10 +398,9 @@ def _read_elevation_pair(
         -ELEVATION_RESOLUTION_M,
         origin[1] + TILE_SIZE_M + HALO_M,
     )
-    arrays: list[np.ndarray] = []
-    signatures: list[tuple[Any, ...]] = []
     declared_nodata = elevation_manifest.get("grid", {}).get("nodata")
-    for label, path in (("MNT", mnt_path), ("MNS", mns_path)):
+
+    def read_raster(label: str, path: Path) -> tuple[np.ndarray, tuple[Any, ...]]:
         with rasterio.open(path) as dataset:
             signature = (
                 dataset.width,
@@ -411,7 +410,6 @@ def _read_elevation_pair(
                 tuple(dataset.transform)[:6],
                 dataset.nodata,
             )
-            signatures.append(signature)
             if (
                 dataset.width != ELEVATION_SOURCE_SIZE
                 or dataset.height != ELEVATION_SOURCE_SIZE
@@ -435,10 +433,31 @@ def _read_elevation_pair(
                 raise SimpleMeasuredTileError(
                     f"{label} contains declared nodata samples"
                 )
-            arrays.append(np.asarray(values, dtype="float64"))
-    if signatures[0] != signatures[1]:
-        raise SimpleMeasuredTileError("MNT and MNS are not exactly co-registered")
-    return canonical_elevation_pair_1m_from_05m(arrays[0], arrays[1])
+            return np.asarray(values, dtype="float64"), signature
+
+    mnt, mnt_signature = read_raster("MNT", mnt_path)
+    mns_fallback_reason: str | None = None
+    try:
+        mns, mns_signature = read_raster("MNS", mns_path)
+        if mnt_signature != mns_signature:
+            raise SimpleMeasuredTileError("MNT and MNS are not exactly co-registered")
+    except (
+        OSError,
+        RuntimeError,
+        SimpleMeasuredTileError,
+        rasterio.errors.RasterioError,
+    ) as error:
+        mns = mnt.copy()
+        mns_fallback_reason = str(error)
+
+    canonical_mnt, canonical_mns, diagnostics = canonical_elevation_pair_1m_from_05m(
+        mnt, mns
+    )
+    diagnostics["mns_fallback_applied"] = mns_fallback_reason is not None
+    diagnostics["mns_fallback_policy"] = "ground_only_on_mns_source_validation_failure"
+    if mns_fallback_reason is not None:
+        diagnostics["mns_fallback_reason"] = mns_fallback_reason
+    return canonical_mnt, canonical_mns, diagnostics
 
 
 def _round_divide_signed(values: np.ndarray, divisor: int) -> np.ndarray:
@@ -1218,40 +1237,29 @@ def produce_simple_measured_tile(
             height=500,
         )
 
-        placement_source: dict[str, Any] = {
-            "mode": "measured_mns_minus_mnt",
-            "degraded": False,
-        }
-        try:
-            placement = build_placement_inventory(
-                sources.mnt_m,
-                sources.mns_m,
-                tile_origin_l93_m=origin,
-                zone_id=zone_id,
-                building_footprints=context.building_footprints,
-                context_geometries=context.context_geometries,
-                context_features=context.context_features,
-                fixed_asset_placements=context.fixed_asset_placements,
-            )
-        except PlacementInventoryError as error:
-            message = str(error)
-            if "corrupt or misaligned" not in message:
-                raise
+        elevation_reduction = sources.request_sources.get("elevation_reduction", {})
+        source_mns_fallback = (
+            isinstance(elevation_reduction, Mapping)
+            and elevation_reduction.get("mns_fallback_applied") is True
+        )
+        placement_source: dict[str, Any]
+        if source_mns_fallback:
+            reason = str(elevation_reduction.get("mns_fallback_reason", "invalid MNS"))
             placement_source = {
                 "mode": "degraded_mns_fallback",
                 "degraded": True,
-                "reason": message,
+                "reason": reason,
                 "behavior": "MNT used as MNS; no measured height objects inferred",
             }
             _emit_progress(
                 progress_callback,
                 "placement_mns_fallback",
                 tile_id=tile_id,
-                reason=message,
+                reason=reason,
             )
             placement = build_placement_inventory(
                 sources.mnt_m,
-                sources.mnt_m,
+                sources.mns_m,
                 tile_origin_l93_m=origin,
                 zone_id=zone_id,
                 building_footprints=(),
@@ -1259,6 +1267,48 @@ def produce_simple_measured_tile(
                 context_features=context.context_features,
                 fixed_asset_placements=context.fixed_asset_placements,
             )
+        else:
+            placement_source = {
+                "mode": "measured_mns_minus_mnt",
+                "degraded": False,
+            }
+            try:
+                placement = build_placement_inventory(
+                    sources.mnt_m,
+                    sources.mns_m,
+                    tile_origin_l93_m=origin,
+                    zone_id=zone_id,
+                    building_footprints=context.building_footprints,
+                    context_geometries=context.context_geometries,
+                    context_features=context.context_features,
+                    fixed_asset_placements=context.fixed_asset_placements,
+                )
+            except PlacementInventoryError as error:
+                message = str(error)
+                if "corrupt or misaligned" not in message:
+                    raise
+                placement_source = {
+                    "mode": "degraded_mns_fallback",
+                    "degraded": True,
+                    "reason": message,
+                    "behavior": "MNT used as MNS; no measured height objects inferred",
+                }
+                _emit_progress(
+                    progress_callback,
+                    "placement_mns_fallback",
+                    tile_id=tile_id,
+                    reason=message,
+                )
+                placement = build_placement_inventory(
+                    sources.mnt_m,
+                    sources.mnt_m,
+                    tile_origin_l93_m=origin,
+                    zone_id=zone_id,
+                    building_footprints=(),
+                    context_geometries=context.context_geometries,
+                    context_features=context.context_features,
+                    fixed_asset_placements=context.fixed_asset_placements,
+                )
         write_placement_outputs(
             staging / "placement", placement, tile_origin_l93_m=origin, gpkg="off"
         )

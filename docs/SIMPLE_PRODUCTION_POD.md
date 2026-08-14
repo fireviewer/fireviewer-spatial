@@ -40,7 +40,7 @@ Ressources privées requises :
 - disque éphémère local `/tmp/fireviewer-map-production` pour assembler
   `zone.blend`, matérialiser le ZIP autonome et le compresser ;
 - secret runtime `HF_TOKEN` et variable `FIREVIEWER_HF_DATASET_ID` ;
-- image immuable `pilot-v1-20260814-r21-runpod`.
+- image immuable `pilot-v1-20260814-r22-runpod`.
 
 Le backend Vercel reçoit exclusivement :
 
