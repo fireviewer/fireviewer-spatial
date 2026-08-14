@@ -40,7 +40,7 @@ Ressources privées requises :
 - disque éphémère local `/tmp/fireviewer-map-production` pour assembler
   `zone.blend`, matérialiser le ZIP autonome et le compresser ;
 - secret runtime `HF_TOKEN` et variable `FIREVIEWER_HF_DATASET_ID` ;
-- image immuable `pilot-v1-20260814-r18-runpod`.
+- image immuable `pilot-v1-20260814-r19-runpod`.
 
 Le backend Vercel reçoit exclusivement :
 
@@ -59,8 +59,9 @@ La production active rend zéro capture et le contrat RunPod expose toujours
 - `zone.usda`, scène OpenUSD unifiée ;
 - `zone.blend`, scène Blender autonome avec textures emballées ;
 - `packages/<tile>/`, chaque terrain de 500 m ;
-- `shared/prototypes/`, les assets réellement utilisés, chacun incorporé une
-  seule fois comme fichier normal dans le ZIP ;
+- `shared/prototype-bundles/v1-<sha256>/`, le lot causal actif des assets
+  réellement utilisés, chacun incorporé une seule fois comme fichier normal
+  dans le ZIP ;
 - `provenance/<tile>/`, les reçus source compacts ;
 - `zone-context.json`, `zone-plan.json` et `zone.done.json`.
 

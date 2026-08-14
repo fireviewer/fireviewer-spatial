@@ -19,7 +19,7 @@
     "ground": "orthophoto RGB baked 1 m",
     "placement": "MNT-MNS measured",
     "prototype_assets": 294,
-    "shared_prototype_bundle": "linked_index_to_immutable_embedded_assets",
+    "shared_prototype_bundle": "catalog_and_builder_namespaced_link_index_to_immutable_embedded_assets",
     "embedded_asset_validation": "once_per_worker_process_at_start",
     "database": "forbidden"
   },
@@ -47,7 +47,7 @@
       "zone context",
       "validated tile checkpoints",
       "small source and publication receipts",
-      "shared prototype link index"
+      "causally namespaced shared prototype link index"
     ]
   },
   "output": {

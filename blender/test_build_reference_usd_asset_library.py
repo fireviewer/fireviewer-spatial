@@ -880,6 +880,45 @@ def test_metadata_selection_is_repeatable_and_does_not_consume_an_asset() -> Non
     assert second["repeatable"] is True
 
 
+def test_public_selector_revalidates_and_rejects_tampered_catalog(monkeypatch) -> None:
+    manifest, reviewed, _tree, _building = _fixture()
+    payload = library.build_reference_asset_library(manifest, reviewed)
+    validation_calls: list[dict] = []
+    validate = library.validate_reference_asset_library
+
+    def counted_validate(candidate):
+        validation_calls.append(candidate)
+        return validate(candidate)
+
+    monkeypatch.setattr(library, "validate_reference_asset_library", counted_validate)
+    selected = library.select_asset_for_candidate(
+        payload,
+        category="building",
+        zone="FR-30",
+        candidate="building-a",
+        rule_version="building-v1",
+        usage="technical_pilot_non_final",
+    )
+    assert selected["category"] == "building"
+    assert len(validation_calls) == 1
+
+    tampered = copy.deepcopy(payload)
+    tampered["asset_count"] += 1
+    with pytest.raises(
+        library.ReferenceAssetLibraryError,
+        match="catalog revision differs",
+    ):
+        library.select_asset_for_candidate(
+            tampered,
+            category="building",
+            zone="FR-30",
+            candidate="building-b",
+            rule_version="building-v1",
+            usage="technical_pilot_non_final",
+        )
+    assert len(validation_calls) == 2
+
+
 def test_writer_is_atomic_idempotent_and_tamper_evident(tmp_path: Path) -> None:
     manifest, reviewed, _tree, building = _fixture()
     payload = library.build_reference_asset_library(manifest, reviewed)

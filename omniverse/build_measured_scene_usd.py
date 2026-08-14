@@ -585,11 +585,12 @@ def _default_selection_api(
     library: Mapping[str, Any],
     **kwargs: Any,
 ) -> Mapping[str, Any]:
-    """Call the catalogue's public deterministic selection API."""
+    """Select after ``_validate_catalog`` has validated this scene's catalogue."""
 
+    reference_catalog = library.get("schema") == REFERENCE_CATALOG_SCHEMA
     module_name = (
         "build_reference_usd_asset_library"
-        if library.get("schema") == REFERENCE_CATALOG_SCHEMA
+        if reference_catalog
         else "build_asset_library_53"
     )
     try:
@@ -599,7 +600,12 @@ def _default_selection_api(
         if str(blender_root) not in sys.path:
             sys.path.insert(0, str(blender_root))
         module = importlib.import_module(module_name)
-    selector = getattr(module, "select_asset_for_candidate", None)
+    selector_name = (
+        "_select_asset_for_candidate_from_validated_library"
+        if reference_catalog
+        else "select_asset_for_candidate"
+    )
+    selector = getattr(module, selector_name, None)
     if not callable(selector):
         raise MeasuredSceneError(
             "asset library deterministic selection API is unavailable"

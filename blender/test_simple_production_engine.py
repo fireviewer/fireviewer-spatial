@@ -127,6 +127,65 @@ def test_interrupted_staging_cleanup_is_bounded_to_owned_patterns(
     assert unrelated.read_bytes() == b"keep"
 
 
+def test_versioned_prototype_bundle_preserves_legacy_and_resumes_stably(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = tmp_path / "jobs" / "GPS-MIGRATION"
+    legacy_wrapper = job / "shared" / "prototypes" / "legacy-tree" / "prototype.usda"
+    legacy_wrapper.parent.mkdir(parents=True)
+    legacy_wrapper.write_bytes(b"r17-wrapper-must-remain")
+    monkeypatch.setattr(
+        production, "_prototype_bundle_builder_sha256", lambda: "b" * 64
+    )
+    summary = {"catalog_sha256": "a" * 64}
+
+    first = production._prototype_bundle_root(job, summary)
+    first.mkdir(parents=True)
+    interrupted = first / ".tree.part"
+    interrupted.mkdir()
+    (interrupted / "partial.bin").write_bytes(b"partial")
+
+    removed = production._remove_interrupted_staging(job)
+    resumed = production._prototype_bundle_root(job, summary)
+
+    assert resumed == first
+    assert first.parent.name == production.PROTOTYPE_BUNDLE_COLLECTION_NAME
+    assert first.name.startswith("v1-")
+    assert removed == [
+        first.relative_to(job).as_posix() + "/.tree.part",
+    ]
+    assert not interrupted.exists()
+    assert legacy_wrapper.read_bytes() == b"r17-wrapper-must-remain"
+
+    active_wrapper = first / "tree" / "prototype.usda"
+    active_wrapper.parent.mkdir(parents=True)
+    active_wrapper.write_bytes(b"r18-wrapper")
+    scratch = tmp_path / "scratch" / "jobs" / "GPS-MIGRATION"
+    scratch.mkdir(parents=True)
+    assembly = production._prepare_local_assembly(
+        job, scratch, active_prototype_bundle=first
+    )
+    assert (assembly / active_wrapper.relative_to(job)).read_bytes() == b"r18-wrapper"
+    assert not (assembly / legacy_wrapper.relative_to(job)).exists()
+    assert legacy_wrapper.read_bytes() == b"r17-wrapper-must-remain"
+
+    monkeypatch.setattr(
+        production, "_prototype_bundle_builder_sha256", lambda: "c" * 64
+    )
+    upgraded = production._prototype_bundle_root(job, summary)
+    assert upgraded != first
+    assert legacy_wrapper.read_bytes() == b"r17-wrapper-must-remain"
+
+
+def test_prototype_bundle_namespace_rejects_an_unsealed_catalog_identity(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(production.SimpleProductionError, match="identité du catalogue"):
+        production._prototype_bundle_root(
+            tmp_path / "job", {"catalog_sha256": "not-a-sha256"}
+        )
+
+
 def test_parallel_scheduler_never_starts_more_than_four_and_stops_queue_on_error() -> (
     None
 ):

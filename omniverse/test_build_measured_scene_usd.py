@@ -539,6 +539,51 @@ def test_builds_bit_stable_measured_scene_without_quota_or_fallback(
     ]
 
 
+def test_reference_catalog_is_validated_once_per_scene(
+    monkeypatch, fixture_root
+) -> None:
+    root, terrain, prototype = fixture_root
+    library = _library(_hash_bytes(prototype.read_bytes()))
+    library["schema"] = measured.REFERENCE_CATALOG_SCHEMA
+    validation_calls: list[dict] = []
+    selection_calls: list = []
+    delegate = _selector(selection_calls)
+
+    def validate_catalog(payload):
+        validation_calls.append(payload)
+
+    def select_validated(payload, **kwargs):
+        kwargs.pop("metadata", None)
+        return delegate(payload, **kwargs)
+
+    def select_public(*_args, **_kwargs):
+        raise AssertionError("the scene hot path must use the prevalidated selector")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "build_reference_usd_asset_library",
+        SimpleNamespace(
+            validate_reference_asset_library=validate_catalog,
+            _select_asset_for_candidate_from_validated_library=select_validated,
+            select_asset_for_candidate=select_public,
+        ),
+    )
+
+    package = _build(
+        root,
+        terrain,
+        prototype,
+        "scene-reference-catalog",
+        library=library,
+        selection_api=None,
+    )
+
+    assert package.building_instance_count == 2
+    assert package.tree_instance_count == 1
+    assert len(selection_calls) == 3
+    assert len(validation_calls) == 1
+
+
 def test_fixed_context_asset_bypasses_selection_and_keeps_exact_asset_id(
     fixture_root,
 ) -> None:

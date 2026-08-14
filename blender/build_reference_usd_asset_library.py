@@ -2189,7 +2189,7 @@ def write_reference_asset_library(
     }
 
 
-def select_asset_for_candidate(
+def _select_asset_for_candidate_from_validated_library(
     library: Mapping[str, Any],
     *,
     category: str,
@@ -2199,9 +2199,8 @@ def select_asset_for_candidate(
     usage: str,
     metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Select a repeatable compatible asset without consuming catalogue entries."""
+    """Select from a catalogue already validated by the scene builder."""
 
-    validate_reference_asset_library(library)
     pool = library["selection_pools"].get(category)
     if not isinstance(pool, list) or not pool:
         raise ReferenceAssetLibraryError(
@@ -2267,6 +2266,30 @@ def select_asset_for_candidate(
         "metadata_match_score": maximum_score,
         "repeatable": True,
     }
+
+
+def select_asset_for_candidate(
+    library: Mapping[str, Any],
+    *,
+    category: str,
+    zone: str,
+    candidate: str,
+    rule_version: str,
+    usage: str,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Select a repeatable compatible asset from a validated catalogue."""
+
+    validate_reference_asset_library(library)
+    return _select_asset_for_candidate_from_validated_library(
+        library,
+        category=category,
+        zone=zone,
+        candidate=candidate,
+        rule_version=rule_version,
+        usage=usage,
+        metadata=metadata,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

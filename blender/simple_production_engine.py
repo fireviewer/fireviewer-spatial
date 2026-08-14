@@ -80,6 +80,8 @@ DATASET_PUBLICATION_NAME = "dataset-publication.json"
 FIXED_ASSET_REQUEST_NAME = "fixed-asset-placements.v1.json"
 CAPTURE_COUNT = 0
 PARALLEL_HEARTBEAT_SECONDS = 15.0
+PROTOTYPE_BUNDLE_NAMESPACE_SCHEMA = "fireviewer.prototype-bundle-namespace.v1"
+PROTOTYPE_BUNDLE_COLLECTION_NAME = "prototype-bundles"
 
 
 class SimpleProductionError(RuntimeError):
@@ -202,6 +204,52 @@ def _load_json(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise SimpleProductionError(f"{label} doit être un objet JSON")
     return value
+
+
+def _prototype_bundle_builder_sha256() -> str:
+    """Hash the code that renders and validates prototype bundle artifacts."""
+
+    builder = (
+        Path(__file__).resolve().parent.parent
+        / "omniverse"
+        / "build_measured_scene_usd.py"
+    )
+    if not builder.is_file():
+        raise SimpleProductionError(
+            "Le générateur causal du lot de prototypes est absent"
+        )
+    return _sha256_file(builder)
+
+
+def _prototype_bundle_namespace(asset_summary: Mapping[str, Any]) -> str:
+    """Bind a shared bundle to its immutable catalog and producing code."""
+
+    catalog_sha256 = asset_summary.get("catalog_sha256")
+    if (
+        not isinstance(catalog_sha256, str)
+        or len(catalog_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in catalog_sha256)
+    ):
+        raise SimpleProductionError(
+            "L'identité du catalogue ne permet pas de versionner les prototypes"
+        )
+    identity = {
+        "schema": PROTOTYPE_BUNDLE_NAMESPACE_SCHEMA,
+        "catalog_sha256": catalog_sha256,
+        "builder_sha256": _prototype_bundle_builder_sha256(),
+    }
+    return "v1-" + hashlib.sha256(_canonical_bytes(identity)).hexdigest()
+
+
+def _prototype_bundle_root(job_root: Path, asset_summary: Mapping[str, Any]) -> Path:
+    """Return the causal, restart-stable bundle root for this production."""
+
+    return (
+        job_root
+        / "shared"
+        / PROTOTYPE_BUNDLE_COLLECTION_NAME
+        / _prototype_bundle_namespace(asset_summary)
+    )
 
 
 def _contract_path() -> Path:
@@ -668,11 +716,24 @@ def _remove_sources(job_root: Path, source_root: Path) -> None:
 def _remove_interrupted_staging(job_root: Path) -> list[str]:
     """Remove only engine-owned staging paths left by an interrupted invocation."""
 
-    roots_and_patterns = (
+    roots_and_patterns = [
         (job_root / "sources", ".*.simple-sources.part"),
         (job_root / "packages", ".*.simple-measured-tile.part"),
+        # Legacy, unversioned r17 and earlier bundle. It is deliberately retained;
+        # only its process-owned staging children may be removed.
         (job_root / "shared" / "prototypes", ".*.part"),
-    )
+    ]
+    versioned_parent = job_root / "shared" / PROTOTYPE_BUNDLE_COLLECTION_NAME
+    if versioned_parent.is_dir() and not versioned_parent.is_symlink():
+        roots_and_patterns.extend(
+            (candidate, ".*.part")
+            for candidate in sorted(versioned_parent.iterdir())
+            if candidate.is_dir()
+            and not candidate.is_symlink()
+            and candidate.name.startswith("v1-")
+            and len(candidate.name) == 67
+            and all(character in "0123456789abcdef" for character in candidate.name[3:])
+        )
     removed: list[str] = []
     resolved_job = job_root.resolve(strict=True)
     for root, pattern in roots_and_patterns:
@@ -1020,11 +1081,26 @@ def _prepare_scratch_job(config: ProductionConfig, zone_id: str) -> Path | None:
     return destination
 
 
-def _prepare_local_assembly(job_root: Path, scratch_job: Path) -> Path:
-    """Mirror immutable checkpoint files with links on the worker-local disk."""
+def _prepare_local_assembly(
+    job_root: Path,
+    scratch_job: Path,
+    *,
+    active_prototype_bundle: Path | None = None,
+) -> Path:
+    """Mirror checkpoints and only the active causal bundle to local scratch."""
 
     job = job_root.resolve(strict=True)
     scratch = scratch_job.resolve(strict=True)
+    active_bundle_relative: Path | None = None
+    if active_prototype_bundle is not None:
+        active_bundle = active_prototype_bundle.resolve()
+        _inside(job, active_bundle, "lot de prototypes actif")
+        active_bundle_relative = active_bundle.relative_to(job)
+        if active_bundle_relative.parts[:2] != (
+            "shared",
+            PROTOTYPE_BUNDLE_COLLECTION_NAME,
+        ):
+            raise SimpleProductionError("Namespace du lot de prototypes actif invalide")
     excluded_roots = {"sources", "download"}
     excluded_files = {
         STATUS_NAME,
@@ -1039,6 +1115,14 @@ def _prepare_local_assembly(job_root: Path, scratch_job: Path) -> Path:
         relative = source.relative_to(job)
         if relative.parts[0] in excluded_roots or source.name in excluded_files:
             continue
+        if active_bundle_relative is not None and relative.parts[0] == "shared":
+            is_active_or_child = (
+                relative == active_bundle_relative
+                or relative.is_relative_to(active_bundle_relative)
+            )
+            is_active_parent = active_bundle_relative.is_relative_to(relative)
+            if not is_active_or_child and not is_active_parent:
+                continue
         target = scratch / relative
         _inside(scratch, target, "assemblage local")
         if source.is_dir():
@@ -1718,7 +1802,7 @@ class ProductionEngine:
         )
 
         asset_roots = {"review_batch": self.config.review_batch}
-        shared_bundle = job_root / "shared" / "prototypes"
+        shared_bundle = _prototype_bundle_root(job_root, self.asset_summary)
         completed = 0
         source_phase = {
             "download_mnt_started": (0.04, "MNT 0,5 m — téléchargement"),
@@ -1973,7 +2057,11 @@ class ProductionEngine:
             shared_bundle,
         )
         assembly_root = (
-            _prepare_local_assembly(job_root, scratch_job)
+            _prepare_local_assembly(
+                job_root,
+                scratch_job,
+                active_prototype_bundle=shared_bundle,
+            )
             if scratch_job is not None
             else job_root
         )
