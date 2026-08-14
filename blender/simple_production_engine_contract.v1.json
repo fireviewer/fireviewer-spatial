@@ -50,7 +50,7 @@
     "portable_zip": true,
     "entry_stage": "zone.usda",
     "standalone_blend": "zone.blend_with_packed_textures",
-    "visual_gallery": "exactly_20_png_512x512_pending_human_review",
+    "visual_gallery": "not_produced",
     "scene": "unified_relative_references",
     "independent_after_extraction": true,
     "dataset_publication": "optional_private_hugging_face_after_zip_validation",
