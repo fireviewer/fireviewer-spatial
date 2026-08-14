@@ -487,6 +487,86 @@ def test_rejects_source_hash_drift_before_publishing(tile_fixture) -> None:
     assert not (root / "rejected").exists()
 
 
+def test_selected_embedded_usdz_does_not_require_a_separate_bundled_texture(
+    tmp_path: Path,
+) -> None:
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    source = asset_root / "premium.usdz"
+    source.write_bytes(b"self-contained-usdz")
+    texture = asset_root / "inspection.jpg"
+    texture.write_bytes(b"catalogue-inspection-texture")
+    asset_id = "premium-station-service"
+    library = tmp_path / "asset-library.json"
+    _write_json(
+        library,
+        {
+            "assets": [
+                {
+                    "asset_id": asset_id,
+                    "usd": _artifact(
+                        "review_batch",
+                        source.name,
+                        _hash_file(source),
+                        source.stat().st_size,
+                    ),
+                    "texture": _artifact(
+                        "review_batch",
+                        texture.name,
+                        _hash_file(texture),
+                        texture.stat().st_size,
+                    ),
+                    "material": {
+                        "policy": "source_package_pbr",
+                        "source_package": True,
+                        "pbr_preserved": True,
+                    },
+                }
+            ]
+        },
+    )
+    scene_receipt = {
+        "prototypes": [
+            {
+                "asset_id": asset_id,
+                "source_usd": {
+                    "path": source.name,
+                    "sha256": _hash_file(source),
+                    "byte_count": source.stat().st_size,
+                },
+                "texture": None,
+                "material": {
+                    "implementation": "source_package_pbr",
+                    "binding_strength": "authored_below_default_prim",
+                    "texture_role": "embedded_usdz",
+                    "source_color_space": "authored",
+                },
+            }
+        ]
+    }
+
+    simple._validate_selected_assets(
+        scene_receipt,
+        library,
+        {"review_batch": asset_root},
+    )
+
+    scene_receipt["prototypes"][0]["texture"] = {
+        "path": texture.name,
+        "sha256": _hash_file(texture),
+        "byte_count": texture.stat().st_size,
+    }
+    with pytest.raises(
+        simple.SimpleMeasuredTileError,
+        match="embedded USDZ material differs",
+    ):
+        simple._validate_selected_assets(
+            scene_receipt,
+            library,
+            {"review_batch": asset_root},
+        )
+
+
 def test_context_hash_is_part_of_reuse_identity(tile_fixture) -> None:
     root, sources, asset_root, library = tile_fixture
     _produce(root, sources, asset_root, library, "tile-context")

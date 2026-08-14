@@ -992,9 +992,31 @@ def _validate_selected_assets(
         validate_artifact(
             str(asset_id), asset, prototype, role="usd", receipt_key="source_usd"
         )
-        validate_artifact(
-            str(asset_id), asset, prototype, role="texture", receipt_key="texture"
+        material = prototype.get("material")
+        asset_material = asset.get("material")
+        source_package_pbr = (
+            isinstance(material, Mapping)
+            and material.get("implementation") == "source_package_pbr"
+            and material.get("texture_role") == "embedded_usdz"
         )
+        if source_package_pbr:
+            source = asset.get("usd")
+            if (
+                not isinstance(source, Mapping)
+                or PurePosixPath(str(source.get("path", ""))).suffix.casefold()
+                != ".usdz"
+                or not isinstance(asset_material, Mapping)
+                or asset_material.get("policy") != "source_package_pbr"
+                or asset_material.get("source_package") is not True
+                or prototype.get("texture") is not None
+            ):
+                raise SimpleMeasuredTileError(
+                    f"Selected asset embedded USDZ material differs: {asset_id}"
+                )
+        else:
+            validate_artifact(
+                str(asset_id), asset, prototype, role="texture", receipt_key="texture"
+            )
 
 
 def validate_simple_measured_tile_package(
