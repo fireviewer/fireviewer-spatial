@@ -208,6 +208,121 @@ def test_checkpoint_is_deterministic_streamed_and_rehashed_before_restore(
         )
 
 
+def test_checkpoint_is_built_on_local_staging_before_persistent_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "scratch" / "packages" / "x1_y2"
+    package.mkdir(parents=True)
+    (package / "terrain.fvtg").write_bytes(b"terrain" * 100)
+    (package / "simple-measured-tile-receipt.v1.json").write_bytes(
+        b'{"build_id":"fixture"}\n'
+    )
+    job = tmp_path / "persistent" / "jobs" / "GPS-CHECKPOINT"
+    local_staging = tmp_path / "scratch" / "checkpoint-staging"
+    copied_sources: list[Path] = []
+
+    def copy_local(source: Path, destination: Path, *, timeout_seconds: float) -> None:
+        assert timeout_seconds == production.CHECKPOINT_PUBLISH_TIMEOUT_SECONDS
+        copied_sources.append(source)
+        destination.write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(production, "_copy_checkpoint_file_with_timeout", copy_local)
+    production._write_tile_checkpoint(
+        package,
+        job,
+        tile_id="x1_y2",
+        local_staging_root=local_staging,
+        publish_lock=threading.Lock(),
+    )
+
+    assert len(copied_sources) == 2
+    assert all(source.parent == local_staging for source in copied_sources)
+    assert not list(local_staging.glob("*.part"))
+    archive, receipt = production._tile_checkpoint_paths(job, "x1_y2")
+    assert archive.is_file()
+    assert receipt.is_file()
+
+
+def test_checkpoint_copy_timeout_removes_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "local.zip"
+    destination = tmp_path / "persistent.part"
+    source.write_bytes(b"checkpoint")
+    monkeypatch.setattr(production, "CHECKPOINT_COPY_USES_SUBPROCESS", True)
+
+    def expire(*_args: object, **_kwargs: object) -> None:
+        destination.write_bytes(b"partial")
+        raise production.subprocess.TimeoutExpired("cp", 0.01)
+
+    monkeypatch.setattr(production.subprocess, "run", expire)
+    with pytest.raises(production.SimpleProductionError, match="expirée"):
+        production._copy_checkpoint_file_with_timeout(
+            source, destination, timeout_seconds=0.01
+        )
+    assert not destination.exists()
+
+
+def test_checkpoint_publications_are_serialized_across_tiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packages: list[Path] = []
+    for tile_id in ("x1_y2", "x2_y2"):
+        package = tmp_path / "scratch" / "packages" / tile_id
+        package.mkdir(parents=True)
+        (package / "terrain.fvtg").write_bytes(tile_id.encode() * 100)
+        (package / "simple-measured-tile-receipt.v1.json").write_bytes(
+            f'{{"build_id":"{tile_id}"}}\n'.encode()
+        )
+        packages.append(package)
+    job = tmp_path / "persistent" / "jobs" / "GPS-SERIAL"
+    local_staging = tmp_path / "scratch" / "checkpoint-staging"
+    publish_lock = threading.Lock()
+    state_lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def slow_copy(source: Path, destination: Path, *, timeout_seconds: float) -> None:
+        nonlocal active, maximum_active
+        assert timeout_seconds == production.CHECKPOINT_PUBLISH_TIMEOUT_SECONDS
+        with state_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        try:
+            threading.Event().wait(0.01)
+            destination.write_bytes(source.read_bytes())
+        finally:
+            with state_lock:
+                active -= 1
+
+    monkeypatch.setattr(production, "_copy_checkpoint_file_with_timeout", slow_copy)
+    errors: list[BaseException] = []
+
+    def checkpoint(package: Path) -> None:
+        try:
+            production._write_tile_checkpoint(
+                package,
+                job,
+                tile_id=package.name,
+                local_staging_root=local_staging,
+                publish_lock=publish_lock,
+            )
+        except BaseException as error:  # pragma: no cover - surfaced below
+            errors.append(error)
+
+    threads = [
+        threading.Thread(target=checkpoint, args=(package,)) for package in packages
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert maximum_active == 1
+    assert len(list((job / "tile-checkpoints" / "v1").glob("*.zip"))) == 2
+
+
 def test_25_by_25_plan_is_interleaved_across_49_four_by_four_metatiles() -> None:
     latitude, longitude = _pilot_gps()
     plan = production.plan_zone(latitude, longitude, 12.0)
@@ -370,6 +485,32 @@ def test_parallel_scheduler_never_starts_more_than_four_and_stops_queue_on_error
 
     assert maximum_active <= 4
     assert set(started) <= {0, 1, 2, 3}
+    assert stop.is_set()
+
+
+def test_parallel_scheduler_fails_instead_of_heartbeating_forever() -> None:
+    stop = threading.Event()
+    release = threading.Event()
+    tile = production.TilePlan("tile-stalled", (0, 0))
+
+    def work(_index: int, _tile: production.TilePlan) -> str:
+        release.wait(timeout=0.05)
+        return "done"
+
+    results = production._bounded_parallel_tile_results(
+        [(0, tile), (1, production.TilePlan("tile-second", (500, 0)))],
+        worker_count=2,
+        process_tile=work,
+        stop_event=stop,
+        heartbeat_seconds=0.001,
+        last_activity=lambda _index, _tile: 0.0,
+        stall_timeout_seconds=5.0,
+        monotonic=lambda: 10.0,
+    )
+    with pytest.raises(production.SimpleProductionError, match="inactive.*reprise"):
+        next(results)
+    release.set()
+    results.close()
     assert stop.is_set()
 
 

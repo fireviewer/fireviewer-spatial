@@ -4,6 +4,7 @@ import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
+import threading
 from urllib.parse import parse_qs, urlparse
 
 from affine import Affine
@@ -140,6 +141,50 @@ def test_wms_request_is_exact_and_lambert93() -> None:
         "FORMAT": ["image/tiff"],
         "TRANSPARENT": ["FALSE"],
     }
+
+
+def test_default_http_get_bounds_retries_for_metatile_and_tile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingSession:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def get(self, url: str, **_kwargs: object) -> object:
+            self.calls.append(url)
+            raise sources.requests.Timeout("synthetic timeout")
+
+    session = FailingSession()
+    sources._HTTP_LOCAL.session = session
+    monkeypatch.setattr(sources.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(sources, "_WMS_NEXT_REQUEST_AT", 0.0)
+    metatile_url = sources.wms_url(
+        sources.MNT_LAYER,
+        (0, 0, 2020, 2020),
+        sources.METATILE_ELEVATION_SIZE,
+        "image/tiff",
+    )
+    tile_url = sources.wms_url(sources.MNT_LAYER, BOUNDS, 1040, "image/tiff")
+
+    with pytest.raises(sources.SimpleMeasuredTileSourceError, match="WMS request"):
+        sources._default_http_get(metatile_url)
+    assert len(session.calls) == 1
+    with pytest.raises(sources.SimpleMeasuredTileSourceError, match="WMS request"):
+        sources._default_http_get(tile_url)
+    assert len(session.calls) == 1 + sources.HTTP_TILE_ATTEMPTS
+
+
+def test_streaming_wms_response_has_a_total_wall_clock_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response:
+        def iter_content(self, *, chunk_size: int) -> list[bytes]:
+            assert chunk_size == 1024 * 1024
+            return [b"payload"]
+
+    monkeypatch.setattr(sources.time, "monotonic", lambda: 2.0)
+    with pytest.raises(sources.SimpleMeasuredTileSourceError, match="deadline"):
+        sources._read_http_response(Response(), "https://fixture.invalid", deadline=1.0)
 
 
 def test_building_snapshot_is_filtered_to_processing_window() -> None:
@@ -567,3 +612,64 @@ def test_invalid_metatile_falls_back_to_individual_tile_requests_once_per_block(
     # their three compatible 500 m requests. The failed block is not retried.
     assert len(calls) == 9
     assert phases.count("metatile_fallback") == 2
+
+
+def test_stalled_metatile_owner_falls_back_without_poisoning_the_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _inputs(tmp_path)
+    held_lock = threading.Lock()
+    held_lock.acquire()
+    calls: list[str] = []
+    phases: list[str] = []
+    mnt = _tiff_bytes(130.0)
+    mns = _tiff_bytes(142.0)
+    ortho = _png_bytes()
+
+    def fake_get(url: str) -> bytes:
+        calls.append(url)
+        if sources.MNT_LAYER in url:
+            return mnt
+        if sources.MNS_LAYER in url:
+            return mns
+        return ortho
+
+    monkeypatch.setattr(sources, "METATILE_LOCK_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(sources, "_metatile_lock", lambda _path: held_lock)
+    monkeypatch.setattr(
+        sources,
+        "_placement_context",
+        lambda **_kwargs: {
+            "schema": "fireviewer.placement-context-input.v1",
+            "crs": sources.CRS,
+            "tile_origin_l93_m": list(_kwargs["origin"]),
+            "processing_bounds_l93_m": list(sources._bounds(_kwargs["origin"])),
+            "building_footprints": [],
+            "context_geometries": {
+                "vegetation": [],
+                "roads": [],
+                "rail": [],
+                "water": [],
+            },
+            "provenance": {},
+        },
+    )
+    sources._FAILED_METATILES.clear()
+    prepared = sources.prepare_sources(
+        output_root=tmp_path / "fallback-lock-timeout",
+        zone_id="FR-30-METATILE-LOCK-TIMEOUT",
+        tile_id=f"x{ORIGIN[0]}_y{ORIGIN[1]}",
+        tile_origin_l93_m=ORIGIN,
+        elevation_revision="elevation-r1",
+        orthophoto_revision="orthophoto-r1",
+        metatile_cache_root=tmp_path / "metatiles",
+        http_get=fake_get,
+        progress_callback=lambda phase, _details: phases.append(phase),
+        **inputs,
+    )
+    held_lock.release()
+
+    assert prepared.mnt.is_file()
+    assert len(calls) == 3
+    assert phases.count("metatile_fallback") == 1
+    assert sources._FAILED_METATILES == {}

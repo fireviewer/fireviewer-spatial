@@ -12,11 +12,12 @@ import threading
 import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path, PureWindowsPath
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import numpy as np
 import pyogrio.raw
@@ -53,6 +54,13 @@ METATILE_ELEVATION_SIZE = int((METATILE_SIZE_M + 2 * HALO_M) / 0.5)
 METATILE_ORTHOPHOTO_SIZE = METATILE_SIZE_M + 2 * HALO_M
 METATILE_SCHEMA = "fireviewer.simple-measured-source-metatile.v1"
 WMS_REQUESTS_PER_SECOND = 36.0
+HTTP_CONNECT_TIMEOUT_SECONDS = 20.0
+HTTP_READ_TIMEOUT_SECONDS = 30.0
+HTTP_TOTAL_TIMEOUT_SECONDS = 75.0
+HTTP_MAX_RESPONSE_BYTES = 256 * 1024 * 1024
+HTTP_TILE_ATTEMPTS = 3
+HTTP_METATILE_ATTEMPTS = 1
+METATILE_LOCK_TIMEOUT_SECONDS = 240.0
 NODATA = -9999.0
 WMS_ENDPOINT = "https://data.geopf.fr/wms-r"
 MNT_LAYER = "IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93"
@@ -66,6 +74,7 @@ _METATILE_LOCKS_GUARD = threading.Lock()
 _METATILE_LOCKS: dict[str, threading.Lock] = {}
 _VALIDATED_METATILES: dict[str, tuple[tuple[int, int], ...]] = {}
 _FAILED_METATILES: dict[str, str] = {}
+_FAILED_METATILES_GUARD = threading.Lock()
 _ZONE_CONTEXT_CACHE_LOCK = threading.Lock()
 _ZONE_CONTEXT_CACHE: dict[
     str,
@@ -75,6 +84,10 @@ _ZONE_CONTEXT_CACHE: dict[
 
 class SimpleMeasuredTileSourceError(RuntimeError):
     """A remote response or local context cannot form a locked source bundle."""
+
+
+class _MetatileLockTimeout(SimpleMeasuredTileSourceError):
+    """A tile must fall back while another metatile owner is stalled."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +208,36 @@ def wms_url(layer: str, bounds: Sequence[int], size: int, image_format: str) -> 
     return f"{WMS_ENDPOINT}?{urlencode(parameters)}"
 
 
+def _is_metatile_request(url: str) -> bool:
+    try:
+        width = int(parse_qs(urlparse(url).query).get("WIDTH", ["0"])[0])
+    except (TypeError, ValueError):
+        return False
+    return width > ELEVATION_SIZE
+
+
+def _read_http_response(response: Any, url: str, *, deadline: float) -> bytes:
+    chunks: list[bytes] = []
+    byte_count = 0
+    for chunk in response.iter_content(chunk_size=1024 * 1024):
+        if time.monotonic() > deadline:
+            raise SimpleMeasuredTileSourceError(
+                f"WMS response exceeded the wall-clock deadline: {url}"
+            )
+        if not chunk:
+            continue
+        byte_count += len(chunk)
+        if byte_count > HTTP_MAX_RESPONSE_BYTES:
+            raise SimpleMeasuredTileSourceError(
+                f"WMS response exceeded the byte limit: {url}"
+            )
+        chunks.append(bytes(chunk))
+    payload = b"".join(chunks)
+    if not payload:
+        raise SimpleMeasuredTileSourceError(f"Empty WMS response: {url}")
+    return payload
+
+
 def _default_http_get(url: str) -> bytes:
     session = getattr(_HTTP_LOCAL, "session", None)
     if session is None:
@@ -205,7 +248,10 @@ def _default_http_get(url: str) -> bytes:
         _HTTP_LOCAL.session = session
     global _WMS_NEXT_REQUEST_AT
     last_error: Exception | None = None
-    for attempt in range(4):
+    attempt_count = (
+        HTTP_METATILE_ATTEMPTS if _is_metatile_request(url) else HTTP_TILE_ATTEMPTS
+    )
+    for attempt in range(attempt_count):
         with _WMS_RATE_LOCK:
             now = time.monotonic()
             request_at = max(now, _WMS_NEXT_REQUEST_AT)
@@ -213,20 +259,27 @@ def _default_http_get(url: str) -> bytes:
         delay = request_at - time.monotonic()
         if delay > 0:
             time.sleep(delay)
+        response: Any | None = None
         try:
-            response = session.get(url, timeout=(20, 180))
+            deadline = time.monotonic() + HTTP_TOTAL_TIMEOUT_SECONDS
+            response = session.get(
+                url,
+                stream=True,
+                timeout=(HTTP_CONNECT_TIMEOUT_SECONDS, HTTP_READ_TIMEOUT_SECONDS),
+            )
             if response.status_code == 429 or 500 <= response.status_code < 600:
                 response.raise_for_status()
             elif response.status_code >= 400:
                 response.raise_for_status()
-            if not response.content:
-                raise SimpleMeasuredTileSourceError(f"Empty WMS response: {url}")
-            return bytes(response.content)
+            return _read_http_response(response, url, deadline=deadline)
         except (requests.RequestException, SimpleMeasuredTileSourceError) as error:
             last_error = error
-            if attempt == 3:
+            if attempt == attempt_count - 1:
                 break
             time.sleep(0.5 * (2**attempt))
+        finally:
+            if response is not None:
+                response.close()
     raise SimpleMeasuredTileSourceError(f"WMS request failed: {url}") from last_error
 
 
@@ -344,6 +397,16 @@ def _metatile_lock(path: Path) -> threading.Lock:
         return _METATILE_LOCKS.setdefault(key, threading.Lock())
 
 
+@contextmanager
+def _bounded_metatile_lock(lock: threading.Lock, destination: Path) -> Any:
+    if not lock.acquire(timeout=METATILE_LOCK_TIMEOUT_SECONDS):
+        raise _MetatileLockTimeout(f"Metatile lock timed out for {destination.name}")
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def _metatile_signature(
     root: Path, manifest: Mapping[str, Any]
 ) -> tuple[tuple[int, int], ...]:
@@ -435,8 +498,9 @@ def _prepare_metatile(
     origin = _metatile_origin(tile_origin)
     destination = cache_root / _metatile_id(origin)
     lock = _metatile_lock(destination)
-    with lock:
-        disabled_reason = _FAILED_METATILES.get(str(destination.resolve()))
+    with _bounded_metatile_lock(lock, destination):
+        with _FAILED_METATILES_GUARD:
+            disabled_reason = _FAILED_METATILES.get(str(destination.resolve()))
         if disabled_reason is not None:
             raise SimpleMeasuredTileSourceError(
                 f"Metatile disabled after an earlier failure: {disabled_reason}"
@@ -1327,8 +1391,9 @@ def prepare_sources(
             )
         except SimpleMeasuredTileSourceError as error:
             failed_root = cache_root / _metatile_id(_metatile_origin(origin))
-            with _metatile_lock(failed_root):
-                _FAILED_METATILES[str(failed_root.resolve())] = str(error)
+            if not isinstance(error, _MetatileLockTimeout):
+                with _FAILED_METATILES_GUARD:
+                    _FAILED_METATILES[str(failed_root.resolve())] = str(error)
             _emit_progress(
                 progress_callback,
                 "metatile_fallback",

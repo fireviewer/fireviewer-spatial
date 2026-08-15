@@ -82,6 +82,9 @@ DATASET_PUBLICATION_NAME = "dataset-publication.json"
 FIXED_ASSET_REQUEST_NAME = "fixed-asset-placements.v1.json"
 CAPTURE_COUNT = 0
 PARALLEL_HEARTBEAT_SECONDS = 15.0
+DEFAULT_TILE_STALL_TIMEOUT_SECONDS = 480
+CHECKPOINT_PUBLISH_TIMEOUT_SECONDS = 180.0
+CHECKPOINT_COPY_USES_SUBPROCESS = os.name != "nt"
 PROTOTYPE_BUNDLE_NAMESPACE_SCHEMA = "fireviewer.prototype-bundle-namespace.v1"
 PROTOTYPE_BUNDLE_COLLECTION_NAME = "prototype-bundles"
 TILE_CHECKPOINT_SCHEMA = "fireviewer.simple-measured-tile-checkpoint.v1"
@@ -106,6 +109,7 @@ class ProductionConfig:
     max_tiles: int = 900
     tile_workers: int = 6
     source_workers: int = 12
+    tile_stall_timeout_seconds: int = DEFAULT_TILE_STALL_TIMEOUT_SECONDS
     blender: Path = Path("/opt/blender/blender")
     dataset_id: str | None = None
     scratch_root: Path | None = None
@@ -140,6 +144,12 @@ class ProductionConfig:
             max_tiles=int(os.environ.get("FIREVIEWER_MAX_TILES", "900")),
             tile_workers=int(os.environ.get("FIREVIEWER_TILE_WORKERS", "6")),
             source_workers=int(os.environ.get("FIREVIEWER_SOURCE_WORKERS", "12")),
+            tile_stall_timeout_seconds=int(
+                os.environ.get(
+                    "FIREVIEWER_TILE_STALL_TIMEOUT_SECONDS",
+                    str(DEFAULT_TILE_STALL_TIMEOUT_SECONDS),
+                )
+            ),
             blender=Path(os.environ.get("FIREVIEWER_BLENDER", "/opt/blender/blender")),
             dataset_id=(os.environ.get("FIREVIEWER_HF_DATASET_ID", "").strip() or None),
             scratch_root=(
@@ -261,17 +271,54 @@ def _validate_tile_checkpoint_record(
     return receipt
 
 
+def _copy_checkpoint_file_with_timeout(
+    source: Path,
+    destination: Path,
+    *,
+    timeout_seconds: float,
+) -> None:
+    """Copy one local checkpoint artifact without an unbounded volume write."""
+
+    destination.unlink(missing_ok=True)
+    try:
+        if CHECKPOINT_COPY_USES_SUBPROCESS:
+            subprocess.run(
+                ["/bin/cp", "--", str(source), str(destination)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=timeout_seconds,
+            )
+        else:
+            shutil.copyfile(source, destination)
+    except subprocess.TimeoutExpired as error:
+        destination.unlink(missing_ok=True)
+        raise SimpleProductionError(
+            "Publication du checkpoint expirée sur le volume persistant"
+        ) from error
+    except (OSError, subprocess.CalledProcessError) as error:
+        destination.unlink(missing_ok=True)
+        raise SimpleProductionError(
+            "Publication du checkpoint impossible sur le volume persistant"
+        ) from error
+    if not destination.is_file() or destination.stat().st_size != source.stat().st_size:
+        destination.unlink(missing_ok=True)
+        raise SimpleProductionError("Copie du checkpoint incomplète")
+
+
 def _write_tile_checkpoint(
     package_root: Path,
     job_root: Path,
     *,
     tile_id: str,
+    local_staging_root: Path | None = None,
+    publish_lock: threading.Lock | None = None,
+    publish_timeout_seconds: float = CHECKPOINT_PUBLISH_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Stream one already-validated local package into an atomic checkpoint."""
+    """Build locally, then atomically publish one compressed tile checkpoint."""
 
     package = package_root.resolve(strict=True)
     archive_path, receipt_path = _tile_checkpoint_paths(job_root, tile_id)
-    archive_path.parent.mkdir(parents=True, exist_ok=True)
     package_receipt_path = package / "simple-measured-tile-receipt.v1.json"
     if not package_receipt_path.is_file():
         raise SimpleProductionError("Reçu de tuile absent avant checkpoint")
@@ -280,7 +327,10 @@ def _write_tile_checkpoint(
         "byte_count": package_receipt_path.stat().st_size,
         "sha256": _sha256_file(package_receipt_path),
     }
-    if archive_path.exists() or receipt_path.exists():
+
+    def existing_checkpoint() -> dict[str, Any] | None:
+        if not (archive_path.exists() or receipt_path.exists()):
+            return None
         if not archive_path.is_file() or not receipt_path.is_file():
             raise SimpleProductionError("Checkpoint de tuile partiellement publié")
         existing = _validate_tile_checkpoint_record(
@@ -295,6 +345,10 @@ def _write_tile_checkpoint(
             )
         return existing
 
+    existing = existing_checkpoint()
+    if existing is not None:
+        return existing
+
     files: list[Path] = []
     for candidate in sorted(
         package.rglob("*"), key=lambda path: path.relative_to(package).as_posix()
@@ -305,14 +359,20 @@ def _write_tile_checkpoint(
             files.append(candidate)
     if not files:
         raise SimpleProductionError("Package de tuile vide avant checkpoint")
-    temporary_archive = archive_path.with_name(f".{archive_path.name}.part")
-    temporary_receipt = receipt_path.with_name(f".{receipt_path.name}.part")
-    temporary_archive.unlink(missing_ok=True)
-    temporary_receipt.unlink(missing_ok=True)
+    staging_root = (
+        package.parent / ".checkpoint-staging"
+        if local_staging_root is None
+        else local_staging_root
+    )
+    staging_root.mkdir(parents=True, exist_ok=True)
+    local_archive = staging_root / f".{tile_id}.zip.part"
+    local_receipt = staging_root / f".{tile_id}.json.part"
+    local_archive.unlink(missing_ok=True)
+    local_receipt.unlink(missing_ok=True)
     uncompressed_bytes = 0
     try:
         with zipfile.ZipFile(
-            temporary_archive,
+            local_archive,
             "w",
             compression=zipfile.ZIP_DEFLATED,
             compresslevel=1,
@@ -331,8 +391,8 @@ def _write_tile_checkpoint(
                 uncompressed_bytes += source.stat().st_size
         archive_record = {
             "file": archive_path.name,
-            "byte_count": temporary_archive.stat().st_size,
-            "sha256": _sha256_file(temporary_archive),
+            "byte_count": local_archive.stat().st_size,
+            "sha256": _sha256_file(local_archive),
             "compression": "zip_deflate_level_1",
         }
         receipt: dict[str, Any] = {
@@ -347,14 +407,43 @@ def _write_tile_checkpoint(
         receipt["checkpoint_sha256"] = hashlib.sha256(
             _canonical_bytes(receipt)
         ).hexdigest()
-        temporary_receipt.write_bytes(_canonical_bytes(receipt) + b"\n")
-        os.replace(temporary_archive, archive_path)
-        os.replace(temporary_receipt, receipt_path)
-        return receipt
-    except Exception:
-        temporary_archive.unlink(missing_ok=True)
-        temporary_receipt.unlink(missing_ok=True)
-        raise
+        local_receipt.write_bytes(_canonical_bytes(receipt) + b"\n")
+
+        def publish() -> dict[str, Any]:
+            existing = existing_checkpoint()
+            if existing is not None:
+                return existing
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_archive = archive_path.with_name(f".{archive_path.name}.part")
+            temporary_receipt = receipt_path.with_name(f".{receipt_path.name}.part")
+            temporary_archive.unlink(missing_ok=True)
+            temporary_receipt.unlink(missing_ok=True)
+            try:
+                _copy_checkpoint_file_with_timeout(
+                    local_archive,
+                    temporary_archive,
+                    timeout_seconds=publish_timeout_seconds,
+                )
+                _copy_checkpoint_file_with_timeout(
+                    local_receipt,
+                    temporary_receipt,
+                    timeout_seconds=publish_timeout_seconds,
+                )
+                os.replace(temporary_archive, archive_path)
+                os.replace(temporary_receipt, receipt_path)
+                return receipt
+            except Exception:
+                temporary_archive.unlink(missing_ok=True)
+                temporary_receipt.unlink(missing_ok=True)
+                raise
+
+        if publish_lock is None:
+            return publish()
+        with publish_lock:
+            return publish()
+    finally:
+        local_archive.unlink(missing_ok=True)
+        local_receipt.unlink(missing_ok=True)
 
 
 def _restore_tile_checkpoint(
@@ -594,9 +683,17 @@ def _load_contract() -> dict[str, Any]:
         or payload.get("production", {}).get("default_parallel_source_acquisitions")
         != 12
         or payload.get("production", {}).get("max_parallel_source_acquisitions") != 16
+        or payload.get("production", {}).get("tile_inactivity_timeout_seconds")
+        != DEFAULT_TILE_STALL_TIMEOUT_SECONDS
         or payload.get("production", {}).get("source_metatile_tiles") != 4
         or payload.get("production", {}).get("resume")
         != "restore_validated_compressed_tile_checkpoints_and_remove_owned_staging"
+        or payload.get("production", {}).get("checkpoint_build")
+        != "compress_and_hash_on_worker_local_ssd_then_single_file_copy_to_persistent_volume"
+        or payload.get("production", {}).get("checkpoint_publish")
+        != "serialized_atomic_copy_with_180_second_timeout"
+        or payload.get("production", {}).get("wms_deadlines")
+        != "one_bounded_metatile_attempt_then_three_bounded_individual_tile_attempts"
         or payload.get("output", {}).get("entry_stage") != ENTRY_STAGE
         or payload.get("output", {}).get("portable_zip")
         != "built_on_worker_local_disk_then_uploaded_once"
@@ -818,6 +915,7 @@ def validate_production_config(config: ProductionConfig) -> dict[str, Any]:
         or config.max_tiles < 1
         or not 1 <= config.tile_workers <= 8
         or not config.tile_workers <= config.source_workers <= 16
+        or not 120 <= config.tile_stall_timeout_seconds <= 3_600
     ):
         raise SimpleProductionError("Limites du pod invalides")
     portable = _absolute(config.portable_root, "racine portable", exists=True)
@@ -1111,8 +1209,11 @@ def _bounded_parallel_tile_results(
     process_tile: Callable[[int, TilePlan], str],
     stop_event: threading.Event,
     heartbeat_seconds: float = PARALLEL_HEARTBEAT_SECONDS,
+    last_activity: Callable[[int, TilePlan], float] | None = None,
+    stall_timeout_seconds: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> Iterator[str | None]:
-    """Run a rolling bounded queue; yield ``None`` when only a heartbeat is due."""
+    """Run a rolling bounded queue and fail closed on an inactive tile."""
 
     if not 2 <= worker_count <= 16 or worker_count > len(pending_tiles):
         raise SimpleProductionError("Configuration de production parallèle invalide")
@@ -1141,6 +1242,25 @@ def _bounded_parallel_tile_results(
                 return_when=FIRST_COMPLETED,
             )
             if not done:
+                if last_activity is not None and stall_timeout_seconds is not None:
+                    now = monotonic()
+                    stalled = [
+                        (tile_index, tile, now - last_activity(tile_index, tile))
+                        for tile_index, tile in futures.values()
+                        if now - last_activity(tile_index, tile)
+                        >= stall_timeout_seconds
+                    ]
+                    if stalled:
+                        tile_index, tile, inactive_seconds = max(
+                            stalled, key=lambda item: item[2]
+                        )
+                        stop_event.set()
+                        for future in futures:
+                            future.cancel()
+                        raise SimpleProductionError(
+                            f"Tuile {tile.tile_id} inactive depuis "
+                            f"{int(inactive_seconds)} s; reprise requise"
+                        )
                 yield None
                 continue
             failed = next(
@@ -2258,6 +2378,18 @@ class ProductionEngine:
             _sync_prototype_bundle(checkpoint_bundle, shared_bundle)
         production_slots = threading.BoundedSemaphore(self.config.tile_workers)
         prototype_checkpoint_lock = threading.Lock()
+        checkpoint_publish_lock = threading.Lock()
+        checkpoint_staging_root = package_storage_root / ".checkpoint-staging"
+
+        def write_checkpoint(package_root: Path, tile_id: str) -> dict[str, Any]:
+            return _write_tile_checkpoint(
+                package_root,
+                job_root,
+                tile_id=tile_id,
+                local_staging_root=checkpoint_staging_root,
+                publish_lock=checkpoint_publish_lock,
+            )
+
         prototype_checkpoint_files: dict[
             str,
             tuple[
@@ -2294,8 +2426,17 @@ class ProductionEngine:
             "tile_staging_validated": (0.97, "Package de tuile rehashé"),
             "tile_published": (1.00, "Package de tuile publié"),
             "tile_reused": (1.00, "Package existant revalidé et réutilisé"),
+            "tile_checkpoint_started": (
+                0.98,
+                "Compression du checkpoint sur SSD local",
+            ),
+            "tile_checkpoint_published": (
+                0.99,
+                "Checkpoint publié sur le volume persistant",
+            ),
         }
         tile_progress = [0.0] * total
+        tile_last_activity = [time.monotonic()] * total
         tile_progress_lock = threading.Lock()
         completed_tiles: set[int] = set()
         validated_checkpoints: dict[str, dict[str, Any]] = {}
@@ -2319,6 +2460,9 @@ class ProductionEngine:
             )
 
         def process_tile(tile_index: int, tile: TilePlan) -> str:
+            with tile_progress_lock:
+                tile_last_activity[tile_index] = time.monotonic()
+
             def tile_report(
                 phase: str,
                 details: Mapping[str, Any],
@@ -2355,6 +2499,7 @@ class ProductionEngine:
                     message += " — " + ", ".join(suffixes)
                 with tile_progress_lock:
                     tile_progress[tile_index] = max(tile_progress[tile_index], local)
+                    tile_last_activity[tile_index] = time.monotonic()
                     fraction = 0.08 + 0.82 * (sum(tile_progress) / total)
                     completed_count = len(completed_tiles)
                 report(
@@ -2372,11 +2517,19 @@ class ProductionEngine:
             package_root = package_storage_root / "packages" / tile.tile_id
             if package_root.exists():
                 validate_published_tile(tile, package_root)
-                checkpoint = _write_tile_checkpoint(
-                    package_root, job_root, tile_id=tile.tile_id
+                tile_report(
+                    "tile_checkpoint_started",
+                    {"tile_id": tile.tile_id},
+                    table=production_phase,
                 )
+                checkpoint = write_checkpoint(package_root, tile.tile_id)
                 with tile_progress_lock:
                     validated_checkpoints[tile.tile_id] = checkpoint
+                tile_report(
+                    "tile_checkpoint_published",
+                    {"tile_id": tile.tile_id},
+                    table=production_phase,
+                )
                 tile_report(
                     "tile_reused", {"tile_id": tile.tile_id}, table=production_phase
                 )
@@ -2425,20 +2578,26 @@ class ProductionEngine:
                         raise SimpleProductionError(
                             "Le producteur a publié la tuile hors du SSD local"
                         )
-                    if scratch_job is not None:
-                        with prototype_checkpoint_lock:
-                            _sync_prototype_bundle(
-                                shared_bundle,
-                                checkpoint_bundle,
-                                validated_files=prototype_checkpoint_files,
-                            )
-                    checkpoint = _write_tile_checkpoint(
-                        package.output_root,
-                        job_root,
-                        tile_id=tile.tile_id,
-                    )
-                    with tile_progress_lock:
-                        validated_checkpoints[tile.tile_id] = checkpoint
+                if scratch_job is not None:
+                    with prototype_checkpoint_lock:
+                        _sync_prototype_bundle(
+                            shared_bundle,
+                            checkpoint_bundle,
+                            validated_files=prototype_checkpoint_files,
+                        )
+                tile_report(
+                    "tile_checkpoint_started",
+                    {"tile_id": tile.tile_id},
+                    table=production_phase,
+                )
+                checkpoint = write_checkpoint(package.output_root, tile.tile_id)
+                with tile_progress_lock:
+                    validated_checkpoints[tile.tile_id] = checkpoint
+                tile_report(
+                    "tile_checkpoint_published",
+                    {"tile_id": tile.tile_id},
+                    table=production_phase,
+                )
                 _copy_provenance(sources, job_root / "provenance" / tile.tile_id)
                 _remove_sources(source_storage_root, sources.root)
             with tile_progress_lock:
@@ -2493,9 +2652,7 @@ class ProductionEngine:
                 if legacy_package.is_dir() and legacy_package != package_root:
                     try:
                         validate_published_tile(tile, legacy_package)
-                        checkpoint = _write_tile_checkpoint(
-                            legacy_package, job_root, tile_id=tile.tile_id
-                        )
+                        checkpoint = write_checkpoint(legacy_package, tile.tile_id)
                         _restore_tile_checkpoint(
                             job_root,
                             package_root,
@@ -2515,9 +2672,7 @@ class ProductionEngine:
                         checkpoint = None
                 elif package_root.is_dir():
                     validate_published_tile(tile, package_root)
-                    checkpoint = _write_tile_checkpoint(
-                        package_root, job_root, tile_id=tile.tile_id
-                    )
+                    checkpoint = write_checkpoint(package_root, tile.tile_id)
             if checkpoint is None:
                 pending_tiles.append((tile_index, tile))
                 continue
@@ -2560,6 +2715,8 @@ class ProductionEngine:
                 worker_count=worker_count,
                 process_tile=process_tile,
                 stop_event=stop_tiles,
+                last_activity=lambda tile_index, _tile: tile_last_activity[tile_index],
+                stall_timeout_seconds=self.config.tile_stall_timeout_seconds,
             ):
                 with tile_progress_lock:
                     done_count = len(completed_tiles)
