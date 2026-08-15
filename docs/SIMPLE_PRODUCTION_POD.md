@@ -45,7 +45,7 @@ validés. Elle ne télécharge aucune donnée géographique pendant sa construct
 
 Le job utilise :
 
-- l'image candidate `pilot-v1-20260815-r34-lightning`, qui embarque
+- l'image candidate `pilot-v1-20260815-r35-lightning`, qui embarque
   `fireviewer.mns-mnt-placement-algorithm.v2` ;
 - `Machine.CPU_X_8`, non interruptible, avec une durée maximale bornée ;
 - `/lightning-work/fireviewer-map-production` pour les checkpoints compressés
@@ -64,6 +64,10 @@ Les téléchargements raster et l'attente d'une métatuile sont également born�
 une tuile sans activité pendant 8 minutes fait échouer le job au lieu de le
 laisser facturer indéfiniment. Une reprise sur le même volume re-hashe et
 restaure uniquement les checkpoints déjà publiés.
+Les rares cellules IGN `-9999`, masquées ou non finies sont réparées de manière
+déterministe depuis l'échantillon mesuré le plus proche. Le nombre de cellules
+réparées et la distance maximale sont conservés dans le reçu de source ; une
+tuile n'arrête donc plus toute la zone pour un trou raster ponctuel.
 Sans volume persistant configuré, les checkpoints restent limités à la durée du
 Batch Job ; la requête et la progression restent néanmoins persistées côté
 backend. Seuls le ZIP final et ses petits reçus sont publiés sur Hugging Face.
@@ -75,7 +79,7 @@ FV_MAP_PRODUCTION_PROVIDER=lightning
 FV_MAP_LIGHTNING_USER_ID=<identifiant programme Lightning>
 FV_MAP_LIGHTNING_API_KEY=<clé programme Lightning>
 FV_MAP_LIGHTNING_TEAMSPACE=<teamspace>
-FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260815-r34-lightning
+FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260815-r35-lightning
 FV_MAP_LIGHTNING_MAX_RUNTIME_SECONDS=86400
 FV_MAP_CALLBACK_BASE_URL=https://fireviewer-api.vercel.app
 FV_MAP_CALLBACK_SIGNING_SECRET=<secret serveur aléatoire>

@@ -24,6 +24,7 @@ import pyogrio.raw
 import rasterio
 import requests
 from affine import Affine
+from elevation_nodata import ElevationNodataError, repair_elevation_samples
 from fixed_asset_placement import (
     FixedAssetPlacementError,
     validate_projected_placements,
@@ -283,9 +284,13 @@ def _default_http_get(url: str) -> bytes:
     raise SimpleMeasuredTileSourceError(f"WMS request failed: {url}") from last_error
 
 
-def _elevation_array(
-    payload: bytes, label: str, *, expected_size: int = ELEVATION_SIZE
-) -> np.ndarray:
+def _decoded_elevation_array(
+    payload: bytes,
+    label: str,
+    *,
+    expected_size: int = ELEVATION_SIZE,
+    repair_nodata: bool,
+) -> tuple[np.ndarray, dict[str, Any]]:
     try:
         # IGN WMS responses may omit an internal affine.  The requested BBOX,
         # dimensions and CRS are canonical and are written into the sealed
@@ -305,12 +310,35 @@ def _elevation_array(
                     )
                 values = np.asarray(dataset.read(1), dtype="float32")
                 mask = dataset.read_masks(1)
+                declared_nodata = dataset.nodata
     except (OSError, rasterio.errors.RasterioError) as error:
         raise SimpleMeasuredTileSourceError(
             f"Invalid {label} GeoTIFF response"
         ) from error
-    if not np.isfinite(values).all() or not np.all(mask == 255):
+    try:
+        repaired, diagnostics = repair_elevation_samples(
+            values,
+            mask=mask,
+            nodata_values=(declared_nodata, NODATA),
+        )
+    except ElevationNodataError as error:
+        raise SimpleMeasuredTileSourceError(
+            f"{label} response contains no usable elevation"
+        ) from error
+    if diagnostics["applied"] and not repair_nodata:
         raise SimpleMeasuredTileSourceError(f"{label} response contains nodata")
+    return repaired, diagnostics
+
+
+def _elevation_array(
+    payload: bytes, label: str, *, expected_size: int = ELEVATION_SIZE
+) -> np.ndarray:
+    values, _diagnostics = _decoded_elevation_array(
+        payload,
+        label,
+        expected_size=expected_size,
+        repair_nodata=False,
+    )
     return values
 
 
@@ -624,7 +652,7 @@ def _slice_metatile(
     ortho_column = tile_origin[0] - HALO_M - metatile_bounds[0]
     ortho_row = metatile_bounds[3] - (tile_origin[1] + TILE_SIZE_M + HALO_M)
 
-    def elevation_window(role: str) -> np.ndarray:
+    def elevation_window(role: str) -> tuple[np.ndarray, dict[str, Any]]:
         path = root / manifest["sources"][role]["file"]
         try:
             with warnings.catch_warnings():
@@ -647,22 +675,28 @@ def _slice_metatile(
                     )
                     values = np.asarray(dataset.read(1, window=window), dtype="float32")
                     mask = dataset.read_masks(1, window=window)
+                    declared_nodata = dataset.nodata
         except (OSError, rasterio.errors.RasterioError) as error:
             raise SimpleMeasuredTileSourceError(
                 f"Invalid {role} metatile window"
             ) from error
-        if (
-            values.shape != (ELEVATION_SIZE, ELEVATION_SIZE)
-            or not np.isfinite(values).all()
-            or not np.all(mask == 255)
-        ):
+        if values.shape != (ELEVATION_SIZE, ELEVATION_SIZE):
             raise SimpleMeasuredTileSourceError(
-                f"{role} metatile window contains nodata"
+                f"{role} metatile window dimensions differ"
             )
-        return values
+        try:
+            return repair_elevation_samples(
+                values,
+                mask=mask,
+                nodata_values=(declared_nodata, NODATA),
+            )
+        except ElevationNodataError as error:
+            raise SimpleMeasuredTileSourceError(
+                f"{role} metatile window contains no usable elevation"
+            ) from error
 
-    mnt = elevation_window("mnt")
-    mns = elevation_window("mns")
+    mnt, mnt_repair = elevation_window("mnt")
+    mns, mns_repair = elevation_window("mns")
     ortho_path = root / manifest["sources"]["orthophoto"]["file"]
     try:
         with Image.open(ortho_path) as image:
@@ -705,6 +739,8 @@ def _slice_metatile(
                 ],
             },
         }
+        if is_elevation:
+            records[role]["nodata_repair"] = mnt_repair if role == "mnt" else mns_repair
     return mnt, mns, ortho, records
 
 
@@ -737,19 +773,23 @@ def _download_tile_window(
             byte_count=len(responses[name]),
             response_sha256=_sha256_bytes(responses[name]),
         )
-    return (
-        _elevation_array(responses["mnt"], "MNT"),
-        _elevation_array(responses["mns"], "MNS"),
-        _orthophoto_image(responses["orthophoto"]),
-        {
-            role: {
-                "request_url": urls[role],
-                "response_byte_count": len(responses[role]),
-                "response_sha256": _sha256_bytes(responses[role]),
-            }
-            for role in ("mnt", "mns", "orthophoto")
-        },
+    mnt, mnt_repair = _decoded_elevation_array(
+        responses["mnt"], "MNT", repair_nodata=True
     )
+    mns, mns_repair = _decoded_elevation_array(
+        responses["mns"], "MNS", repair_nodata=True
+    )
+    records = {
+        role: {
+            "request_url": urls[role],
+            "response_byte_count": len(responses[role]),
+            "response_sha256": _sha256_bytes(responses[role]),
+        }
+        for role in ("mnt", "mns", "orthophoto")
+    }
+    records["mnt"]["nodata_repair"] = mnt_repair
+    records["mns"]["nodata_repair"] = mns_repair
+    return mnt, mns, _orthophoto_image(responses["orthophoto"]), records
 
 
 def _read_layer(

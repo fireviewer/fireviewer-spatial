@@ -31,6 +31,7 @@
     ],
     "row_order": "north_to_south",
     "mnt_mns": "coregistered_single_band_geotiff",
+    "sparse_nodata_repair": "nearest_measured_sample_euclidean_deterministic_and_receipted",
     "orthophoto": "RGB8_PNG",
     "placement_context": "required_EPSG2154_vector_JSON_with_optional_hash_locked_fixed_asset_placements",
     "source_receipts": "required_and_rehashed"

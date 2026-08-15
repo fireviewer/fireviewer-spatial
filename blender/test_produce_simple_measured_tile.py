@@ -694,6 +694,30 @@ def test_mns_nodata_falls_back_to_explicit_ground_only_tile(tile_fixture) -> Non
     assert package.ground_color.is_file()
 
 
+def test_mnt_nodata_is_repaired_without_discarding_measured_mns(tile_fixture) -> None:
+    root, sources, asset_root, library = tile_fixture
+    with rasterio.open(sources["mnt"]) as dataset:
+        mnt = dataset.read(1)
+        profile = dataset.profile
+    mnt[0, 0] = profile["nodata"]
+    with rasterio.open(sources["mnt"], "w", **profile) as dataset:
+        dataset.write(mnt, 1)
+    elevation = json.loads(sources["elevation_receipt"].read_text(encoding="utf-8"))
+    elevation["mnt"]["byte_count"] = sources["mnt"].stat().st_size
+    elevation["mnt"]["sha256"] = _hash_file(sources["mnt"])
+    _write_json(sources["elevation_receipt"], elevation)
+
+    package = _produce(root, sources, asset_root, library, "tile-mnt-nodata-repair")
+    receipt = json.loads(package.receipt.read_text(encoding="utf-8"))
+    reduction = receipt["request"]["sources"]["elevation_reduction"]
+
+    assert reduction["mnt_nodata_repair"]["applied"] is True
+    assert reduction["mnt_nodata_repair"]["invalid_sample_count"] == 1
+    assert reduction["mns_fallback_applied"] is False
+    assert receipt["placement"]["source"]["mode"] == "measured_mns_minus_mnt"
+    assert package.terrain.is_file()
+
+
 def test_rejects_c_drive_output_before_reading_sources(tile_fixture) -> None:
     root, sources, asset_root, library = tile_fixture
     with pytest.raises(simple.SimpleMeasuredTileError, match="must stay on D"):

@@ -39,6 +39,7 @@ from build_measured_scene_usd import (
     validated_file_sha256,
     validate_measured_scene_package,
 )
+from elevation_nodata import ElevationNodataError, repair_elevation_samples
 from fixed_asset_placement import (
     FixedAssetPlacementError,
     validate_projected_placements,
@@ -200,6 +201,9 @@ def _load_contract() -> dict[str, Any]:
             "orthophoto_shape": [SOURCE_SIZE, SOURCE_SIZE],
             "row_order": "north_to_south",
             "mnt_mns": "coregistered_single_band_geotiff",
+            "sparse_nodata_repair": (
+                "nearest_measured_sample_euclidean_deterministic_and_receipted"
+            ),
             "orthophoto": "RGB8_PNG",
             "placement_context": (
                 "required_EPSG2154_vector_JSON_with_optional_hash_locked_"
@@ -401,7 +405,12 @@ def _read_elevation_pair(
     )
     declared_nodata = elevation_manifest.get("grid", {}).get("nodata")
 
-    def read_raster(label: str, path: Path) -> tuple[np.ndarray, tuple[Any, ...]]:
+    def read_raster(
+        label: str,
+        path: Path,
+        *,
+        repair_nodata: bool,
+    ) -> tuple[np.ndarray, tuple[Any, ...], dict[str, Any]]:
         with rasterio.open(path) as dataset:
             signature = (
                 dataset.width,
@@ -423,23 +432,29 @@ def _read_elevation_pair(
                     f"{label} raster grid differs from its receipt"
                 )
             values = dataset.read(1)
-            if (
-                not np.all(dataset.read_masks(1) == 255)
-                or not np.isfinite(values).all()
-            ):
+            mask = dataset.read_masks(1)
+            try:
+                repaired, diagnostics = repair_elevation_samples(
+                    values,
+                    mask=mask,
+                    nodata_values=(dataset.nodata, declared_nodata),
+                )
+            except ElevationNodataError as error:
+                raise SimpleMeasuredTileError(
+                    f"{label} contains no usable elevation samples"
+                ) from error
+            if diagnostics["applied"] and not repair_nodata:
                 raise SimpleMeasuredTileError(
                     f"{label} contains nodata or non-finite samples"
                 )
-            if dataset.nodata is not None and np.any(values == dataset.nodata):
-                raise SimpleMeasuredTileError(
-                    f"{label} contains declared nodata samples"
-                )
-            return np.asarray(values, dtype="float64"), signature
+            return np.asarray(repaired, dtype="float64"), signature, diagnostics
 
-    mnt, mnt_signature = read_raster("MNT", mnt_path)
+    mnt, mnt_signature, mnt_repair = read_raster("MNT", mnt_path, repair_nodata=True)
     mns_fallback_reason: str | None = None
     try:
-        mns, mns_signature = read_raster("MNS", mns_path)
+        mns, mns_signature, _mns_repair = read_raster(
+            "MNS", mns_path, repair_nodata=False
+        )
         if mnt_signature != mns_signature:
             raise SimpleMeasuredTileError("MNT and MNS are not exactly co-registered")
     except (
@@ -456,6 +471,7 @@ def _read_elevation_pair(
     )
     diagnostics["mns_fallback_applied"] = mns_fallback_reason is not None
     diagnostics["mns_fallback_policy"] = "ground_only_on_mns_source_validation_failure"
+    diagnostics["mnt_nodata_repair"] = mnt_repair
     if mns_fallback_reason is not None:
         diagnostics["mns_fallback_reason"] = mns_fallback_reason
     return canonical_mnt, canonical_mns, diagnostics
@@ -756,6 +772,7 @@ def _pipeline_file_hashes() -> dict[str, str]:
         "orthophoto_ground_texture": BLENDER_ROOT / "orthophoto_ground_texture.py",
         "orthophoto_ground_texture_contract": BLENDER_ROOT
         / "orthophoto_ground_texture_contract.v1.json",
+        "elevation_nodata": BLENDER_ROOT / "elevation_nodata.py",
         "placement_inventory": BLENDER_ROOT / "mns_mnt_placement_inventory.py",
         "placement_contract": BLENDER_ROOT / "mns_mnt_placement_contract.v1.json",
         "fixed_terrain_usd": OMNIVERSE_ROOT / "fixed_terrain_usd.py",

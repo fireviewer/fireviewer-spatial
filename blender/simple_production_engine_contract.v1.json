@@ -23,6 +23,7 @@
     "checkpoint_build": "compress_and_hash_on_worker_local_ssd_then_single_file_copy_to_persistent_volume",
     "checkpoint_publish": "serialized_atomic_copy_with_180_second_timeout",
     "wms_deadlines": "one_bounded_metatile_attempt_then_three_bounded_individual_tile_attempts",
+    "sparse_elevation_nodata": "nearest_measured_sample_deterministic_with_receipt_diagnostics",
     "generator": "simple_measured_tile_pilot_identical",
     "terrain": "FVTG fixed grid",
     "ground": "orthophoto RGB baked 1 m",

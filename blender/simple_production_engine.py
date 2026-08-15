@@ -836,6 +836,7 @@ def validate_embedded_runtime(config: ProductionConfig) -> dict[str, Any]:
         Path(__file__),
         Path(__file__).with_name("prepare_simple_measured_zone_context.py"),
         Path(__file__).with_name("prepare_simple_measured_tile_sources.py"),
+        Path(__file__).with_name("elevation_nodata.py"),
         Path(__file__).with_name("produce_simple_measured_tile.py"),
         Path(__file__).with_name("run_simple_measured_tile_qa.py"),
         Path(__file__).with_name("render_simple_zone_gallery.py"),

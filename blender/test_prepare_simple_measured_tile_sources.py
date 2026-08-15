@@ -49,6 +49,25 @@ def _tiff_bytes(value: float) -> bytes:
         return memory.read()
 
 
+def _tiff_bytes_with_implicit_nodata(value: float) -> bytes:
+    values = np.full(
+        (sources.ELEVATION_SIZE, sources.ELEVATION_SIZE), value, dtype="float32"
+    )
+    values[50, 50] = sources.NODATA
+    with MemoryFile() as memory:
+        with memory.open(
+            driver="GTiff",
+            width=sources.ELEVATION_SIZE,
+            height=sources.ELEVATION_SIZE,
+            count=1,
+            dtype="float32",
+            crs=sources.CRS,
+            transform=Affine(0.5, 0, BOUNDS[0], 0, -0.5, BOUNDS[3]),
+        ) as dataset:
+            dataset.write(values, 1)
+        return memory.read()
+
+
 def _png_bytes() -> bytes:
     image = Image.new("RGB", (sources.ORTHOPHOTO_SIZE, sources.ORTHOPHOTO_SIZE))
     pixels = np.asarray(image).copy()
@@ -141,6 +160,31 @@ def test_wms_request_is_exact_and_lambert93() -> None:
         "FORMAT": ["image/tiff"],
         "TRANSPARENT": ["FALSE"],
     }
+
+
+def test_individual_tile_repairs_implicit_ign_nodata_deterministically() -> None:
+    payload = _tiff_bytes_with_implicit_nodata(130.0)
+
+    first, diagnostics = sources._decoded_elevation_array(
+        payload, "MNT", repair_nodata=True
+    )
+    second, repeated = sources._decoded_elevation_array(
+        payload, "MNT", repair_nodata=True
+    )
+
+    assert np.array_equal(first, second)
+    assert np.isfinite(first).all()
+    assert first[50, 50] == 130.0
+    assert diagnostics == repeated
+    assert diagnostics == {
+        "applied": True,
+        "invalid_sample_count": 1,
+        "valid_sample_count": sources.ELEVATION_SIZE**2 - 1,
+        "method": "nearest_valid_sample_euclidean",
+        "maximum_fill_distance_pixels": 1.0,
+    }
+    with pytest.raises(sources.SimpleMeasuredTileSourceError, match="nodata"):
+        sources._elevation_array(payload, "MNT metatile")
 
 
 def test_default_http_get_bounds_retries_for_metatile_and_tile(
