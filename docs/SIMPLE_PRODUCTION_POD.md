@@ -45,7 +45,7 @@ validés. Elle ne télécharge aucune donnée géographique pendant sa construct
 
 Le job utilise :
 
-- l'image candidate `pilot-v1-20260815-r35-lightning`, qui embarque
+- l'image candidate `pilot-v1-20260816-r36-lightning`, qui embarque
   `fireviewer.mns-mnt-placement-algorithm.v2` ;
 - `Machine.CPU_X_8`, non interruptible, avec une durée maximale bornée ;
 - `/lightning-work/fireviewer-map-production` pour les checkpoints compressés
@@ -60,6 +60,8 @@ Le job utilise :
 Les gros packages ne sont jamais assemblés sur un montage réseau. Chaque tuile
 est validée, compressée et hashée une fois sur le SSD. Sa publication vers le
 volume persistant est ensuite sérialisée, atomique et bornée à 180 secondes.
+La compression finale publie toutes les dix secondes le nombre de fichiers et
+d'octets traités afin de distinguer un gros ZIP actif d'un worker bloqué.
 Les téléchargements raster et l'attente d'une métatuile sont également bornés ;
 une tuile sans activité pendant 8 minutes fait échouer le job au lieu de le
 laisser facturer indéfiniment. Une reprise sur le même volume re-hashe et
@@ -71,6 +73,9 @@ tuile n'arrête donc plus toute la zone pour un trou raster ponctuel.
 Sans volume persistant configuré, les checkpoints restent limités à la durée du
 Batch Job ; la requête et la progression restent néanmoins persistées côté
 backend. Seuls le ZIP final et ses petits reçus sont publiés sur Hugging Face.
+La publication Xet utilise le mode haut débit et reprend automatiquement les
+chunks déjà envoyés après un timeout transitoire, avec quatre tentatives bornées
+et un statut explicite pour chaque reprise.
 
 Le backend Vercel reçoit exclusivement des variables serveur :
 
@@ -79,7 +84,7 @@ FV_MAP_PRODUCTION_PROVIDER=lightning
 FV_MAP_LIGHTNING_USER_ID=<identifiant programme Lightning>
 FV_MAP_LIGHTNING_API_KEY=<clé programme Lightning>
 FV_MAP_LIGHTNING_TEAMSPACE=<teamspace>
-FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260815-r35-lightning
+FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260816-r36-lightning
 FV_MAP_LIGHTNING_MAX_RUNTIME_SECONDS=86400
 FV_MAP_CALLBACK_BASE_URL=https://fireviewer-api.vercel.app
 FV_MAP_CALLBACK_SIGNING_SECRET=<secret serveur aléatoire>

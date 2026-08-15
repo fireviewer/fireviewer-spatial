@@ -7,7 +7,8 @@ ENV FIREVIEWER_TILE_WORKERS=6 \
     FIREVIEWER_PROTOTYPE_BUNDLE_MODE=linked \
     FIREVIEWER_WORK_ROOT=/lightning-work/fireviewer-map-production \
     FIREVIEWER_SCRATCH_ROOT=/lightning-scratch/fireviewer-map-production \
-    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260815-r35-lightning
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260816-r36-lightning \
+    HF_XET_HIGH_PERFORMANCE=1
 
 COPY fireviewer-spatial/requirements.lightning-map-production.txt /opt/fireviewer/requirements.lightning.txt
 RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.lightning.txt

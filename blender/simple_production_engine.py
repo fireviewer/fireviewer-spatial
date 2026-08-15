@@ -183,6 +183,10 @@ PrepareContext = Callable[..., ZoneContext]
 PrepareSources = Callable[..., PreparedSources]
 ProduceTile = Callable[..., SimpleMeasuredTilePackage]
 ProgressCallback = Callable[[float, str], None]
+DatasetPublicationProgress = Callable[[str, str], None]
+ZipProgress = Callable[[int, int, int, int, str], None]
+HF_PUBLICATION_MAX_ATTEMPTS = 4
+HF_PUBLICATION_BACKOFF_SECONDS = (5.0, 15.0, 30.0)
 GalleryProgress = Callable[[int, str], None]
 GalleryItems = list[tuple[str, str]]
 RenderGallery = Callable[[Path, bool, GalleryProgress | None], GalleryItems]
@@ -1672,6 +1676,7 @@ def _write_zip(
     zone_id: str,
     *,
     destination: Path | None = None,
+    progress_callback: ZipProgress | None = None,
 ) -> Path:
     destination = job_root / ZIP_NAME if destination is None else destination
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1685,6 +1690,8 @@ def _write_zip(
         and path.name not in excluded_files
         and path.relative_to(job_root).parts[0] not in excluded_roots
     ]
+    total_bytes = sum(path.stat().st_size for path in files)
+    written_bytes = 0
     prefix = PurePosixPath(f"fireviewer-{zone_id}")
     already_compressed_suffixes = {
         ".blend",
@@ -1706,9 +1713,10 @@ def _write_zip(
         compresslevel=1,
         allowZip64=True,
     ) as archive:
-        for path in sorted(
+        sorted_files = sorted(
             files, key=lambda value: value.relative_to(job_root).as_posix()
-        ):
+        )
+        for file_index, path in enumerate(sorted_files, start=1):
             relative = path.relative_to(job_root).as_posix()
             info = zipfile.ZipInfo((prefix / relative).as_posix())
             info.date_time = (1980, 1, 1, 0, 0, 0)
@@ -1722,7 +1730,17 @@ def _write_zip(
                 path.open("rb") as input_stream,
                 archive.open(info, "w", force_zip64=True) as output_stream,
             ):
-                shutil.copyfileobj(input_stream, output_stream, 1024 * 1024)
+                while chunk := input_stream.read(1024 * 1024):
+                    output_stream.write(chunk)
+                    written_bytes += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(
+                            written_bytes,
+                            total_bytes,
+                            file_index,
+                            len(sorted_files),
+                            relative,
+                        )
     os.replace(temporary, destination)
     return destination
 
@@ -1880,6 +1898,7 @@ def _publish_dataset_entry(
     plan: ZonePlan,
     receipt: Mapping[str, Any],
     archive: Path,
+    publication_progress: DatasetPublicationProgress | None = None,
 ) -> dict[str, Any] | None:
     """Publish one validated private scene pack; never persist the HF token."""
 
@@ -1956,33 +1975,52 @@ def _publish_dataset_entry(
                 "La dataset cible doit être privée avant toute publication"
             )
         remote_root = f"zones/{plan.zone_id}/{build_id}"
-        operations = [
-            CommitOperationAdd(
-                path_in_repo=f"{remote_root}/{ZIP_NAME}",
-                path_or_fileobj=archive,
-            ),
-            CommitOperationAdd(
-                path_in_repo=f"{remote_root}/{ZONE_RECEIPT_NAME}",
-                path_or_fileobj=job_root / ZONE_RECEIPT_NAME,
-            ),
-            CommitOperationAdd(
-                path_in_repo=f"{remote_root}/{DATASET_ENTRY_NAME}",
-                path_or_fileobj=entry_path,
+        operation_specs = [
+            (f"{remote_root}/{ZIP_NAME}", archive),
+            (f"{remote_root}/{ZONE_RECEIPT_NAME}", job_root / ZONE_RECEIPT_NAME),
+            (f"{remote_root}/{DATASET_ENTRY_NAME}", entry_path),
+            *(
+                (f"{remote_root}/{record['file']}", job_root / record["file"])
+                for record in capture_records
             ),
         ]
-        operations.extend(
-            CommitOperationAdd(
-                path_in_repo=f"{remote_root}/{record['file']}",
-                path_or_fileobj=job_root / record["file"],
-            )
-            for record in capture_records
-        )
-        commit = api.create_commit(
-            repo_id=config.dataset_id,
-            repo_type="dataset",
-            commit_message=f"Add measured FireViewer scene {plan.zone_id}",
-            operations=operations,
-        )
+
+        commit = None
+        for attempt in range(1, HF_PUBLICATION_MAX_ATTEMPTS + 1):
+            if publication_progress is not None:
+                publication_progress(
+                    "dataset_publication_attempt",
+                    "Publication Hugging Face — tentative "
+                    f"{attempt}/{HF_PUBLICATION_MAX_ATTEMPTS}",
+                )
+            operations = [
+                CommitOperationAdd(path_in_repo=remote, path_or_fileobj=local)
+                for remote, local in operation_specs
+            ]
+            try:
+                commit = api.create_commit(
+                    repo_id=config.dataset_id,
+                    repo_type="dataset",
+                    commit_message=f"Add measured FireViewer scene {plan.zone_id}",
+                    operations=operations,
+                )
+                break
+            except Exception as error:
+                if (
+                    attempt >= HF_PUBLICATION_MAX_ATTEMPTS
+                    or not _is_transient_hf_publication_error(error)
+                ):
+                    raise
+                delay = HF_PUBLICATION_BACKOFF_SECONDS[attempt - 1]
+                if publication_progress is not None:
+                    publication_progress(
+                        "dataset_publication_retry",
+                        "Upload Hugging Face interrompu — reprise automatique dans "
+                        f"{int(delay)} s",
+                    )
+                time.sleep(delay)
+        if commit is None:
+            raise SimpleProductionError("Publication Hugging Face sans reçu de commit")
     except SimpleProductionError:
         raise
     except Exception as error:
@@ -2003,6 +2041,42 @@ def _publish_dataset_entry(
     }
     _write_json(publication_path, publication)
     return publication
+
+
+def _is_transient_hf_publication_error(error: BaseException) -> bool:
+    """Recognize retryable Hub/Xet transport failures without retrying auth errors."""
+
+    retryable_fragments = (
+        "timeout",
+        "timed out",
+        "error decoding response body",
+        "connection reset",
+        "connection aborted",
+        "server disconnected",
+        "temporarily unavailable",
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "status code 502",
+        "status code 503",
+        "status code 504",
+    )
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if isinstance(current, (TimeoutError, ConnectionError)):
+            return True
+        if any(fragment in str(current).casefold() for fragment in retryable_fragments):
+            return True
+        for nested in (current.__cause__, current.__context__):
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return False
 
 
 def _validate_existing_publication(
@@ -2330,6 +2404,12 @@ class ProductionEngine:
                     plan=plan,
                     receipt=receipt,
                     archive=existing_archive,
+                    publication_progress=lambda phase, message: report(
+                        0.98,
+                        phase,
+                        message,
+                        completed_tiles=len(plan.tiles),
+                    ),
                 )
             completed_message = (
                 f"Déjà produit — {receipt['tile_count']} terrains, "
@@ -2784,9 +2864,42 @@ class ProductionEngine:
         report(
             0.99, "zip_write", "Compression du pack autonome", completed_tiles=completed
         )
+        last_zip_progress_at = 0.0
+
+        def report_zip_progress(
+            written_bytes: int,
+            total_bytes: int,
+            file_index: int,
+            file_count: int,
+            relative: str,
+        ) -> None:
+            nonlocal last_zip_progress_at
+            now = time.monotonic()
+            if written_bytes < total_bytes and now - last_zip_progress_at < 10.0:
+                return
+            last_zip_progress_at = now
+            ratio = written_bytes / total_bytes if total_bytes else 1.0
+            report(
+                0.99 + 0.004 * ratio,
+                "zip_write",
+                "Compression du pack autonome — "
+                f"{file_index}/{file_count} fichiers, "
+                f"{written_bytes / (1024**3):.2f}/"
+                f"{total_bytes / (1024**3):.2f} Gio",
+                completed_tiles=completed,
+                details={
+                    "archive_written_bytes": written_bytes,
+                    "archive_total_bytes": total_bytes,
+                    "archive_file_index": file_index,
+                    "archive_file_count": file_count,
+                    "archive_current_file": relative,
+                },
+            )
+
         archive = _write_zip(
             assembly_root,
             plan.zone_id,
+            progress_callback=report_zip_progress,
         )
         publication = None
         if self.config.dataset_id is not None:
@@ -2802,6 +2915,12 @@ class ProductionEngine:
                 plan=plan,
                 receipt=receipt,
                 archive=archive,
+                publication_progress=lambda phase, message: report(
+                    0.995,
+                    phase,
+                    message,
+                    completed_tiles=completed,
+                ),
             )
             _copy_result_sidecars(assembly_root, job_root)
         elif assembly_root != job_root:

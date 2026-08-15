@@ -894,6 +894,154 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
             assert b"secret-not-for-files" not in path.read_bytes()
 
 
+def test_private_dataset_publication_retries_transient_xet_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    latitude, longitude = _pilot_gps()
+    plan = production.plan_zone(latitude, longitude, 0.5)
+    config = production.ProductionConfig(
+        work_root=tmp_path,
+        portable_root=tmp_path,
+        asset_library=tmp_path / "asset-library.json",
+        review_batch=tmp_path / "review-batch",
+        elevation_revision="e",
+        orthophoto_revision="o",
+        context_revision="c",
+        dataset_id="fireviewer/simple-measured-scenes-v1",
+    )
+    receipt = {
+        "build_id": "b" * 64,
+        "tile_count": 625,
+        "building_count": 16_000,
+        "tree_count": 100_000,
+    }
+    production._write_json(tmp_path / production.ZONE_RECEIPT_NAME, receipt)
+    archive = tmp_path / production.ZIP_NAME
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("fireviewer-zone/zone.usda", "#usda 1.0\n")
+
+    attempts: list[list[object]] = []
+
+    class FakeApi:
+        def __init__(self, *, token: str) -> None:
+            assert token == "secret-not-for-files"
+
+        def repo_info(self, *, repo_id: str, repo_type: str) -> SimpleNamespace:
+            assert repo_id == config.dataset_id
+            assert repo_type == "dataset"
+            return SimpleNamespace(private=True)
+
+        def create_commit(self, **kwargs: object) -> SimpleNamespace:
+            operations = list(kwargs["operations"])
+            attempts.append(operations)
+            if len(attempts) < 3:
+                raise TimeoutError(
+                    "Timeout: Request error: error decoding response body, domain: no-url"
+                )
+            return SimpleNamespace(oid="d" * 40)
+
+    class FakeOperation:
+        def __init__(self, **kwargs: object) -> None:
+            self.values = dict(kwargs)
+
+    sleeps: list[float] = []
+    progress: list[tuple[str, str]] = []
+    monkeypatch.setenv("HF_TOKEN", "secret-not-for-files")
+    monkeypatch.setattr(production.time, "sleep", sleeps.append)
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(CommitOperationAdd=FakeOperation, HfApi=FakeApi),
+    )
+
+    publication = production._publish_dataset_entry(
+        config,
+        job_root=tmp_path,
+        plan=plan,
+        receipt=receipt,
+        archive=archive,
+        publication_progress=lambda phase, message: progress.append((phase, message)),
+    )
+
+    assert publication is not None
+    assert publication["commit_oid"] == "d" * 40
+    assert len(attempts) == 3
+    assert sleeps == [5.0, 15.0]
+    assert [phase for phase, _message in progress] == [
+        "dataset_publication_attempt",
+        "dataset_publication_retry",
+        "dataset_publication_attempt",
+        "dataset_publication_retry",
+        "dataset_publication_attempt",
+    ]
+    assert attempts[0][0] is not attempts[1][0]
+
+
+def test_private_dataset_publication_does_not_retry_auth_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    latitude, longitude = _pilot_gps()
+    plan = production.plan_zone(latitude, longitude, 0.5)
+    config = production.ProductionConfig(
+        work_root=tmp_path,
+        portable_root=tmp_path,
+        asset_library=tmp_path / "asset-library.json",
+        review_batch=tmp_path / "review-batch",
+        elevation_revision="e",
+        orthophoto_revision="o",
+        context_revision="c",
+        dataset_id="fireviewer/simple-measured-scenes-v1",
+    )
+    receipt = {
+        "build_id": "c" * 64,
+        "tile_count": 1,
+        "building_count": 0,
+        "tree_count": 1,
+    }
+    production._write_json(tmp_path / production.ZONE_RECEIPT_NAME, receipt)
+    archive = tmp_path / production.ZIP_NAME
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("fireviewer-zone/zone.usda", "#usda 1.0\n")
+
+    attempts = 0
+
+    class FakeApi:
+        def __init__(self, *, token: str) -> None:
+            assert token == "secret-not-for-files"
+
+        def repo_info(self, *, repo_id: str, repo_type: str) -> SimpleNamespace:
+            return SimpleNamespace(private=True)
+
+        def create_commit(self, **_kwargs: object) -> SimpleNamespace:
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError("401 Unauthorized")
+
+    class FakeOperation:
+        def __init__(self, **kwargs: object) -> None:
+            self.values = dict(kwargs)
+
+    sleeps: list[float] = []
+    monkeypatch.setenv("HF_TOKEN", "secret-not-for-files")
+    monkeypatch.setattr(production.time, "sleep", sleeps.append)
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(CommitOperationAdd=FakeOperation, HfApi=FakeApi),
+    )
+
+    with pytest.raises(production.SimpleProductionError, match="401 Unauthorized"):
+        production._publish_dataset_entry(
+            config,
+            job_root=tmp_path,
+            plan=plan,
+            receipt=receipt,
+            archive=archive,
+        )
+    assert attempts == 1
+    assert sleeps == []
+
+
 def test_final_zip_streams_files_and_skips_recompression_for_binary_assets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -910,7 +1058,12 @@ def test_final_zip_streams_files_and_skips_recompression_for_binary_assets(
         )
 
     monkeypatch.setattr(Path, "read_bytes", forbidden_read_bytes)
-    archive_path = production._write_zip(assembly, "GPS-STREAM")
+    progress: list[tuple[int, int, int, int, str]] = []
+    archive_path = production._write_zip(
+        assembly,
+        "GPS-STREAM",
+        progress_callback=lambda *values: progress.append(values),
+    )
 
     with zipfile.ZipFile(archive_path) as archive:
         binary_info = archive.getinfo("fireviewer-GPS-STREAM/shared/prototype.usdc")
@@ -919,6 +1072,10 @@ def test_final_zip_streams_files_and_skips_recompression_for_binary_assets(
         assert text_info.compress_type == zipfile.ZIP_DEFLATED
         with archive.open(binary_info) as stream:
             assert stream.read(11) == b"binary-usdc"
+    assert progress
+    assert progress[-1][0] == progress[-1][1]
+    assert progress[-1][2] == progress[-1][3] == 2
+    assert progress[-1][4] == "zone.usda"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="worker links are Linux-only")
