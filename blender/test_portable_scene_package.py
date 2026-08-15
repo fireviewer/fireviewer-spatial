@@ -190,3 +190,29 @@ def test_map_validation_ignores_dataset_publication_receipts_written_after_seali
         match="dependency inventory does not match",
     ):
         portable.validate_map_upload_package(map_root)
+
+
+def test_map_sealing_hashes_each_payload_once_but_public_validation_rehashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    map_root = _map_root(tmp_path / "map")
+    payload_paths = {path.resolve() for path in portable._map_payload_paths(map_root)}
+    calls: dict[Path, int] = {path: 0 for path in payload_paths}
+    real_sha256_file = portable._sha256_file
+
+    def counted_sha256_file(path: Path) -> str:
+        resolved = path.resolve()
+        if resolved in calls:
+            calls[resolved] += 1
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(portable, "_sha256_file", counted_sha256_file)
+    portable.seal_map_upload_package(map_root)
+    assert set(calls.values()) == {1}
+
+    portable.validate_map_upload_package(map_root)
+    assert set(calls.values()) == {2}
+
+    (map_root / "zone.blend").write_bytes(b"changed-fixture")
+    with pytest.raises(portable.PortableScenePackageError, match="dependency changed"):
+        portable.validate_map_upload_package(map_root)

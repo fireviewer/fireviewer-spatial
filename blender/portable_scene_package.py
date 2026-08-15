@@ -469,11 +469,13 @@ def seal_map_upload_package(root: Path | str) -> dict[str, Any]:
     _write_atomic(package_root / INVENTORY_NAME, inventory_bytes)
     _write_atomic(package_root / MANIFEST_NAME, manifest_bytes)
     _write_atomic(package_root / MAP_CONTRACT_PATH, _json_bytes(contract))
-    validate_map_upload_package(package_root)
+    _validate_map_upload_package(package_root, rehash_payloads=False)
     return manifest
 
 
-def validate_map_upload_package(root: Path | str) -> MapPackageReference:
+def _validate_map_upload_package(
+    root: Path | str, *, rehash_payloads: bool
+) -> MapPackageReference:
     package_root = Path(root).resolve(strict=True)
     manifest_path = package_root / MANIFEST_NAME
     inventory_path = package_root / INVENTORY_NAME
@@ -502,9 +504,8 @@ def validate_map_upload_package(root: Path | str) -> MapPackageReference:
         )
     for relative, record in by_path.items():
         path = package_root / relative
-        if (
-            path.stat().st_size != record["byte_count"]
-            or _sha256_file(path) != record["sha256"]
+        if path.stat().st_size != record["byte_count"] or (
+            rehash_payloads and _sha256_file(path) != record["sha256"]
         ):
             raise PortableScenePackageError(f"map dependency changed: {relative}")
     inventory_reference = manifest.get("dependency_inventory")
@@ -557,6 +558,12 @@ def validate_map_upload_package(root: Path | str) -> MapPackageReference:
         bounds_l93_m=(bounds[0], bounds[1], bounds[2], bounds[3]),
         origin_l93_m=(origin[0], origin[1], origin[2]),
     )
+
+
+def validate_map_upload_package(root: Path | str) -> MapPackageReference:
+    """Validate metadata and rehash every payload in an existing map package."""
+
+    return _validate_map_upload_package(root, rehash_payloads=True)
 
 
 def _zip_common_root(names: list[str]) -> str:

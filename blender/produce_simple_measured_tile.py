@@ -1410,6 +1410,7 @@ def produce_simple_measured_tile(
             asset_library=inputs["asset_library"],
             asset_roots=roots,
         )
+        sealed_receipt = (staging / RECEIPT_NAME).read_bytes()
         _emit_progress(
             progress_callback,
             "tile_staging_validated",
@@ -1420,12 +1421,17 @@ def produce_simple_measured_tile(
         if staging.exists() and staging.parent == destination.parent:
             shutil.rmtree(staging)
         raise
-    validate_simple_measured_tile_package(
-        destination,
-        expected_request=request,
-        asset_library=inputs["asset_library"],
-        asset_roots=roots,
-    )
+    # ``os.replace`` publishes the directory atomically on the same local
+    # filesystem.  Re-running the complete validator here used to hash every
+    # terrain, placement and scene artifact a second time without adding a
+    # failure boundary.  Keep one cheap post-rename identity check instead;
+    # recovery from a later invocation still performs the full validation.
+    published_receipt = destination / RECEIPT_NAME
+    if (
+        not published_receipt.is_file()
+        or published_receipt.read_bytes() != sealed_receipt
+    ):
+        raise SimpleMeasuredTileError("Published tile seal differs after atomic rename")
     _emit_progress(
         progress_callback,
         "tile_published",

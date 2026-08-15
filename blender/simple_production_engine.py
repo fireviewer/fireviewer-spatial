@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 import zipfile
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -69,6 +69,8 @@ PLAN_SCHEMA = "fireviewer.simple-measured-zone-plan.v1"
 ZONE_RECEIPT_SCHEMA = "fireviewer.simple-measured-zone-production.v1"
 TILE_SIZE_M = 500
 HALO_M = 10
+SOURCE_METATILE_TILES = 4
+SOURCE_METATILE_SIZE_M = TILE_SIZE_M * SOURCE_METATILE_TILES
 ENTRY_STAGE = "zone.usda"
 ZIP_NAME = "fireviewer-zone.zip"
 STATUS_NAME = "job-status.json"
@@ -82,6 +84,9 @@ CAPTURE_COUNT = 0
 PARALLEL_HEARTBEAT_SECONDS = 15.0
 PROTOTYPE_BUNDLE_NAMESPACE_SCHEMA = "fireviewer.prototype-bundle-namespace.v1"
 PROTOTYPE_BUNDLE_COLLECTION_NAME = "prototype-bundles"
+TILE_CHECKPOINT_SCHEMA = "fireviewer.simple-measured-tile-checkpoint.v1"
+TILE_CHECKPOINT_COLLECTION_NAME = "tile-checkpoints"
+TILE_CHECKPOINT_VERSION = "v1"
 
 
 class SimpleProductionError(RuntimeError):
@@ -99,8 +104,8 @@ class ProductionConfig:
     context_revision: str
     max_side_m: int = 15_000
     max_tiles: int = 900
-    tile_workers: int = 4
-    source_workers: int = 8
+    tile_workers: int = 6
+    source_workers: int = 12
     blender: Path = Path("/opt/blender/blender")
     dataset_id: str | None = None
     scratch_root: Path | None = None
@@ -133,8 +138,8 @@ class ProductionConfig:
             ),
             max_side_m=int(os.environ.get("FIREVIEWER_MAX_SIDE_M", "15000")),
             max_tiles=int(os.environ.get("FIREVIEWER_MAX_TILES", "900")),
-            tile_workers=int(os.environ.get("FIREVIEWER_TILE_WORKERS", "4")),
-            source_workers=int(os.environ.get("FIREVIEWER_SOURCE_WORKERS", "8")),
+            tile_workers=int(os.environ.get("FIREVIEWER_TILE_WORKERS", "6")),
+            source_workers=int(os.environ.get("FIREVIEWER_SOURCE_WORKERS", "12")),
             blender=Path(os.environ.get("FIREVIEWER_BLENDER", "/opt/blender/blender")),
             dataset_id=(os.environ.get("FIREVIEWER_HF_DATASET_ID", "").strip() or None),
             scratch_root=(
@@ -208,6 +213,244 @@ def _load_json(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def _tile_checkpoint_paths(job_root: Path, tile_id: str) -> tuple[Path, Path]:
+    root = job_root / TILE_CHECKPOINT_COLLECTION_NAME / TILE_CHECKPOINT_VERSION
+    return root / f"{tile_id}.zip", root / f"{tile_id}.json"
+
+
+def _validate_tile_checkpoint_record(
+    archive_path: Path,
+    receipt_path: Path,
+    *,
+    tile_id: str,
+    rehash_archive: bool,
+) -> dict[str, Any]:
+    receipt = _load_json(receipt_path, "reçu de checkpoint de tuile")
+    supplied_hash = receipt.get("checkpoint_sha256")
+    unsigned = dict(receipt)
+    unsigned.pop("checkpoint_sha256", None)
+    archive = receipt.get("archive")
+    package_receipt = receipt.get("package_receipt")
+    if (
+        receipt.get("schema") != TILE_CHECKPOINT_SCHEMA
+        or receipt.get("status") != "validated_compressed_checkpoint"
+        or receipt.get("tile_id") != tile_id
+        or supplied_hash != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+        or not isinstance(archive, Mapping)
+        or archive.get("file") != archive_path.name
+        or not isinstance(archive.get("byte_count"), int)
+        or archive.get("byte_count") <= 0
+        or not isinstance(archive.get("sha256"), str)
+        or len(archive.get("sha256", "")) != 64
+        or not isinstance(package_receipt, Mapping)
+        or package_receipt.get("file") != "simple-measured-tile-receipt.v1.json"
+        or not isinstance(package_receipt.get("byte_count"), int)
+        or package_receipt.get("byte_count") <= 0
+        or not isinstance(package_receipt.get("sha256"), str)
+        or len(package_receipt.get("sha256", "")) != 64
+        or not isinstance(receipt.get("file_count"), int)
+        or receipt.get("file_count") <= 0
+        or not isinstance(receipt.get("uncompressed_byte_count"), int)
+        or receipt.get("uncompressed_byte_count") <= 0
+        or not archive_path.is_file()
+        or archive_path.stat().st_size != archive.get("byte_count")
+    ):
+        raise SimpleProductionError("Checkpoint de tuile incohérent")
+    if rehash_archive and _sha256_file(archive_path) != archive["sha256"]:
+        raise SimpleProductionError("Archive de checkpoint de tuile altérée")
+    return receipt
+
+
+def _write_tile_checkpoint(
+    package_root: Path,
+    job_root: Path,
+    *,
+    tile_id: str,
+) -> dict[str, Any]:
+    """Stream one already-validated local package into an atomic checkpoint."""
+
+    package = package_root.resolve(strict=True)
+    archive_path, receipt_path = _tile_checkpoint_paths(job_root, tile_id)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    package_receipt_path = package / "simple-measured-tile-receipt.v1.json"
+    if not package_receipt_path.is_file():
+        raise SimpleProductionError("Reçu de tuile absent avant checkpoint")
+    package_receipt_record = {
+        "file": package_receipt_path.name,
+        "byte_count": package_receipt_path.stat().st_size,
+        "sha256": _sha256_file(package_receipt_path),
+    }
+    if archive_path.exists() or receipt_path.exists():
+        if not archive_path.is_file() or not receipt_path.is_file():
+            raise SimpleProductionError("Checkpoint de tuile partiellement publié")
+        existing = _validate_tile_checkpoint_record(
+            archive_path,
+            receipt_path,
+            tile_id=tile_id,
+            rehash_archive=True,
+        )
+        if existing.get("package_receipt") != package_receipt_record:
+            raise SimpleProductionError(
+                "Un checkpoint différent existe déjà pour cette tuile"
+            )
+        return existing
+
+    files: list[Path] = []
+    for candidate in sorted(
+        package.rglob("*"), key=lambda path: path.relative_to(package).as_posix()
+    ):
+        if candidate.is_symlink():
+            raise SimpleProductionError("Lien symbolique interdit dans un checkpoint")
+        if candidate.is_file():
+            files.append(candidate)
+    if not files:
+        raise SimpleProductionError("Package de tuile vide avant checkpoint")
+    temporary_archive = archive_path.with_name(f".{archive_path.name}.part")
+    temporary_receipt = receipt_path.with_name(f".{receipt_path.name}.part")
+    temporary_archive.unlink(missing_ok=True)
+    temporary_receipt.unlink(missing_ok=True)
+    uncompressed_bytes = 0
+    try:
+        with zipfile.ZipFile(
+            temporary_archive,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=1,
+            allowZip64=True,
+        ) as archive:
+            for source in files:
+                relative = source.relative_to(package).as_posix()
+                info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o100644 << 16
+                with (
+                    source.open("rb") as input_stream,
+                    archive.open(info, "w", force_zip64=True) as output_stream,
+                ):
+                    shutil.copyfileobj(input_stream, output_stream, 1024 * 1024)
+                uncompressed_bytes += source.stat().st_size
+        archive_record = {
+            "file": archive_path.name,
+            "byte_count": temporary_archive.stat().st_size,
+            "sha256": _sha256_file(temporary_archive),
+            "compression": "zip_deflate_level_1",
+        }
+        receipt: dict[str, Any] = {
+            "schema": TILE_CHECKPOINT_SCHEMA,
+            "status": "validated_compressed_checkpoint",
+            "tile_id": tile_id,
+            "archive": archive_record,
+            "package_receipt": package_receipt_record,
+            "file_count": len(files),
+            "uncompressed_byte_count": uncompressed_bytes,
+        }
+        receipt["checkpoint_sha256"] = hashlib.sha256(
+            _canonical_bytes(receipt)
+        ).hexdigest()
+        temporary_receipt.write_bytes(_canonical_bytes(receipt) + b"\n")
+        os.replace(temporary_archive, archive_path)
+        os.replace(temporary_receipt, receipt_path)
+        return receipt
+    except Exception:
+        temporary_archive.unlink(missing_ok=True)
+        temporary_receipt.unlink(missing_ok=True)
+        raise
+
+
+def _restore_tile_checkpoint(
+    job_root: Path,
+    package_root: Path,
+    *,
+    tile_id: str,
+) -> dict[str, Any]:
+    """Rehash and safely materialize one checkpoint onto the local SSD."""
+
+    archive_path, receipt_path = _tile_checkpoint_paths(job_root, tile_id)
+    record = _validate_tile_checkpoint_record(
+        archive_path,
+        receipt_path,
+        tile_id=tile_id,
+        rehash_archive=True,
+    )
+    destination = package_root.resolve()
+    if destination.exists():
+        raise SimpleProductionError("Destination locale du checkpoint déjà présente")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.with_name(f".{destination.name}.checkpoint.part")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
+    try:
+        seen: set[str] = set()
+        total_bytes = 0
+        with zipfile.ZipFile(archive_path) as archive:
+            if archive.testzip() is not None:
+                raise SimpleProductionError("CRC du checkpoint de tuile invalide")
+            members = archive.infolist()
+            for member in members:
+                relative = PurePosixPath(member.filename)
+                if (
+                    member.is_dir()
+                    or relative.is_absolute()
+                    or not relative.parts
+                    or ".." in relative.parts
+                    or "\\" in member.filename
+                    or member.filename in seen
+                    or member.external_attr >> 16 not in {0, 0o100644}
+                ):
+                    raise SimpleProductionError("Membre de checkpoint non sûr")
+                seen.add(member.filename)
+                total_bytes += member.file_size
+                target = staging.joinpath(*relative.parts)
+                _inside(staging, target, "extraction du checkpoint")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as input_stream, target.open("wb") as output:
+                    shutil.copyfileobj(input_stream, output, 1024 * 1024)
+        if (
+            len(seen) != record["file_count"]
+            or total_bytes != record["uncompressed_byte_count"]
+        ):
+            raise SimpleProductionError("Inventaire du checkpoint de tuile divergent")
+        package_receipt = staging / record["package_receipt"]["file"]
+        if (
+            not package_receipt.is_file()
+            or package_receipt.stat().st_size != record["package_receipt"]["byte_count"]
+            or _sha256_file(package_receipt) != record["package_receipt"]["sha256"]
+        ):
+            raise SimpleProductionError("Sceau du package restauré divergent")
+        os.replace(staging, destination)
+        return record
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+
+
+def _quarantine_tile_checkpoint(job_root: Path, *, tile_id: str) -> list[str]:
+    """Preserve a corrupt/partial checkpoint while freeing its active names."""
+
+    archive_path, receipt_path = _tile_checkpoint_paths(job_root, tile_id)
+    candidates = [path for path in (archive_path, receipt_path) if path.exists()]
+    if not candidates:
+        return []
+    quarantine = (
+        job_root
+        / TILE_CHECKPOINT_COLLECTION_NAME
+        / "quarantine"
+        / tile_id
+        / str(time.time_ns())
+    )
+    quarantine.mkdir(parents=True, exist_ok=False)
+    moved: list[str] = []
+    for source in candidates:
+        if source.is_symlink() or not source.is_file():
+            raise SimpleProductionError("Checkpoint corrompu non régulier refusé")
+        target = quarantine / source.name
+        os.replace(source, target)
+        moved.append(target.relative_to(job_root).as_posix())
+    return moved
+
+
 def _prototype_bundle_builder_sha256() -> str:
     """Hash the code that renders and validates prototype bundle artifacts."""
 
@@ -254,6 +497,87 @@ def _prototype_bundle_root(job_root: Path, asset_summary: Mapping[str, Any]) -> 
     )
 
 
+def _regular_file_signature(path: Path) -> tuple[int, int, int, int]:
+    stat = path.stat()
+    return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+
+
+def _sync_prototype_bundle(
+    source_root: Path,
+    destination_root: Path,
+    *,
+    validated_files: dict[
+        str, tuple[tuple[int, int, int, int], tuple[int, int, int, int]]
+    ]
+    | None = None,
+) -> None:
+    """Copy only the small immutable link index, preserving embedded-asset links."""
+
+    source = source_root.resolve()
+    destination = destination_root.resolve()
+    if not source.exists():
+        destination.mkdir(parents=True, exist_ok=True)
+        return
+    if not source.is_dir() or source.is_symlink():
+        raise SimpleProductionError("Lot de prototypes source invalide")
+    destination.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink():
+        raise SimpleProductionError("Lot de prototypes destination symbolique refusé")
+    for item in sorted(
+        source.rglob("*"), key=lambda path: path.relative_to(source).as_posix()
+    ):
+        relative = item.relative_to(source)
+        if any(
+            part.startswith(".") and part.endswith(".part") for part in relative.parts
+        ):
+            continue
+        target = destination / relative
+        _inside(destination, target, "synchronisation des prototypes")
+        if item.is_dir() and not item.is_symlink():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if item.is_symlink():
+            link_target = os.readlink(item)
+            if target.is_symlink():
+                if os.readlink(target) != link_target:
+                    raise SimpleProductionError("Lien de prototype immuable divergent")
+                continue
+            if target.exists():
+                raise SimpleProductionError("Prototype immuable de type divergent")
+            target.symlink_to(link_target)
+            continue
+        if not item.is_file():
+            raise SimpleProductionError("Artefact de prototype non régulier")
+        if target.exists():
+            cache_key = relative.as_posix()
+            source_signature = _regular_file_signature(item)
+            target_signature = _regular_file_signature(target)
+            if validated_files is not None and validated_files.get(cache_key) == (
+                source_signature,
+                target_signature,
+            ):
+                continue
+            if (
+                not target.is_file()
+                or target.is_symlink()
+                or target_signature[0] != source_signature[0]
+                or _sha256_file(target) != _sha256_file(item)
+            ):
+                raise SimpleProductionError("Artefact de prototype immuable divergent")
+            if validated_files is not None:
+                validated_files[cache_key] = (source_signature, target_signature)
+            continue
+        temporary = target.with_name(f".{target.name}.sync.part")
+        shutil.copyfile(item, temporary)
+        os.replace(temporary, target)
+        if validated_files is not None:
+            validated_files[relative.as_posix()] = (
+                _regular_file_signature(item),
+                _regular_file_signature(target),
+            )
+
+
 def _contract_path() -> Path:
     return Path(__file__).with_name("simple_production_engine_contract.v1.json")
 
@@ -265,11 +589,17 @@ def _load_contract() -> dict[str, Any]:
         or payload.get("status") != "locked"
         or payload.get("production", {}).get("tile_size_m") != TILE_SIZE_M
         or payload.get("production", {}).get("mode") != "bounded_parallel"
-        or payload.get("production", {}).get("max_parallel_tiles") != 4
+        or payload.get("production", {}).get("default_parallel_tiles") != 6
+        or payload.get("production", {}).get("max_parallel_tiles") != 8
+        or payload.get("production", {}).get("default_parallel_source_acquisitions")
+        != 12
+        or payload.get("production", {}).get("max_parallel_source_acquisitions") != 16
+        or payload.get("production", {}).get("source_metatile_tiles") != 4
         or payload.get("production", {}).get("resume")
-        != "reuse_valid_published_tiles_and_remove_owned_staging"
+        != "restore_validated_compressed_tile_checkpoints_and_remove_owned_staging"
         or payload.get("output", {}).get("entry_stage") != ENTRY_STAGE
-        or payload.get("output", {}).get("portable_zip") is not True
+        or payload.get("output", {}).get("portable_zip")
+        != "built_on_worker_local_disk_then_uploaded_once"
         or payload.get("perimeter_layer", {}).get("fixed_layers") is not True
         or payload.get("perimeter_layer", {}).get("timeline_data")
         != "observed_instants_and_explicit_ranges"
@@ -486,7 +816,7 @@ def validate_production_config(config: ProductionConfig) -> dict[str, Any]:
     if (
         config.max_side_m < TILE_SIZE_M
         or config.max_tiles < 1
-        or not 1 <= config.tile_workers <= 4
+        or not 1 <= config.tile_workers <= 8
         or not config.tile_workers <= config.source_workers <= 16
     ):
         raise SimpleProductionError("Limites du pod invalides")
@@ -722,6 +1052,10 @@ def _remove_interrupted_staging(job_root: Path) -> list[str]:
     roots_and_patterns = [
         (job_root / "sources", ".*.simple-sources.part"),
         (job_root / "packages", ".*.simple-measured-tile.part"),
+        (
+            job_root / TILE_CHECKPOINT_COLLECTION_NAME / TILE_CHECKPOINT_VERSION,
+            ".*.part",
+        ),
         # Legacy, unversioned r17 and earlier bundle. It is deliberately retained;
         # only its process-owned staging children may be removed.
         (job_root / "shared" / "prototypes", ".*.part"),
@@ -836,6 +1170,32 @@ def _bounded_parallel_tile_results(
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+def _interleave_tiles_by_metatile(
+    pending_tiles: Sequence[tuple[int, TilePlan]],
+) -> list[tuple[int, TilePlan]]:
+    """Start distinct 4x4 source blocks first instead of parking workers on one."""
+
+    groups: dict[tuple[int, int], list[tuple[int, TilePlan]]] = {}
+    for item in pending_tiles:
+        x, y = item[1].origin_l93_m
+        key = (
+            (x // SOURCE_METATILE_SIZE_M) * SOURCE_METATILE_SIZE_M,
+            (y // SOURCE_METATILE_SIZE_M) * SOURCE_METATILE_SIZE_M,
+        )
+        groups.setdefault(key, []).append(item)
+    ordered: list[tuple[int, TilePlan]] = []
+    offset = 0
+    while True:
+        added = False
+        for values in groups.values():
+            if offset < len(values):
+                ordered.append(values[offset])
+                added = True
+        if not added:
+            return ordered
+        offset += 1
+
+
 def _scene_counts(package_root: Path) -> tuple[int, int, int, int]:
     receipt = _load_json(package_root / "scene" / "scene.done.json", "reçu scène")
     reconciliation = receipt.get("reconciliation")
@@ -869,6 +1229,7 @@ def _expected_request_from_receipt(
     asset_roots: Mapping[str, Path],
     portable_root: Path,
     asset_bundle_root: Path,
+    asset_library_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Recover the signed request while binding it to the current zone request."""
 
@@ -891,20 +1252,36 @@ def _expected_request_from_receipt(
             tile.origin_l93_m[0] + TILE_SIZE_M,
             tile.origin_l93_m[1] + TILE_SIZE_M,
         ],
-        "asset_library_sha256": _sha256_file(asset_library),
+        "asset_library_sha256": (
+            asset_library_sha256
+            if asset_library_sha256 is not None
+            else _sha256_file(asset_library)
+        ),
         "asset_root_names": sorted(asset_roots),
         "usage": "technical_pilot_non_final",
         "mns_fallback_policy": "ground_only_on_hag_validation_failure",
-        "prototype_bundle": {
-            "scope": "explicit_shared",
-            "portable_path": asset_bundle_root.resolve()
-            .relative_to(portable_root.resolve())
-            .as_posix(),
-        },
     }
     changed = [
         key for key, value in expected_fixed.items() if request.get(key) != value
     ]
+    bundle = request.get("prototype_bundle")
+    portable_path = bundle.get("portable_path") if isinstance(bundle, Mapping) else None
+    expected_bundle_suffix = (
+        "jobs",
+        plan.zone_id,
+        "shared",
+        PROTOTYPE_BUNDLE_COLLECTION_NAME,
+        asset_bundle_root.name,
+    )
+    if (
+        not isinstance(bundle, Mapping)
+        or bundle.get("scope") != "explicit_shared"
+        or not isinstance(portable_path, str)
+        or PurePosixPath(portable_path).is_absolute()
+        or ".." in PurePosixPath(portable_path).parts
+        or tuple(PurePosixPath(portable_path).parts[-5:]) != expected_bundle_suffix
+    ):
+        changed.append("prototype_bundle")
     if changed:
         raise SimpleProductionError(
             "La requête scellée de la tuile diffère du job courant: "
@@ -959,7 +1336,9 @@ def _write_zone_receipt(
     asset_summary: Mapping[str, Any],
     portable_root: Path,
     shared_bundle: Path,
+    validated_checkpoints: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
+    del portable_root, shared_bundle
     tile_records: list[dict[str, Any]] = []
     buildings = 0
     trees = 0
@@ -970,20 +1349,22 @@ def _write_zone_receipt(
         package_root = job_root / "packages" / tile.tile_id
         receipt_path = package_root / "simple-measured-tile-receipt.v1.json"
         receipt = _load_json(receipt_path, "reçu de tuile")
-        validate_simple_measured_tile_package(
-            package_root,
-            expected_request=_expected_request_from_receipt(
-                package_root,
-                plan=plan,
-                tile=tile,
-                asset_library=Path(asset_summary["asset_library"]),
-                asset_roots={"review_batch": Path(asset_summary["review_batch"])},
-                portable_root=portable_root,
-                asset_bundle_root=shared_bundle,
-            ),
-            asset_library=Path(asset_summary["asset_library"]),
-            asset_roots={"review_batch": Path(asset_summary["review_batch"])},
+        checkpoint = validated_checkpoints.get(tile.tile_id)
+        checkpoint_package = (
+            checkpoint.get("package_receipt")
+            if isinstance(checkpoint, Mapping)
+            else None
         )
+        if (
+            not isinstance(checkpoint, Mapping)
+            or checkpoint.get("schema") != TILE_CHECKPOINT_SCHEMA
+            or not isinstance(checkpoint_package, Mapping)
+            or checkpoint_package.get("byte_count") != receipt_path.stat().st_size
+            or checkpoint_package.get("sha256") != _sha256_file(receipt_path)
+        ):
+            raise SimpleProductionError(
+                f"Checkpoint validé absent ou divergent: {tile.tile_id}"
+            )
         (
             tile_buildings,
             tile_trees,
@@ -1006,6 +1387,8 @@ def _write_zone_receipt(
                 "origin_l93_m": list(tile.origin_l93_m),
                 "build_id": receipt["build_id"],
                 "receipt_sha256": _sha256_file(receipt_path),
+                "checkpoint_sha256": checkpoint["checkpoint_sha256"],
+                "checkpoint_archive_sha256": checkpoint["archive"]["sha256"],
                 "building_count": tile_buildings,
                 "tree_count": tile_trees,
                 "context_asset_count": tile_context_assets,
@@ -1104,7 +1487,14 @@ def _prepare_local_assembly(
             PROTOTYPE_BUNDLE_COLLECTION_NAME,
         ):
             raise SimpleProductionError("Namespace du lot de prototypes actif invalide")
-    excluded_roots = {"sources", "download"}
+    # Tile packages already live on the local SSD.  Network checkpoints are
+    # recovery artifacts and must never be copied into the downloadable pack.
+    excluded_roots = {
+        "sources",
+        "download",
+        "packages",
+        TILE_CHECKPOINT_COLLECTION_NAME,
+    }
     excluded_files = {
         STATUS_NAME,
         ZIP_NAME,
@@ -1134,7 +1524,25 @@ def _prepare_local_assembly(
         if not source.is_file():
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.symlink_to(source.resolve(strict=True))
+        if target.exists() or target.is_symlink():
+            if target.is_symlink() and target.resolve(strict=True) == source.resolve(
+                strict=True
+            ):
+                continue
+            if (
+                target.is_file()
+                and not target.is_symlink()
+                and target.stat().st_size == source.stat().st_size
+                and _sha256_file(target) == _sha256_file(source)
+            ):
+                continue
+            raise SimpleProductionError(
+                f"Assemblage local divergent: {relative.as_posix()}"
+            )
+        if source.is_symlink():
+            target.symlink_to(source.resolve(strict=True))
+        else:
+            shutil.copyfile(source, target)
     return scratch
 
 
@@ -1147,7 +1555,7 @@ def _write_zip(
     destination = job_root / ZIP_NAME if destination is None else destination
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.part")
-    excluded_roots = {"sources", "download"}
+    excluded_roots = {"sources", "download", TILE_CHECKPOINT_COLLECTION_NAME}
     excluded_files = {STATUS_NAME, ZIP_NAME, temporary.name}
     files = [
         path
@@ -1157,6 +1565,19 @@ def _write_zip(
         and path.relative_to(job_root).parts[0] not in excluded_roots
     ]
     prefix = PurePosixPath(f"fireviewer-{zone_id}")
+    already_compressed_suffixes = {
+        ".blend",
+        ".glb",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".tif",
+        ".tiff",
+        ".usdc",
+        ".usdz",
+        ".webp",
+        ".zip",
+    }
     with zipfile.ZipFile(
         temporary,
         "w",
@@ -1170,9 +1591,17 @@ def _write_zip(
             relative = path.relative_to(job_root).as_posix()
             info = zipfile.ZipInfo((prefix / relative).as_posix())
             info.date_time = (1980, 1, 1, 0, 0, 0)
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = (
+                zipfile.ZIP_STORED
+                if path.suffix.lower() in already_compressed_suffixes
+                else zipfile.ZIP_DEFLATED
+            )
             info.external_attr = 0o100644 << 16
-            archive.writestr(info, path.read_bytes(), compresslevel=1)
+            with (
+                path.open("rb") as input_stream,
+                archive.open(info, "w", force_zip64=True) as output_stream,
+            ):
+                shutil.copyfileobj(input_stream, output_stream, 1024 * 1024)
     os.replace(temporary, destination)
     return destination
 
@@ -1538,7 +1967,11 @@ class ProductionEngine:
                 "tree_assets": 18,
                 "checked_artifacts": 106,
                 "catalog_revision": "0" * 64,
-                "catalog_sha256": "0" * 64,
+                "catalog_sha256": (
+                    _sha256_file(config.asset_library)
+                    if config.asset_library.is_file()
+                    else "0" * 64
+                ),
                 "blender_path": str(config.blender),
                 "blender_version": "test",
                 "blender_sha256": "0" * 64,
@@ -1791,6 +2224,8 @@ class ProductionEngine:
             return
 
         total = len(plan.tiles)
+        context_storage_root = scratch_job if scratch_job is not None else job_root
+        zone_context_path = context_storage_root / ZONE_CONTEXT_NAME
         report(
             0.03,
             "zone_context_download",
@@ -1798,7 +2233,7 @@ class ProductionEngine:
         )
         yield f"Préparation de {total} tuiles de 500 m…", None, []
         zone_context = self.prepare_context_fn(
-            output_path=job_root / ZONE_CONTEXT_NAME,
+            output_path=zone_context_path,
             zone_id=plan.zone_id,
             bounds_l93_m=plan.context_bounds_l93_m,
             source_revision=self.config.context_revision,
@@ -1815,9 +2250,21 @@ class ProductionEngine:
         )
 
         asset_roots = {"review_batch": self.config.review_batch}
-        shared_bundle = _prototype_bundle_root(job_root, self.asset_summary)
+        checkpoint_bundle = _prototype_bundle_root(job_root, self.asset_summary)
         source_storage_root = scratch_job if scratch_job is not None else job_root
+        package_storage_root = scratch_job if scratch_job is not None else job_root
+        shared_bundle = _prototype_bundle_root(package_storage_root, self.asset_summary)
+        if scratch_job is not None:
+            _sync_prototype_bundle(checkpoint_bundle, shared_bundle)
         production_slots = threading.BoundedSemaphore(self.config.tile_workers)
+        prototype_checkpoint_lock = threading.Lock()
+        prototype_checkpoint_files: dict[
+            str,
+            tuple[
+                tuple[int, int, int, int],
+                tuple[int, int, int, int],
+            ],
+        ] = {}
         completed = 0
         source_phase = {
             "download_mnt_started": (0.04, "MNT 0,5 m — téléchargement"),
@@ -1830,6 +2277,11 @@ class ProductionEngine:
             "tile_context_prepared": (0.47, "Contexte de placement découpé"),
             "sources_published": (0.50, "Sources de tuile validées"),
             "sources_reused": (0.50, "Sources de tuile revalidées et réutilisées"),
+            "metatile_reused": (0.38, "Métatuile 4×4 locale réutilisée"),
+            "metatile_fallback": (
+                0.04,
+                "Métatuile indisponible — repli sûr sur la tuile de 500 m",
+            ),
         }
         production_phase = {
             "terrain_compiled": (0.60, "Terrain FVTG compilé"),
@@ -1846,6 +2298,7 @@ class ProductionEngine:
         tile_progress = [0.0] * total
         tile_progress_lock = threading.Lock()
         completed_tiles: set[int] = set()
+        validated_checkpoints: dict[str, dict[str, Any]] = {}
         stop_tiles = threading.Event()
 
         def validate_published_tile(tile: TilePlan, package_root: Path) -> None:
@@ -1859,6 +2312,7 @@ class ProductionEngine:
                     asset_roots=asset_roots,
                     portable_root=self.config.portable_root,
                     asset_bundle_root=shared_bundle,
+                    asset_library_sha256=self.asset_summary["catalog_sha256"],
                 ),
                 asset_library=self.config.asset_library,
                 asset_roots=asset_roots,
@@ -1915,9 +2369,14 @@ class ProductionEngine:
                 raise SimpleProductionError(
                     "Production parallèle interrompue avant la tuile"
                 )
-            package_root = job_root / "packages" / tile.tile_id
+            package_root = package_storage_root / "packages" / tile.tile_id
             if package_root.exists():
                 validate_published_tile(tile, package_root)
+                checkpoint = _write_tile_checkpoint(
+                    package_root, job_root, tile_id=tile.tile_id
+                )
+                with tile_progress_lock:
+                    validated_checkpoints[tile.tile_id] = checkpoint
                 tile_report(
                     "tile_reused", {"tile_id": tile.tile_id}, table=production_phase
                 )
@@ -1930,13 +2389,14 @@ class ProductionEngine:
                     tile_origin_l93_m=tile.origin_l93_m,
                     elevation_revision=self.config.elevation_revision,
                     orthophoto_revision=self.config.orthophoto_revision,
-                    zone_context=job_root / ZONE_CONTEXT_NAME,
+                    zone_context=zone_context_path,
                     fixed_asset_placements=[
                         placement
                         for placement in projected_fixed_assets
                         if placement["owner_tile_origin_l93_m"]
                         == list(tile.origin_l93_m)
                     ],
+                    metatile_cache_root=source_storage_root / "metatiles" / "v1",
                     progress_callback=lambda phase, details: tile_report(
                         phase, details, table=source_phase
                     ),
@@ -1961,20 +2421,24 @@ class ProductionEngine:
                             phase, details, table=production_phase
                         ),
                     )
-                    validate_simple_measured_tile_package(
+                    if package.output_root.resolve() != package_root.resolve():
+                        raise SimpleProductionError(
+                            "Le producteur a publié la tuile hors du SSD local"
+                        )
+                    if scratch_job is not None:
+                        with prototype_checkpoint_lock:
+                            _sync_prototype_bundle(
+                                shared_bundle,
+                                checkpoint_bundle,
+                                validated_files=prototype_checkpoint_files,
+                            )
+                    checkpoint = _write_tile_checkpoint(
                         package.output_root,
-                        expected_request=_expected_request_from_receipt(
-                            package.output_root,
-                            plan=plan,
-                            tile=tile,
-                            asset_library=self.config.asset_library,
-                            asset_roots=asset_roots,
-                            portable_root=self.config.portable_root,
-                            asset_bundle_root=shared_bundle,
-                        ),
-                        asset_library=self.config.asset_library,
-                        asset_roots=asset_roots,
+                        job_root,
+                        tile_id=tile.tile_id,
                     )
+                    with tile_progress_lock:
+                        validated_checkpoints[tile.tile_id] = checkpoint
                 _copy_provenance(sources, job_root / "provenance" / tile.tile_id)
                 _remove_sources(source_storage_root, sources.root)
             with tile_progress_lock:
@@ -1993,12 +2457,72 @@ class ProductionEngine:
 
         pending_tiles: list[tuple[int, TilePlan]] = []
         for tile_index, tile in enumerate(plan.tiles):
-            package_root = job_root / "packages" / tile.tile_id
-            if not package_root.exists():
+            package_root = package_storage_root / "packages" / tile.tile_id
+            archive_path, checkpoint_receipt_path = _tile_checkpoint_paths(
+                job_root, tile.tile_id
+            )
+            checkpoint: dict[str, Any] | None = None
+            if archive_path.exists() or checkpoint_receipt_path.exists():
+                try:
+                    checkpoint = _restore_tile_checkpoint(
+                        job_root,
+                        package_root,
+                        tile_id=tile.tile_id,
+                    )
+                    validate_published_tile(tile, package_root)
+                except Exception as error:
+                    if package_root.exists() and scratch_job is not None:
+                        shutil.rmtree(package_root)
+                    quarantined = _quarantine_tile_checkpoint(
+                        job_root, tile_id=tile.tile_id
+                    )
+                    report(
+                        0.08,
+                        "tile_checkpoint_quarantined",
+                        f"Reprise — checkpoint invalide ignoré pour {tile.tile_id}",
+                        completed_tiles=len(completed_tiles),
+                        details={
+                            "tile_id": tile.tile_id,
+                            "error": str(error),
+                            "quarantined": quarantined,
+                        },
+                    )
+                    checkpoint = None
+            if checkpoint is None:
+                legacy_package = job_root / "packages" / tile.tile_id
+                if legacy_package.is_dir() and legacy_package != package_root:
+                    try:
+                        validate_published_tile(tile, legacy_package)
+                        checkpoint = _write_tile_checkpoint(
+                            legacy_package, job_root, tile_id=tile.tile_id
+                        )
+                        _restore_tile_checkpoint(
+                            job_root,
+                            package_root,
+                            tile_id=tile.tile_id,
+                        )
+                        validate_published_tile(tile, package_root)
+                    except Exception as error:
+                        if package_root.exists():
+                            shutil.rmtree(package_root)
+                        report(
+                            0.08,
+                            "legacy_tile_ignored",
+                            f"Reprise — ancienne tuile invalide ignorée: {tile.tile_id}",
+                            completed_tiles=len(completed_tiles),
+                            details={"tile_id": tile.tile_id, "error": str(error)},
+                        )
+                        checkpoint = None
+                elif package_root.is_dir():
+                    validate_published_tile(tile, package_root)
+                    checkpoint = _write_tile_checkpoint(
+                        package_root, job_root, tile_id=tile.tile_id
+                    )
+            if checkpoint is None:
                 pending_tiles.append((tile_index, tile))
                 continue
-            validate_published_tile(tile, package_root)
             with tile_progress_lock:
+                validated_checkpoints[tile.tile_id] = checkpoint
                 tile_progress[tile_index] = 1.0
                 completed_tiles.add(tile_index)
                 completed_count = len(completed_tiles)
@@ -2011,6 +2535,7 @@ class ProductionEngine:
                 details={"tile_id": tile.tile_id, "tile_index": tile_index + 1},
             )
 
+        pending_tiles = _interleave_tiles_by_metatile(pending_tiles)
         worker_count = min(self.config.source_workers, len(pending_tiles))
         if not pending_tiles:
             report(
@@ -2064,27 +2589,28 @@ class ProductionEngine:
             total=total,
         )
         yield "Assemblage de la scène unifiée et du ZIP…", None, []
-        _write_zone_stage(job_root, plan)
+        assembly_root = (
+            _prepare_local_assembly(
+                job_root,
+                scratch_job,
+                active_prototype_bundle=checkpoint_bundle,
+            )
+            if scratch_job is not None
+            else job_root
+        )
+        _write_zone_stage(assembly_root, plan)
         receipt_assets = {
             **self.asset_summary,
             "asset_library": str(self.config.asset_library),
             "review_batch": str(self.config.review_batch),
         }
         receipt = _write_zone_receipt(
-            job_root,
+            assembly_root,
             plan,
             receipt_assets,
             self.config.portable_root,
             shared_bundle,
-        )
-        assembly_root = (
-            _prepare_local_assembly(
-                job_root,
-                scratch_job,
-                active_prototype_bundle=shared_bundle,
-            )
-            if scratch_job is not None
-            else job_root
+            validated_checkpoints,
         )
         _remove_legacy_gallery(job_root)
         if assembly_root != job_root:
@@ -2120,6 +2646,11 @@ class ProductionEngine:
                 archive=archive,
             )
             _copy_result_sidecars(assembly_root, job_root)
+        elif assembly_root != job_root:
+            shutil.copyfile(
+                assembly_root / ZONE_RECEIPT_NAME,
+                job_root / ZONE_RECEIPT_NAME,
+            )
         _status(
             job_root,
             state="completed",

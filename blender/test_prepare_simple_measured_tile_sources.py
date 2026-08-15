@@ -59,6 +59,38 @@ def _png_bytes() -> bytes:
     return output.getvalue()
 
 
+def _metatile_tiff_bytes(value: float) -> bytes:
+    values = np.full(
+        (sources.METATILE_ELEVATION_SIZE, sources.METATILE_ELEVATION_SIZE),
+        value,
+        dtype="float32",
+    )
+    with MemoryFile() as memory:
+        with memory.open(
+            driver="GTiff",
+            width=sources.METATILE_ELEVATION_SIZE,
+            height=sources.METATILE_ELEVATION_SIZE,
+            count=1,
+            dtype="float32",
+            crs=sources.CRS,
+            transform=Affine(0.5, 0, 0, 0, -0.5, 0),
+            compress="DEFLATE",
+            predictor=3,
+        ) as dataset:
+            dataset.write(values, 1)
+        return memory.read()
+
+
+def _metatile_png_bytes() -> bytes:
+    size = sources.METATILE_ORTHOPHOTO_SIZE
+    pixels = np.zeros((size, size, 3), dtype="uint8")
+    pixels[:, :, 0] = np.arange(size, dtype="uint16") % 256
+    pixels[:, :, 1] = np.arange(size, dtype="uint16")[:, None] % 256
+    output = BytesIO()
+    Image.fromarray(pixels, mode="RGB").save(output, format="PNG")
+    return output.getvalue()
+
+
 def _inputs(tmp_path: Path) -> dict[str, Path]:
     gpkg = tmp_path / "ground-context.gpkg"
     manifest = tmp_path / "ground-context-manifest.json"
@@ -266,7 +298,9 @@ def test_source_bundle_publishes_all_files_at_once_and_reuses(
         )
 
 
-def test_source_bundle_accepts_one_hash_locked_zone_context(tmp_path: Path) -> None:
+def test_source_bundle_accepts_one_hash_locked_zone_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     output = tmp_path / "zone-source"
     zone_path = tmp_path / "zone-context.json"
 
@@ -344,6 +378,17 @@ def test_source_bundle_accepts_one_hash_locked_zone_context(tmp_path: Path) -> N
             return mns
         return ortho
 
+    sources._ZONE_CONTEXT_CACHE.clear()
+    original_load_zone_context = sources.load_zone_context
+    context_loads = 0
+
+    def counted_load_zone_context(path: Path) -> dict[str, object]:
+        nonlocal context_loads
+        context_loads += 1
+        return original_load_zone_context(path)
+
+    monkeypatch.setattr(sources, "load_zone_context", counted_load_zone_context)
+
     prepared = sources.prepare_sources(
         output_root=output,
         zone_id="gps-test-zone",
@@ -354,6 +399,8 @@ def test_source_bundle_accepts_one_hash_locked_zone_context(tmp_path: Path) -> N
         zone_context=zone_path,
         http_get=fake_get,
     )
+    assert sources._load_indexed_zone_context(zone_path) is not None
+    assert context_loads == 1
     placement = json.loads(prepared.placement_context.read_text(encoding="utf-8"))
     assert placement["provenance"]["feature_counts"] == {
         "buildings": 1,
@@ -380,3 +427,143 @@ def test_source_bundle_accepts_one_hash_locked_zone_context(tmp_path: Path) -> N
         (output / "building-source.json").read_text(encoding="utf-8")
     )
     assert building_source["source_zone_context_sha256"]
+
+
+def test_four_by_four_metatile_downloads_three_responses_once_and_slices_tiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _inputs(tmp_path)
+    cache = tmp_path / "metatiles"
+    mnt = _metatile_tiff_bytes(130.0)
+    mns = _metatile_tiff_bytes(142.0)
+    ortho = _metatile_png_bytes()
+    calls: list[str] = []
+
+    def fake_get(url: str) -> bytes:
+        calls.append(url)
+        if sources.MNT_LAYER in url:
+            return mnt
+        if sources.MNS_LAYER in url:
+            return mns
+        return ortho
+
+    monkeypatch.setattr(
+        sources,
+        "_placement_context",
+        lambda **_kwargs: {
+            "schema": "fireviewer.placement-context-input.v1",
+            "crs": sources.CRS,
+            "tile_origin_l93_m": list(_kwargs["origin"]),
+            "processing_bounds_l93_m": list(sources._bounds(_kwargs["origin"])),
+            "building_footprints": [],
+            "context_geometries": {
+                "vegetation": [],
+                "roads": [],
+                "rail": [],
+                "water": [],
+            },
+            "provenance": {},
+        },
+    )
+    origins = (ORIGIN, (819000, 6312500))
+    prepared = []
+    for index, origin in enumerate(origins):
+        prepared.append(
+            sources.prepare_sources(
+                output_root=tmp_path / f"tile-{index}",
+                zone_id="FR-30-METATILE",
+                tile_id=f"x{origin[0]}_y{origin[1]}",
+                tile_origin_l93_m=origin,
+                elevation_revision="elevation-r1",
+                orthophoto_revision="orthophoto-r1",
+                metatile_cache_root=cache,
+                http_get=fake_get,
+                **inputs,
+            )
+        )
+
+    assert len(calls) == 3
+    values = parse_qs(urlparse(calls[0]).query)
+    assert values["WIDTH"] == [str(sources.METATILE_ELEVATION_SIZE)]
+    assert values["HEIGHT"] == [str(sources.METATILE_ELEVATION_SIZE)]
+    assert values["BBOX"] == ["817990,6311990,820010,6314010"]
+    first_provider = json.loads(
+        prepared[0].orthophoto_receipt.read_text(encoding="utf-8")
+    )["provider"]
+    second_provider = json.loads(
+        prepared[1].orthophoto_receipt.read_text(encoding="utf-8")
+    )["provider"]
+    assert (
+        first_provider["metatile"]["metatile_id"]
+        == second_provider["metatile"]["metatile_id"]
+    )
+    assert first_provider["metatile"]["slice_window_pixels"] == [1500, 1000, 520, 520]
+    assert second_provider["metatile"]["slice_window_pixels"] == [1000, 1000, 520, 520]
+    with (
+        Image.open(prepared[0].orthophoto) as first_image,
+        Image.open(prepared[1].orthophoto) as second_image,
+    ):
+        assert first_image.getpixel((0, 0)) == (1500 % 256, 1000 % 256, 0)
+        assert second_image.getpixel((0, 0)) == (1000 % 256, 1000 % 256, 0)
+
+
+def test_invalid_metatile_falls_back_to_individual_tile_requests_once_per_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _inputs(tmp_path)
+    cache = tmp_path / "metatiles"
+    mnt = _tiff_bytes(130.0)
+    mns = _tiff_bytes(142.0)
+    ortho = _png_bytes()
+    calls: list[str] = []
+    phases: list[str] = []
+    sources._FAILED_METATILES.clear()
+
+    def fake_get(url: str) -> bytes:
+        calls.append(url)
+        width = int(parse_qs(urlparse(url).query)["WIDTH"][0])
+        if width > sources.ELEVATION_SIZE:
+            return b"invalid-metatile-response"
+        if sources.MNT_LAYER in url:
+            return mnt
+        if sources.MNS_LAYER in url:
+            return mns
+        return ortho
+
+    monkeypatch.setattr(
+        sources,
+        "_placement_context",
+        lambda **_kwargs: {
+            "schema": "fireviewer.placement-context-input.v1",
+            "crs": sources.CRS,
+            "tile_origin_l93_m": list(_kwargs["origin"]),
+            "processing_bounds_l93_m": list(sources._bounds(_kwargs["origin"])),
+            "building_footprints": [],
+            "context_geometries": {
+                "vegetation": [],
+                "roads": [],
+                "rail": [],
+                "water": [],
+            },
+            "provenance": {},
+        },
+    )
+    for index, origin in enumerate((ORIGIN, (819000, 6312500))):
+        prepared = sources.prepare_sources(
+            output_root=tmp_path / f"fallback-{index}",
+            zone_id="FR-30-METATILE-FALLBACK",
+            tile_id=f"x{origin[0]}_y{origin[1]}",
+            tile_origin_l93_m=origin,
+            elevation_revision="elevation-r1",
+            orthophoto_revision="orthophoto-r1",
+            metatile_cache_root=cache,
+            http_get=fake_get,
+            progress_callback=lambda phase, _details: phases.append(phase),
+            **inputs,
+        )
+        assert prepared.mnt.is_file()
+
+    # The first tile attempts one 3-response metatile, then both tiles use
+    # their three compatible 500 m requests. The failed block is not retried.
+    assert len(calls) == 9
+    assert phases.count("metatile_fallback") == 2

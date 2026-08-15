@@ -9,6 +9,7 @@ import math
 import os
 import shutil
 import threading
+import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ from prepare_simple_measured_zone_context import load_zone_context
 from rasterio.io import MemoryFile
 from shapely import from_wkb
 from shapely.geometry import box, mapping, shape
+from shapely.strtree import STRtree
 
 SCHEMA = "fireviewer.simple-measured-tile-source-bundle.v1"
 CRS = "EPSG:2154"
@@ -45,6 +47,12 @@ TILE_SIZE_M = 500
 HALO_M = 10
 ELEVATION_SIZE = 1040
 ORTHOPHOTO_SIZE = 520
+METATILE_TILES = 4
+METATILE_SIZE_M = TILE_SIZE_M * METATILE_TILES
+METATILE_ELEVATION_SIZE = int((METATILE_SIZE_M + 2 * HALO_M) / 0.5)
+METATILE_ORTHOPHOTO_SIZE = METATILE_SIZE_M + 2 * HALO_M
+METATILE_SCHEMA = "fireviewer.simple-measured-source-metatile.v1"
+WMS_REQUESTS_PER_SECOND = 36.0
 NODATA = -9999.0
 WMS_ENDPOINT = "https://data.geopf.fr/wms-r"
 MNT_LAYER = "IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93"
@@ -52,6 +60,17 @@ MNS_LAYER = "IGNF_LIDAR-HD_MNS_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93"
 ORTHOPHOTO_LAYER = "ORTHOIMAGERY.ORTHOPHOTOS"
 HASH_LENGTH = 64
 _HTTP_LOCAL = threading.local()
+_WMS_RATE_LOCK = threading.Lock()
+_WMS_NEXT_REQUEST_AT = 0.0
+_METATILE_LOCKS_GUARD = threading.Lock()
+_METATILE_LOCKS: dict[str, threading.Lock] = {}
+_VALIDATED_METATILES: dict[str, tuple[tuple[int, int], ...]] = {}
+_FAILED_METATILES: dict[str, str] = {}
+_ZONE_CONTEXT_CACHE_LOCK = threading.Lock()
+_ZONE_CONTEXT_CACHE: dict[
+    str,
+    tuple[tuple[int, int, int], "_IndexedZoneContext"],
+] = {}
 
 
 class SimpleMeasuredTileSourceError(RuntimeError):
@@ -68,6 +87,21 @@ class PreparedSources:
     orthophoto_receipt: Path
     placement_context: Path
     reused: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _IndexedZoneLayer:
+    geometries: tuple[Any, ...]
+    properties: tuple[Mapping[str, Any], ...]
+    source_ids: tuple[str, ...]
+    tree: STRtree
+
+
+@dataclass(frozen=True, slots=True)
+class _IndexedZoneContext:
+    payload: Mapping[str, Any]
+    layers: Mapping[str, _IndexedZoneLayer]
+    file_sha256: str
 
 
 HttpGet = Callable[[str], bytes]
@@ -169,17 +203,36 @@ def _default_http_get(url: str) -> bytes:
             {"User-Agent": "FireViewer/simple-measured-tile-sources-v1"}
         )
         _HTTP_LOCAL.session = session
-    response = session.get(
-        url,
-        timeout=(20, 180),
-    )
-    response.raise_for_status()
-    if not response.content:
-        raise SimpleMeasuredTileSourceError(f"Empty WMS response: {url}")
-    return bytes(response.content)
+    global _WMS_NEXT_REQUEST_AT
+    last_error: Exception | None = None
+    for attempt in range(4):
+        with _WMS_RATE_LOCK:
+            now = time.monotonic()
+            request_at = max(now, _WMS_NEXT_REQUEST_AT)
+            _WMS_NEXT_REQUEST_AT = request_at + 1.0 / WMS_REQUESTS_PER_SECOND
+        delay = request_at - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            response = session.get(url, timeout=(20, 180))
+            if response.status_code == 429 or 500 <= response.status_code < 600:
+                response.raise_for_status()
+            elif response.status_code >= 400:
+                response.raise_for_status()
+            if not response.content:
+                raise SimpleMeasuredTileSourceError(f"Empty WMS response: {url}")
+            return bytes(response.content)
+        except (requests.RequestException, SimpleMeasuredTileSourceError) as error:
+            last_error = error
+            if attempt == 3:
+                break
+            time.sleep(0.5 * (2**attempt))
+    raise SimpleMeasuredTileSourceError(f"WMS request failed: {url}") from last_error
 
 
-def _elevation_array(payload: bytes, label: str) -> np.ndarray:
+def _elevation_array(
+    payload: bytes, label: str, *, expected_size: int = ELEVATION_SIZE
+) -> np.ndarray:
     try:
         # IGN WMS responses may omit an internal affine.  The requested BBOX,
         # dimensions and CRS are canonical and are written into the sealed
@@ -190,12 +243,12 @@ def _elevation_array(payload: bytes, label: str) -> np.ndarray:
             )
             with MemoryFile(payload) as memory, memory.open() as dataset:
                 if (
-                    dataset.width != ELEVATION_SIZE
-                    or dataset.height != ELEVATION_SIZE
+                    dataset.width != expected_size
+                    or dataset.height != expected_size
                     or dataset.count < 1
                 ):
                     raise SimpleMeasuredTileSourceError(
-                        f"{label} response grid is not 1040 x 1040"
+                        f"{label} response grid is not {expected_size} x {expected_size}"
                     )
                 values = np.asarray(dataset.read(1), dtype="float32")
                 mask = dataset.read_masks(1)
@@ -208,13 +261,15 @@ def _elevation_array(payload: bytes, label: str) -> np.ndarray:
     return values
 
 
-def _orthophoto_image(payload: bytes) -> Image.Image:
+def _orthophoto_image(
+    payload: bytes, *, expected_size: int = ORTHOPHOTO_SIZE
+) -> Image.Image:
     try:
         with Image.open(BytesIO(payload)) as source:
             source.load()
-            if source.size != (ORTHOPHOTO_SIZE, ORTHOPHOTO_SIZE):
+            if source.size != (expected_size, expected_size):
                 raise SimpleMeasuredTileSourceError(
-                    "Orthophoto response grid is not 520 x 520"
+                    f"Orthophoto response grid is not {expected_size} x {expected_size}"
                 )
             return source.convert("RGB")
     except OSError as error:
@@ -261,6 +316,376 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise SimpleMeasuredTileSourceError(f"{label} must be a JSON object")
     return value
+
+
+def _metatile_origin(origin: tuple[int, int]) -> tuple[int, int]:
+    return (
+        (origin[0] // METATILE_SIZE_M) * METATILE_SIZE_M,
+        (origin[1] // METATILE_SIZE_M) * METATILE_SIZE_M,
+    )
+
+
+def _metatile_bounds(origin: tuple[int, int]) -> tuple[int, int, int, int]:
+    return (
+        origin[0] - HALO_M,
+        origin[1] - HALO_M,
+        origin[0] + METATILE_SIZE_M + HALO_M,
+        origin[1] + METATILE_SIZE_M + HALO_M,
+    )
+
+
+def _metatile_id(origin: tuple[int, int]) -> str:
+    return f"x{origin[0]}_y{origin[1]}_4x4"
+
+
+def _metatile_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _METATILE_LOCKS_GUARD:
+        return _METATILE_LOCKS.setdefault(key, threading.Lock())
+
+
+def _metatile_signature(
+    root: Path, manifest: Mapping[str, Any]
+) -> tuple[tuple[int, int], ...]:
+    paths = [root / "metatile.json"]
+    sources = manifest.get("sources")
+    if isinstance(sources, Mapping):
+        for role in ("mnt", "mns", "orthophoto"):
+            record = sources.get(role)
+            if isinstance(record, Mapping) and isinstance(record.get("file"), str):
+                paths.append(root / record["file"])
+    return tuple((path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
+
+
+def _validate_metatile(
+    root: Path,
+    *,
+    origin: tuple[int, int],
+    elevation_revision: str,
+    orthophoto_revision: str,
+) -> dict[str, Any]:
+    manifest_path = root / "metatile.json"
+    manifest = _read_json(manifest_path, "metatile manifest")
+    supplied_hash = manifest.get("manifest_sha256")
+    unsigned = dict(manifest)
+    unsigned.pop("manifest_sha256", None)
+    bounds = _metatile_bounds(origin)
+    expected_urls = {
+        "mnt": wms_url(MNT_LAYER, bounds, METATILE_ELEVATION_SIZE, "image/tiff"),
+        "mns": wms_url(MNS_LAYER, bounds, METATILE_ELEVATION_SIZE, "image/tiff"),
+        "orthophoto": wms_url(
+            ORTHOPHOTO_LAYER, bounds, METATILE_ORTHOPHOTO_SIZE, "image/png"
+        ),
+    }
+    if (
+        manifest.get("schema") != METATILE_SCHEMA
+        or manifest.get("status") != "downloaded_verified_local_cache"
+        or manifest.get("metatile_id") != _metatile_id(origin)
+        or manifest.get("origin_l93_m") != list(origin)
+        or manifest.get("bounds_l93_m") != list(bounds)
+        or manifest.get("tile_span") != [METATILE_TILES, METATILE_TILES]
+        or manifest.get("elevation_revision") != elevation_revision
+        or manifest.get("orthophoto_revision") != orthophoto_revision
+        or supplied_hash != _sha256_bytes(_canonical_bytes(unsigned))
+    ):
+        raise SimpleMeasuredTileSourceError("Metatile manifest identity differs")
+    sources = manifest.get("sources")
+    if not isinstance(sources, Mapping):
+        raise SimpleMeasuredTileSourceError("Metatile source records are invalid")
+    cache_key = str(root.resolve())
+    try:
+        signature = _metatile_signature(root, manifest)
+    except OSError as error:
+        raise SimpleMeasuredTileSourceError("Metatile cache is incomplete") from error
+    if _VALIDATED_METATILES.get(cache_key) == signature:
+        return manifest
+    expected = {
+        "mnt": ("mnt-response.tif", MNT_LAYER),
+        "mns": ("mns-response.tif", MNS_LAYER),
+        "orthophoto": ("orthophoto-response.png", ORTHOPHOTO_LAYER),
+    }
+    for role, (file_name, layer) in expected.items():
+        record = sources.get(role)
+        path = root / file_name
+        if (
+            not isinstance(record, Mapping)
+            or record.get("file") != file_name
+            or record.get("layer") != layer
+            or record.get("request_url") != expected_urls[role]
+            or not path.is_file()
+            or path.is_symlink()
+            or record.get("byte_count") != path.stat().st_size
+            or record.get("sha256") != _sha256_file(path)
+        ):
+            raise SimpleMeasuredTileSourceError(f"Metatile source differs: {role}")
+    _VALIDATED_METATILES[cache_key] = signature
+    return manifest
+
+
+def _prepare_metatile(
+    cache_root: Path,
+    *,
+    tile_origin: tuple[int, int],
+    tile_id: str,
+    elevation_revision: str,
+    orthophoto_revision: str,
+    getter: HttpGet,
+    progress_callback: ProgressCallback | None,
+) -> tuple[Path, dict[str, Any]]:
+    origin = _metatile_origin(tile_origin)
+    destination = cache_root / _metatile_id(origin)
+    lock = _metatile_lock(destination)
+    with lock:
+        disabled_reason = _FAILED_METATILES.get(str(destination.resolve()))
+        if disabled_reason is not None:
+            raise SimpleMeasuredTileSourceError(
+                f"Metatile disabled after an earlier failure: {disabled_reason}"
+            )
+        if destination.exists():
+            manifest = _validate_metatile(
+                destination,
+                origin=origin,
+                elevation_revision=elevation_revision,
+                orthophoto_revision=orthophoto_revision,
+            )
+            _emit_progress(
+                progress_callback,
+                "metatile_reused",
+                tile_id=tile_id,
+                metatile_id=manifest["metatile_id"],
+            )
+            return destination, manifest
+        bounds = _metatile_bounds(origin)
+        urls = {
+            "mnt": wms_url(MNT_LAYER, bounds, METATILE_ELEVATION_SIZE, "image/tiff"),
+            "mns": wms_url(MNS_LAYER, bounds, METATILE_ELEVATION_SIZE, "image/tiff"),
+            "orthophoto": wms_url(
+                ORTHOPHOTO_LAYER,
+                bounds,
+                METATILE_ORTHOPHOTO_SIZE,
+                "image/png",
+            ),
+        }
+        responses: dict[str, bytes] = {}
+        for role in ("mnt", "mns", "orthophoto"):
+            _emit_progress(
+                progress_callback,
+                f"download_{role}_started",
+                tile_id=tile_id,
+                metatile_id=_metatile_id(origin),
+                request_url=urls[role],
+            )
+            responses[role] = getter(urls[role])
+            _emit_progress(
+                progress_callback,
+                f"download_{role}_completed",
+                tile_id=tile_id,
+                metatile_id=_metatile_id(origin),
+                byte_count=len(responses[role]),
+                response_sha256=_sha256_bytes(responses[role]),
+            )
+        _elevation_array(
+            responses["mnt"], "MNT metatile", expected_size=METATILE_ELEVATION_SIZE
+        )
+        _elevation_array(
+            responses["mns"], "MNS metatile", expected_size=METATILE_ELEVATION_SIZE
+        )
+        _orthophoto_image(
+            responses["orthophoto"], expected_size=METATILE_ORTHOPHOTO_SIZE
+        ).close()
+        cache_root.mkdir(parents=True, exist_ok=True)
+        staging = destination.with_name(f".{destination.name}.simple-metatile.part")
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir()
+        try:
+            names = {
+                "mnt": "mnt-response.tif",
+                "mns": "mns-response.tif",
+                "orthophoto": "orthophoto-response.png",
+            }
+            layers = {
+                "mnt": MNT_LAYER,
+                "mns": MNS_LAYER,
+                "orthophoto": ORTHOPHOTO_LAYER,
+            }
+            for role, file_name in names.items():
+                (staging / file_name).write_bytes(responses[role])
+            manifest: dict[str, Any] = {
+                "schema": METATILE_SCHEMA,
+                "status": "downloaded_verified_local_cache",
+                "metatile_id": _metatile_id(origin),
+                "origin_l93_m": list(origin),
+                "bounds_l93_m": list(bounds),
+                "tile_span": [METATILE_TILES, METATILE_TILES],
+                "elevation_revision": elevation_revision,
+                "orthophoto_revision": orthophoto_revision,
+                "sources": {
+                    role: {
+                        **_file_record(staging / file_name),
+                        "layer": layers[role],
+                        "request_url": urls[role],
+                    }
+                    for role, file_name in names.items()
+                },
+            }
+            manifest["manifest_sha256"] = _sha256_bytes(_canonical_bytes(manifest))
+            _json_write(staging / "metatile.json", manifest)
+            os.replace(staging, destination)
+        except Exception:
+            if staging.exists():
+                shutil.rmtree(staging)
+            raise
+        manifest = _validate_metatile(
+            destination,
+            origin=origin,
+            elevation_revision=elevation_revision,
+            orthophoto_revision=orthophoto_revision,
+        )
+        return destination, manifest
+
+
+def _slice_metatile(
+    root: Path,
+    manifest: Mapping[str, Any],
+    *,
+    tile_origin: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray, Image.Image, dict[str, dict[str, Any]]]:
+    metatile_origin = tuple(int(value) for value in manifest["origin_l93_m"])
+    metatile_bounds = tuple(int(value) for value in manifest["bounds_l93_m"])
+    elevation_column = int((tile_origin[0] - HALO_M - metatile_bounds[0]) / 0.5)
+    elevation_row = int(
+        (metatile_bounds[3] - (tile_origin[1] + TILE_SIZE_M + HALO_M)) / 0.5
+    )
+    ortho_column = tile_origin[0] - HALO_M - metatile_bounds[0]
+    ortho_row = metatile_bounds[3] - (tile_origin[1] + TILE_SIZE_M + HALO_M)
+
+    def elevation_window(role: str) -> np.ndarray:
+        path = root / manifest["sources"][role]["file"]
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", category=rasterio.errors.NotGeoreferencedWarning
+                )
+                with rasterio.open(path) as dataset:
+                    if (
+                        dataset.width != METATILE_ELEVATION_SIZE
+                        or dataset.height != METATILE_ELEVATION_SIZE
+                    ):
+                        raise SimpleMeasuredTileSourceError(
+                            f"{role} metatile dimensions differ"
+                        )
+                    window = rasterio.windows.Window(
+                        elevation_column,
+                        elevation_row,
+                        ELEVATION_SIZE,
+                        ELEVATION_SIZE,
+                    )
+                    values = np.asarray(dataset.read(1, window=window), dtype="float32")
+                    mask = dataset.read_masks(1, window=window)
+        except (OSError, rasterio.errors.RasterioError) as error:
+            raise SimpleMeasuredTileSourceError(
+                f"Invalid {role} metatile window"
+            ) from error
+        if (
+            values.shape != (ELEVATION_SIZE, ELEVATION_SIZE)
+            or not np.isfinite(values).all()
+            or not np.all(mask == 255)
+        ):
+            raise SimpleMeasuredTileSourceError(
+                f"{role} metatile window contains nodata"
+            )
+        return values
+
+    mnt = elevation_window("mnt")
+    mns = elevation_window("mns")
+    ortho_path = root / manifest["sources"]["orthophoto"]["file"]
+    try:
+        with Image.open(ortho_path) as image:
+            image.load()
+            if image.size != (METATILE_ORTHOPHOTO_SIZE, METATILE_ORTHOPHOTO_SIZE):
+                raise SimpleMeasuredTileSourceError(
+                    "Orthophoto metatile dimensions differ"
+                )
+            ortho = image.crop(
+                (
+                    ortho_column,
+                    ortho_row,
+                    ortho_column + ORTHOPHOTO_SIZE,
+                    ortho_row + ORTHOPHOTO_SIZE,
+                )
+            ).convert("RGB")
+    except OSError as error:
+        raise SimpleMeasuredTileSourceError(
+            "Invalid orthophoto metatile window"
+        ) from error
+    records: dict[str, dict[str, Any]] = {}
+    for role in ("mnt", "mns", "orthophoto"):
+        source = manifest["sources"][role]
+        is_elevation = role != "orthophoto"
+        records[role] = {
+            "request_url": source["request_url"],
+            "response_byte_count": source["byte_count"],
+            "response_sha256": source["sha256"],
+            "metatile": {
+                "schema": METATILE_SCHEMA,
+                "metatile_id": manifest["metatile_id"],
+                "origin_l93_m": list(metatile_origin),
+                "bounds_l93_m": list(metatile_bounds),
+                "manifest_sha256": manifest["manifest_sha256"],
+                "slice_window_pixels": [
+                    elevation_column if is_elevation else ortho_column,
+                    elevation_row if is_elevation else ortho_row,
+                    ELEVATION_SIZE if is_elevation else ORTHOPHOTO_SIZE,
+                    ELEVATION_SIZE if is_elevation else ORTHOPHOTO_SIZE,
+                ],
+            },
+        }
+    return mnt, mns, ortho, records
+
+
+def _download_tile_window(
+    *,
+    origin: tuple[int, int],
+    tile_id: str,
+    getter: HttpGet,
+    progress_callback: ProgressCallback | None,
+) -> tuple[np.ndarray, np.ndarray, Image.Image, dict[str, dict[str, Any]]]:
+    bounds = _bounds(origin)
+    urls = {
+        "mnt": wms_url(MNT_LAYER, bounds, ELEVATION_SIZE, "image/tiff"),
+        "mns": wms_url(MNS_LAYER, bounds, ELEVATION_SIZE, "image/tiff"),
+        "orthophoto": wms_url(ORTHOPHOTO_LAYER, bounds, ORTHOPHOTO_SIZE, "image/png"),
+    }
+    responses: dict[str, bytes] = {}
+    for name in ("mnt", "mns", "orthophoto"):
+        _emit_progress(
+            progress_callback,
+            f"download_{name}_started",
+            tile_id=tile_id,
+            request_url=urls[name],
+        )
+        responses[name] = getter(urls[name])
+        _emit_progress(
+            progress_callback,
+            f"download_{name}_completed",
+            tile_id=tile_id,
+            byte_count=len(responses[name]),
+            response_sha256=_sha256_bytes(responses[name]),
+        )
+    return (
+        _elevation_array(responses["mnt"], "MNT"),
+        _elevation_array(responses["mns"], "MNS"),
+        _orthophoto_image(responses["orthophoto"]),
+        {
+            role: {
+                "request_url": urls[role],
+                "response_byte_count": len(responses[role]),
+                "response_sha256": _sha256_bytes(responses[role]),
+            }
+            for role in ("mnt", "mns", "orthophoto")
+        },
+    )
 
 
 def _read_layer(
@@ -482,14 +907,86 @@ def _placement_context(
     }
 
 
+def _zone_context_signature(path: Path) -> tuple[int, int, int]:
+    stat = path.stat()
+    return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _load_indexed_zone_context(path: Path) -> _IndexedZoneContext:
+    """Validate and spatially index one immutable zone context per process."""
+
+    cache_key = str(path.resolve(strict=True))
+    signature = _zone_context_signature(path)
+    with _ZONE_CONTEXT_CACHE_LOCK:
+        cached = _ZONE_CONTEXT_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        payload = load_zone_context(path)
+        source_layers = payload.get("layers")
+        if not isinstance(source_layers, Mapping):
+            raise SimpleMeasuredTileSourceError("Zone context layers are invalid")
+        indexed_layers: dict[str, _IndexedZoneLayer] = {}
+        for role in (
+            "buildings",
+            "vegetation",
+            "roads",
+            "rail",
+            "hydro_lines",
+            "hydro_surfaces",
+        ):
+            record = source_layers.get(role)
+            features = record.get("features") if isinstance(record, Mapping) else None
+            if not isinstance(features, list):
+                raise SimpleMeasuredTileSourceError(
+                    f"Zone context layer is invalid: {role}"
+                )
+            rows: list[tuple[str, Any, Mapping[str, Any]]] = []
+            for feature in features:
+                if not isinstance(feature, Mapping) or not isinstance(
+                    feature.get("geometry"), Mapping
+                ):
+                    raise SimpleMeasuredTileSourceError(
+                        f"Zone context feature is invalid: {role}"
+                    )
+                source_id = feature.get("id")
+                if not isinstance(source_id, str) or not source_id:
+                    raise SimpleMeasuredTileSourceError(
+                        f"Zone context feature ID is invalid: {role}"
+                    )
+                properties = feature.get("properties")
+                rows.append(
+                    (
+                        source_id,
+                        shape(feature["geometry"]),
+                        dict(properties) if isinstance(properties, Mapping) else {},
+                    )
+                )
+            rows.sort(key=lambda item: item[0])
+            geometries = tuple(item[1] for item in rows)
+            indexed_layers[role] = _IndexedZoneLayer(
+                geometries=geometries,
+                properties=tuple(item[2] for item in rows),
+                source_ids=tuple(item[0] for item in rows),
+                tree=STRtree(geometries),
+            )
+        indexed = _IndexedZoneContext(
+            payload=payload,
+            layers=indexed_layers,
+            file_sha256=_sha256_file(path),
+        )
+        _ZONE_CONTEXT_CACHE[cache_key] = (signature, indexed)
+        return indexed
+
+
 def _placement_context_from_zone(
     *,
     origin: tuple[int, int],
-    zone_context: Mapping[str, Any],
+    zone_context: _IndexedZoneContext,
     zone_context_path: Path,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    payload = zone_context.payload
     bounds = _bounds(origin)
-    declared_bounds = zone_context.get("bounds_l93_m")
+    declared_bounds = payload.get("bounds_l93_m")
     if not isinstance(declared_bounds, list) or len(declared_bounds) != 4:
         raise SimpleMeasuredTileSourceError("Zone context bounds are invalid")
     if (
@@ -501,37 +998,22 @@ def _placement_context_from_zone(
         raise SimpleMeasuredTileSourceError(
             "Zone context does not cover the tile processing halo"
         )
-    layers = zone_context.get("layers")
-    if not isinstance(layers, Mapping):
-        raise SimpleMeasuredTileSourceError("Zone context layers are invalid")
     window = box(*bounds)
 
     def selected(role: str) -> list[tuple[Any, Mapping[str, Any], str]]:
-        record = layers.get(role)
-        features = record.get("features") if isinstance(record, Mapping) else None
-        if not isinstance(features, list):
+        layer = zone_context.layers.get(role)
+        if layer is None:
             raise SimpleMeasuredTileSourceError(
                 f"Zone context layer is invalid: {role}"
             )
-        result: list[tuple[Any, Mapping[str, Any], str]] = []
-        for feature in features:
-            if not isinstance(feature, Mapping) or not isinstance(
-                feature.get("geometry"), Mapping
-            ):
-                raise SimpleMeasuredTileSourceError(
-                    f"Zone context feature is invalid: {role}"
-                )
-            geometry = shape(feature["geometry"])
-            if not geometry.intersects(window):
-                continue
-            source_id = feature.get("id")
-            if not isinstance(source_id, str) or not source_id:
-                raise SimpleMeasuredTileSourceError(
-                    f"Zone context feature ID is invalid: {role}"
-                )
-            properties = feature.get("properties")
-            properties = properties if isinstance(properties, Mapping) else {}
-            result.append((geometry, properties, source_id))
+        result = [
+            (
+                layer.geometries[int(index)],
+                layer.properties[int(index)],
+                layer.source_ids[int(index)],
+            )
+            for index in layer.tree.query(window, predicate="intersects")
+        ]
         return sorted(result, key=lambda item: item[2])
 
     building_features = [
@@ -573,7 +1055,7 @@ def _placement_context_from_zone(
             *hydro_surface_records,
         )
     ]
-    source_revision = zone_context.get("source", {}).get("revision")
+    source_revision = payload.get("source", {}).get("revision")
     context = {
         "schema": "fireviewer.placement-context-input.v1",
         "crs": CRS,
@@ -629,8 +1111,8 @@ def _placement_context_from_zone(
             ],
         },
         "provenance": {
-            "zone_context_file_sha256": _sha256_file(zone_context_path),
-            "zone_context_content_sha256": zone_context["content_sha256"],
+            "zone_context_file_sha256": zone_context.file_sha256,
+            "zone_context_content_sha256": payload["content_sha256"],
             "zone_context_source_revision": source_revision,
             "vegetation_policy": "BDTOPO_V3:zone_de_vegetation semantic confirmation",
             "vegetation_feature_ids": [item[2] for item in vegetation_records],
@@ -723,6 +1205,7 @@ def prepare_sources(
     building_snapshot_receipt: Path | str | None = None,
     zone_context: Path | str | None = None,
     fixed_asset_placements: Sequence[Mapping[str, Any]] = (),
+    metatile_cache_root: Path | str | None = None,
     http_get: HttpGet | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> PreparedSources:
@@ -762,14 +1245,16 @@ def prepare_sources(
             "One zone context or all four legacy context inputs are required"
         )
     zone_context_path: Path | None = None
-    zone_payload: dict[str, Any] | None = None
+    zone_payload: Mapping[str, Any] | None = None
+    indexed_zone_context: _IndexedZoneContext | None = None
     gpkg: Path | None = None
     gpkg_manifest: Path | None = None
     snapshot_path: Path | None = None
     snapshot_receipt_path: Path | None = None
     if zone_context is not None:
         zone_context_path = _require_d_path(zone_context, "zone context", exists=True)
-        zone_payload = load_zone_context(zone_context_path)
+        indexed_zone_context = _load_indexed_zone_context(zone_context_path)
+        zone_payload = indexed_zone_context.payload
         if zone_payload.get("zone_id") != zone_id:
             raise SimpleMeasuredTileSourceError("Zone context identity differs")
     else:
@@ -822,30 +1307,47 @@ def prepare_sources(
 
     getter = http_get or _default_http_get
     bounds = _bounds(origin)
-    urls = {
-        "mnt": wms_url(MNT_LAYER, bounds, ELEVATION_SIZE, "image/tiff"),
-        "mns": wms_url(MNS_LAYER, bounds, ELEVATION_SIZE, "image/tiff"),
-        "orthophoto": wms_url(ORTHOPHOTO_LAYER, bounds, ORTHOPHOTO_SIZE, "image/png"),
-    }
-    responses: dict[str, bytes] = {}
-    for name in ("mnt", "mns", "orthophoto"):
-        _emit_progress(
-            progress_callback,
-            f"download_{name}_started",
-            tile_id=tile_id,
-            request_url=urls[name],
+    source_records: dict[str, dict[str, Any]]
+    if metatile_cache_root is not None:
+        cache_root = _require_d_path(
+            metatile_cache_root, "metatile cache root", exists=False
         )
-        responses[name] = getter(urls[name])
-        _emit_progress(
-            progress_callback,
-            f"download_{name}_completed",
+        try:
+            metatile_root, metatile = _prepare_metatile(
+                cache_root,
+                tile_origin=origin,
+                tile_id=tile_id,
+                elevation_revision=elevation_revision,
+                orthophoto_revision=orthophoto_revision,
+                getter=getter,
+                progress_callback=progress_callback,
+            )
+            mnt, mns, ortho, source_records = _slice_metatile(
+                metatile_root, metatile, tile_origin=origin
+            )
+        except SimpleMeasuredTileSourceError as error:
+            failed_root = cache_root / _metatile_id(_metatile_origin(origin))
+            with _metatile_lock(failed_root):
+                _FAILED_METATILES[str(failed_root.resolve())] = str(error)
+            _emit_progress(
+                progress_callback,
+                "metatile_fallback",
+                tile_id=tile_id,
+                reason=str(error),
+            )
+            mnt, mns, ortho, source_records = _download_tile_window(
+                origin=origin,
+                tile_id=tile_id,
+                getter=getter,
+                progress_callback=progress_callback,
+            )
+    else:
+        mnt, mns, ortho, source_records = _download_tile_window(
+            origin=origin,
             tile_id=tile_id,
-            byte_count=len(responses[name]),
-            response_sha256=_sha256_bytes(responses[name]),
+            getter=getter,
+            progress_callback=progress_callback,
         )
-    mnt = _elevation_array(responses["mnt"], "MNT")
-    mns = _elevation_array(responses["mns"], "MNS")
-    ortho = _orthophoto_image(responses["orthophoto"])
     _emit_progress(
         progress_callback,
         "sources_decoded",
@@ -858,10 +1360,10 @@ def prepare_sources(
         mns_maximum_m=round(float(mns.max()), 3),
     )
     if zone_payload is not None:
-        assert zone_context_path is not None
+        assert zone_context_path is not None and indexed_zone_context is not None
         filtered_features, footprints, context = _placement_context_from_zone(
             origin=origin,
-            zone_context=zone_payload,
+            zone_context=indexed_zone_context,
             zone_context_path=zone_context_path,
         )
     else:
@@ -916,12 +1418,8 @@ def prepare_sources(
                 "same_affine": True,
                 "finite_samples": True,
             },
-            "mnt": _elevation_record(
-                mnt_path, MNT_LAYER, urls["mnt"], responses["mnt"], mnt
-            ),
-            "mns": _elevation_record(
-                mns_path, MNS_LAYER, urls["mns"], responses["mns"], mns
-            ),
+            "mnt": _elevation_record(mnt_path, MNT_LAYER, source_records["mnt"], mnt),
+            "mns": _elevation_record(mns_path, MNS_LAYER, source_records["mns"], mns),
         }
         _json_write(staging / "elevation-source-05m.json", elevation_receipt)
         _json_write(
@@ -944,9 +1442,7 @@ def prepare_sources(
                     "service": "IGN Geoplateforme WMS-R",
                     "revision": orthophoto_revision,
                     "layer": ORTHOPHOTO_LAYER,
-                    "request_url": urls["orthophoto"],
-                    "response_byte_count": len(responses["orthophoto"]),
-                    "response_sha256": _sha256_bytes(responses["orthophoto"]),
+                    **source_records["orthophoto"],
                 },
                 "source": _file_record(ortho_path),
             },
@@ -967,12 +1463,16 @@ def prepare_sources(
                 "bounds_l93_m": list(bounds),
                 **(
                     {
-                        "source_zone_context_sha256": _sha256_file(zone_context_path),
+                        "source_zone_context_sha256": (
+                            indexed_zone_context.file_sha256
+                        ),
                         "source_zone_context_content_sha256": zone_payload[
                             "content_sha256"
                         ],
                     }
-                    if zone_payload is not None and zone_context_path is not None
+                    if zone_payload is not None
+                    and zone_context_path is not None
+                    and indexed_zone_context is not None
                     else {
                         "source_snapshot_sha256": _sha256_file(snapshot_path),
                         "source_snapshot_receipt_sha256": _sha256_file(
@@ -1050,18 +1550,17 @@ def prepare_sources(
             origin=origin,
             fixed_asset_placements=normalized_fixed_assets,
         )
+        sealed_bundle = (staging / "simple-measured-tile-sources.v1.json").read_bytes()
         os.replace(staging, destination)
     except Exception:
         if staging.exists() and staging.parent == destination.parent:
             shutil.rmtree(staging)
         raise
-    _validate_existing(
-        destination,
-        zone_id=zone_id,
-        tile_id=tile_id,
-        origin=origin,
-        fixed_asset_placements=normalized_fixed_assets,
-    )
+    published_bundle = destination / "simple-measured-tile-sources.v1.json"
+    if not published_bundle.is_file() or published_bundle.read_bytes() != sealed_bundle:
+        raise SimpleMeasuredTileSourceError(
+            "The atomically published source bundle differs from its validated seal"
+        )
     _emit_progress(
         progress_callback,
         "sources_published",
@@ -1085,16 +1584,13 @@ def _file_record(path: Path) -> dict[str, Any]:
 def _elevation_record(
     path: Path,
     layer: str,
-    request_url: str,
-    response: bytes,
+    source_record: Mapping[str, Any],
     values: np.ndarray,
 ) -> dict[str, Any]:
     return {
         **_file_record(path),
         "layer": layer,
-        "request_url": request_url,
-        "response_byte_count": len(response),
-        "response_sha256": _sha256_bytes(response),
+        **dict(source_record),
         "minimum_m": float(values.min()),
         "maximum_m": float(values.max()),
     }

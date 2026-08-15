@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from io import StringIO
+import os
 import sys
 import threading
 import zipfile
@@ -83,13 +84,13 @@ def _fake_sources(root: Path) -> SimpleNamespace:
     )
 
 
-def test_config_defaults_to_four_workers_and_rejects_more(
+def test_config_defaults_to_six_workers_and_keeps_eight_as_measured_ceiling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("FIREVIEWER_TILE_WORKERS", raising=False)
     monkeypatch.delenv("FIREVIEWER_SOURCE_WORKERS", raising=False)
-    assert production.ProductionConfig.from_environment().tile_workers == 4
-    assert production.ProductionConfig.from_environment().source_workers == 8
+    assert production.ProductionConfig.from_environment().tile_workers == 6
+    assert production.ProductionConfig.from_environment().source_workers == 12
     config = production.ProductionConfig(
         work_root=tmp_path,
         portable_root=tmp_path,
@@ -98,10 +99,25 @@ def test_config_defaults_to_four_workers_and_rejects_more(
         elevation_revision="elevation-test",
         orthophoto_revision="orthophoto-test",
         context_revision="context-test",
-        tile_workers=5,
+        tile_workers=9,
     )
     with pytest.raises(production.SimpleProductionError, match="Limites du pod"):
         production.validate_production_config(config)
+
+    accepted = production.ProductionConfig(
+        work_root=tmp_path,
+        portable_root=tmp_path,
+        asset_library=tmp_path / "asset-library.json",
+        review_batch=tmp_path / "assets",
+        elevation_revision="elevation-test",
+        orthophoto_revision="orthophoto-test",
+        context_revision="context-test",
+        tile_workers=8,
+        source_workers=16,
+    )
+    monkeypatch.setattr(production, "validate_embedded_assets", lambda _config: {})
+    monkeypatch.setattr(production, "validate_embedded_runtime", lambda _config: {})
+    production.validate_production_config(accepted)
 
     config = production.ProductionConfig(
         work_root=tmp_path,
@@ -130,18 +146,83 @@ def test_interrupted_staging_cleanup_is_bounded_to_owned_patterns(
         (staging / "partial.bin").write_bytes(b"partial")
     unrelated = job / "packages" / "keep.part"
     unrelated.write_bytes(b"keep")
+    checkpoint_staging = (
+        job
+        / production.TILE_CHECKPOINT_COLLECTION_NAME
+        / production.TILE_CHECKPOINT_VERSION
+        / ".x1_y1.zip.part"
+    )
+    checkpoint_staging.parent.mkdir(parents=True)
+    checkpoint_staging.write_bytes(b"partial")
 
     removed = production._remove_interrupted_staging(job)
 
     assert removed == [
         "sources/.x1_y1.simple-sources.part",
         "packages/.x1_y1.simple-measured-tile.part",
+        "tile-checkpoints/v1/.x1_y1.zip.part",
         "shared/prototypes/.oak.part",
     ]
     assert not source_staging.exists()
     assert not package_staging.exists()
     assert not prototype_staging.exists()
     assert unrelated.read_bytes() == b"keep"
+
+
+def test_checkpoint_is_deterministic_streamed_and_rehashed_before_restore(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "local" / "packages" / "x1_y2"
+    (package / "scene").mkdir(parents=True)
+    (package / "scene" / "scene.usda").write_bytes(b"#usda 1.0\n")
+    (package / "terrain.fvtg").write_bytes(b"terrain" * 100)
+    (package / "simple-measured-tile-receipt.v1.json").write_bytes(
+        b'{"build_id":"fixture"}\n'
+    )
+    first_job = tmp_path / "network-a" / "jobs" / "GPS-CHECKPOINT"
+    second_job = tmp_path / "network-b" / "jobs" / "GPS-CHECKPOINT"
+    first = production._write_tile_checkpoint(package, first_job, tile_id="x1_y2")
+    second = production._write_tile_checkpoint(package, second_job, tile_id="x1_y2")
+    first_archive, _first_receipt = production._tile_checkpoint_paths(
+        first_job, "x1_y2"
+    )
+    second_archive, _second_receipt = production._tile_checkpoint_paths(
+        second_job, "x1_y2"
+    )
+    assert first["archive"]["sha256"] == second["archive"]["sha256"]
+    assert first_archive.read_bytes() == second_archive.read_bytes()
+
+    restored = tmp_path / "scratch" / "packages" / "x1_y2"
+    restored_record = production._restore_tile_checkpoint(
+        first_job, restored, tile_id="x1_y2"
+    )
+    assert restored_record == first
+    assert (restored / "terrain.fvtg").read_bytes() == b"terrain" * 100
+
+    first_archive.write_bytes(first_archive.read_bytes() + b"tamper")
+    with pytest.raises(production.SimpleProductionError, match="checkpoint|Checkpoint"):
+        production._restore_tile_checkpoint(
+            first_job,
+            tmp_path / "second-restore" / "x1_y2",
+            tile_id="x1_y2",
+        )
+
+
+def test_25_by_25_plan_is_interleaved_across_49_four_by_four_metatiles() -> None:
+    latitude, longitude = _pilot_gps()
+    plan = production.plan_zone(latitude, longitude, 12.0)
+    pending = list(enumerate(plan.tiles))
+    ordered = production._interleave_tiles_by_metatile(pending)
+
+    def block(item: tuple[int, production.TilePlan]) -> tuple[int, int]:
+        x, y = item[1].origin_l93_m
+        size = production.SOURCE_METATILE_SIZE_M
+        return (x // size * size, y // size * size)
+
+    assert len(plan.tiles) == 625
+    assert len({block(item) for item in pending}) == 49
+    assert len({block(item) for item in ordered[:12]}) == 12
+    assert sorted(index for index, _tile in ordered) == list(range(625))
 
 
 def test_versioned_prototype_bundle_preserves_legacy_and_resumes_stably(
@@ -192,6 +273,49 @@ def test_versioned_prototype_bundle_preserves_legacy_and_resumes_stably(
     upgraded = production._prototype_bundle_root(job, summary)
     assert upgraded != first
     assert legacy_wrapper.read_bytes() == b"r17-wrapper-must-remain"
+
+
+def test_prototype_checkpoint_sync_does_not_rehash_unchanged_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "scratch" / "bundle"
+    destination = tmp_path / "network" / "bundle"
+    (source / "tree").mkdir(parents=True)
+    wrapper = source / "tree" / "prototype.usda"
+    wrapper.write_bytes(b"wrapper-one")
+    validated: dict[
+        str,
+        tuple[
+            tuple[int, int, int, int],
+            tuple[int, int, int, int],
+        ],
+    ] = {}
+    original_sha256_file = production._sha256_file
+    hashed: list[Path] = []
+
+    def counted_sha256(path: Path) -> str:
+        hashed.append(path)
+        return original_sha256_file(path)
+
+    monkeypatch.setattr(production, "_sha256_file", counted_sha256)
+    production._sync_prototype_bundle(source, destination, validated_files=validated)
+    production._sync_prototype_bundle(source, destination, validated_files=validated)
+    assert hashed == []
+
+    destination_wrapper = destination / "tree" / "prototype.usda"
+    previous_mtime = destination_wrapper.stat().st_mtime_ns
+    destination_wrapper.write_bytes(b"wrapper-two")
+    os.utime(
+        destination_wrapper,
+        ns=(previous_mtime + 1_000_000_000, previous_mtime + 1_000_000_000),
+    )
+    with pytest.raises(
+        production.SimpleProductionError, match="prototype immuable divergent"
+    ):
+        production._sync_prototype_bundle(
+            source, destination, validated_files=validated
+        )
+    assert len(hashed) == 2
 
 
 def test_prototype_bundle_namespace_rejects_an_unsealed_catalog_identity(
@@ -394,24 +518,25 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     )
     latitude, longitude = _pilot_gps()
     progress_events: list[tuple[float, str]] = []
+    fixed_request = {
+        "schema": "fireviewer.fixed-asset-placement-request.v1",
+        "crs": "EPSG:4326",
+        "placements": [
+            {
+                "placement_id": "church-main",
+                "asset_id": "church_village_01",
+                "latitude": latitude,
+                "longitude": longitude,
+                "yaw_deg": 0,
+            }
+        ],
+    }
     results = list(
         engine.run(
             latitude,
             longitude,
             1.0,
-            fixed_asset_placements={
-                "schema": "fireviewer.fixed-asset-placement-request.v1",
-                "crs": "EPSG:4326",
-                "placements": [
-                    {
-                        "placement_id": "church-main",
-                        "asset_id": "church_village_01",
-                        "latitude": latitude,
-                        "longitude": longitude,
-                        "yaw_deg": 0,
-                    }
-                ],
-            },
+            fixed_asset_placements=fixed_request,
             progress_callback=lambda fraction, message: progress_events.append(
                 (fraction, message)
             ),
@@ -437,7 +562,15 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     )
     network_job_root = config.work_root / "jobs" / receipt["zone_id"]
     assert network_job_root != job_root
-    assert (network_job_root / "packages").is_dir()
+    assert not (network_job_root / "packages").exists()
+    checkpoint_root = (
+        network_job_root
+        / production.TILE_CHECKPOINT_COLLECTION_NAME
+        / production.TILE_CHECKPOINT_VERSION
+    )
+    assert len(list(checkpoint_root.glob("*.zip"))) == receipt["tile_count"]
+    assert len(list(checkpoint_root.glob("*.json"))) == receipt["tile_count"]
+    assert not (network_job_root / production.ZONE_CONTEXT_NAME).exists()
     assert (network_job_root / production.ZONE_RECEIPT_NAME).is_file()
     assert not (network_job_root / production.ZIP_NAME).exists()
     assert not (network_job_root / production.BLEND_NAME).exists()
@@ -464,16 +597,31 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     assert any(name.startswith(prefix + "provenance/") for name in names)
     assert not any("orthophoto-1m.png" in name for name in names)
     assert not any("mnt-05m.tif" in name or "mns-05m.tif" in name for name in names)
-    assert validated_requests
-    expected_tile_ids = {tile["tile_id"] for tile in receipt["tiles"]}
-    assert {request["tile_id"] for request in validated_requests} == expected_tile_ids
+    # The producer has already fully validated every freshly sealed package.
+    # The engine only revalidates packages restored from a checkpoint.
+    assert validated_requests == []
     messages = [message for _fraction, message in progress_events]
     assert any("Moteur embarqué validé" in message for message in messages)
-    assert any("8 acquisitions et 3 compilations" in message for message in messages)
+    assert any("acquisitions et 3 compilations" in message for message in messages)
     assert any("MNT 0,5 m reçu" in message for message in messages)
     assert any("Placement MNS−MNT mesuré" in message for message in messages)
     assert any("Compression du pack autonome" in message for message in messages)
     assert any("scène autonome sans captures" in message for message in messages)
+
+    prepared_count = len(prepared_source_roots)
+    validated_requests.clear()
+    resumed = list(
+        engine.run(
+            latitude,
+            longitude,
+            1.0,
+            fixed_asset_placements=fixed_request,
+        )
+    )
+    assert Path(resumed[-1][1]).is_file()
+    assert len(prepared_source_roots) == prepared_count
+    expected_tile_ids = {tile["tile_id"] for tile in receipt["tiles"]}
+    assert {request["tile_id"] for request in validated_requests} == expected_tile_ids
 
 
 def test_expected_request_rejects_a_package_from_another_tile(tmp_path: Path) -> None:
@@ -603,6 +751,33 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
     for path in tmp_path.iterdir():
         if path.is_file():
             assert b"secret-not-for-files" not in path.read_bytes()
+
+
+def test_final_zip_streams_files_and_skips_recompression_for_binary_assets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assembly = tmp_path / "assembly"
+    (assembly / "shared").mkdir(parents=True)
+    binary = assembly / "shared" / "prototype.usdc"
+    binary.write_bytes(b"binary-usdc" * 250_000)
+    text_stage = assembly / "zone.usda"
+    text_stage.write_text("#usda 1.0\n", encoding="utf-8")
+
+    def forbidden_read_bytes(_path: Path) -> bytes:
+        raise AssertionError(
+            "the final ZIP must stream files instead of buffering them"
+        )
+
+    monkeypatch.setattr(Path, "read_bytes", forbidden_read_bytes)
+    archive_path = production._write_zip(assembly, "GPS-STREAM")
+
+    with zipfile.ZipFile(archive_path) as archive:
+        binary_info = archive.getinfo("fireviewer-GPS-STREAM/shared/prototype.usdc")
+        text_info = archive.getinfo("fireviewer-GPS-STREAM/zone.usda")
+        assert binary_info.compress_type == zipfile.ZIP_STORED
+        assert text_info.compress_type == zipfile.ZIP_DEFLATED
+        with archive.open(binary_info) as stream:
+            assert stream.read(11) == b"binary-usdc"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="worker links are Linux-only")
