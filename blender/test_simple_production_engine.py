@@ -833,8 +833,7 @@ def test_copy_result_sidecars_preserves_same_physical_receipt_and_copies_new_fil
     ).read_bytes() == b"publication"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="worker links are Linux-only")
-def test_copy_result_sidecars_accepts_receipt_linked_by_local_assembly(
+def test_copy_result_sidecars_accepts_receipt_copied_to_local_assembly(
     tmp_path: Path,
 ) -> None:
     network = tmp_path / "network" / "jobs" / "GPS-SYMLINKED"
@@ -844,7 +843,11 @@ def test_copy_result_sidecars_accepts_receipt_linked_by_local_assembly(
     receipt = network / production.ZONE_RECEIPT_NAME
     receipt.write_bytes(b"network-receipt")
     assembly = production._prepare_local_assembly(network, scratch)
-    assert (assembly / production.ZONE_RECEIPT_NAME).is_symlink()
+    local_receipt = assembly / production.ZONE_RECEIPT_NAME
+    assert not local_receipt.is_symlink()
+    assert local_receipt.read_bytes() == b"network-receipt"
+    receipt.write_bytes(b"network-changed-after-local-copy")
+    assert local_receipt.read_bytes() == b"network-receipt"
     (assembly / production.DATASET_ENTRY_NAME).write_bytes(b"dataset-entry")
     (assembly / production.DATASET_PUBLICATION_NAME).write_bytes(b"publication")
 
