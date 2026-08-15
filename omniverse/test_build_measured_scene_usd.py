@@ -631,6 +631,67 @@ def test_fixed_context_asset_bypasses_selection_and_keeps_exact_asset_id(
     assert any(record["asset_id"] == "building_03" for record in receipt["prototypes"])
 
 
+def test_one_asset_can_be_reused_across_measured_and_fixed_families(
+    fixture_root,
+) -> None:
+    root, terrain, prototype = fixture_root
+    inventory = _inventory()
+    inventory["context_assets"] = {
+        "source_count": 1,
+        "valid_count": 1,
+        "ambiguous_count": 0,
+        "rejected_count": 0,
+        "placement_ready_count": 1,
+        "placement_blocked_count": 0,
+        "instantiated_asset_count": 0,
+        "candidates": [
+            {
+                "candidate_id": "fixed-building-reuse",
+                "status": "valid",
+                "reason_codes": [],
+                "fixed_placement_id": "fixed-building-reuse",
+                "fixed_asset_id": "building_03",
+                "asset_category": "building",
+                "selection_context": "fixed_user_coordinate",
+                "position_l93_m": [700_125.0, 6_600_175.0],
+                "ground_elevation_mm": 100_750,
+                "yaw_rad": 0.5,
+            }
+        ],
+    }
+    inventory.pop("inventory_sha256")
+    inventory["inventory_sha256"] = _hash_json(inventory)
+
+    def select(library, *, category, zone, candidate, rule_version, usage):
+        del zone, candidate, rule_version
+        asset_id = "building_03" if category == "building" else "tree_00"
+        return {
+            "asset_id": asset_id,
+            "category": category,
+            "selection_seed": 1,
+            "usage_status": usage,
+        }
+
+    package = _build(
+        root,
+        terrain,
+        prototype,
+        "scene-reused-asset",
+        inventory=inventory,
+        selection_api=select,
+        asset_bundle_root=root / "shared" / "prototype-bundles",
+    )
+    receipt = measured.validate_measured_scene_package(package.output_root)
+    reused = [
+        record
+        for record in receipt["prototypes"]
+        if record["asset_id"] == "building_03"
+    ]
+    assert {record["family"] for record in reused} == {"buildings", "context_assets"}
+    assert receipt["prototype_bundle"]["scope"] == "explicit_shared"
+    assert len(list((root / "shared" / "prototype-bundles").glob("building_03"))) == 1
+
+
 def test_instance_altitudes_share_the_absolute_z_frame_with_terrain(
     fixture_root,
 ) -> None:

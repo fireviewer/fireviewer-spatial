@@ -2393,7 +2393,6 @@ def _validate_prototype_bundle(
     elif bundle_root == root or bundle_root.is_relative_to(root):
         raise MeasuredSceneError("shared prototype bundle is not outside scene output")
 
-    ids: list[str] = []
     expected_files = {SCENE_FILE_NAME, RECEIPT_FILE_NAME}
     bundle_basis: list[dict[str, Any]] = []
     for index, record in enumerate(records):
@@ -2418,7 +2417,6 @@ def _validate_prototype_bundle(
         asset_id = _bundle_asset_id(
             _require_nonempty_string(record.get("asset_id"), "prototype asset_id")
         )
-        ids.append(asset_id)
         availability = record.get("availability", "real_usd")
         if availability not in {"real_usd", "placeholder_usd"}:
             raise MeasuredSceneError(f"prototype {asset_id} availability is invalid")
@@ -2559,8 +2557,6 @@ def _validate_prototype_bundle(
             basis["availability"] = availability
         basis["fallback_resolution"] = fallback_resolution
         bundle_basis.append(basis)
-    if len(ids) != len(set(ids)):
-        raise MeasuredSceneError("prototype bundle contains duplicate asset ids")
     if _require_sha256(
         bundle.get("bundle_sha256"), "prototype bundle sha256"
     ) != sha256_bytes(canonical_json_bytes(bundle_basis)):
