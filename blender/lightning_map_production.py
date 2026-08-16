@@ -54,6 +54,9 @@ class CallbackClient:
         self.archive_token_url = _required_environment(
             "FIREVIEWER_MAP_ARCHIVE_TOKEN_URL"
         )
+        self.archive_ready_url = _required_environment(
+            "FIREVIEWER_MAP_ARCHIVE_READY_URL"
+        )
         self.token = _required_environment("FIREVIEWER_MAP_CALLBACK_TOKEN")
         self.sequence = 0
         self._last_sent_at = 0.0
@@ -182,6 +185,11 @@ class CallbackClient:
                     "byte_count": byte_count,
                     "sha256": sha256,
                 }
+                self._request(
+                    "POST",
+                    self.archive_ready_url,
+                    payload=self.archive_delivery,
+                )
                 return
             except BaseException as error:
                 last_error = error

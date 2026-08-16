@@ -926,7 +926,7 @@ def test_private_dataset_publication_is_atomic_idempotent_and_hides_token(
             assert b"secret-not-for-files" not in path.read_bytes()
 
 
-def test_private_dataset_publication_retries_transient_xet_timeout(
+def test_optional_dataset_publication_attempts_large_archive_only_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     latitude, longitude = _pilot_gps()
@@ -940,6 +940,7 @@ def test_private_dataset_publication_retries_transient_xet_timeout(
         orthophoto_revision="o",
         context_revision="c",
         dataset_id="fireviewer/simple-measured-scenes-v1",
+        dataset_publication_required=False,
     )
     receipt = {
         "build_id": "b" * 64,
@@ -966,11 +967,9 @@ def test_private_dataset_publication_retries_transient_xet_timeout(
         def create_commit(self, **kwargs: object) -> SimpleNamespace:
             operations = list(kwargs["operations"])
             attempts.append(operations)
-            if len(attempts) < 3:
-                raise TimeoutError(
-                    "Timeout: Request error: error decoding response body, domain: no-url"
-                )
-            return SimpleNamespace(oid="d" * 40)
+            raise TimeoutError(
+                "Timeout: Request error: error decoding response body, domain: no-url"
+            )
 
     class FakeOperation:
         def __init__(self, **kwargs: object) -> None:
@@ -996,17 +995,12 @@ def test_private_dataset_publication_retries_transient_xet_timeout(
     )
 
     assert publication is not None
-    assert publication["commit_oid"] == "d" * 40
-    assert len(attempts) == 3
-    assert sleeps == [5.0, 15.0]
+    assert publication["status"] == "failed_pending_retry"
+    assert len(attempts) == 1
+    assert sleeps == []
     assert [phase for phase, _message in progress] == [
         "dataset_publication_attempt",
-        "dataset_publication_retry",
-        "dataset_publication_attempt",
-        "dataset_publication_retry",
-        "dataset_publication_attempt",
     ]
-    assert attempts[0][0] is not attempts[1][0]
 
 
 def test_optional_dataset_publication_records_retry_without_blocking_archive(

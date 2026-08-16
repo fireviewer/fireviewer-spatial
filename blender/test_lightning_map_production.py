@@ -28,6 +28,7 @@ def _environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIREVIEWER_MAP_PROGRESS_URL": "https://api.example/progress",
         "FIREVIEWER_MAP_RESULT_URL": "https://api.example/result",
         "FIREVIEWER_MAP_ARCHIVE_TOKEN_URL": "https://api.example/archive-upload-token",
+        "FIREVIEWER_MAP_ARCHIVE_READY_URL": "https://api.example/archive-ready",
         "FIREVIEWER_MAP_CALLBACK_TOKEN": "b" * 64,
     }
     for name, value in values.items():
@@ -104,6 +105,60 @@ def test_callback_rejects_request_hash_divergence(
     )
     with pytest.raises(worker.LightningMapContractError, match="Hash"):
         worker.CallbackClient().fetch_request()
+
+
+def test_callback_marks_private_archive_ready_immediately_after_upload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _environment(monkeypatch)
+    archive = tmp_path / "fireviewer-zone.zip"
+    archive.write_bytes(b"standalone-scene")
+    sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
+    pathname = (
+        "firewarning/map-production/jobs/map-"
+        + "a" * 32
+        + f"/archive/{sha256}/fireviewer-zone.zip"
+    )
+    observed: list[tuple[str, dict[str, Any]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        observed.append((str(request.url), payload))
+        if request.url.path.endswith("/archive-upload-token"):
+            return httpx.Response(
+                200,
+                json={
+                    "schema": worker.ARCHIVE_UPLOAD_SCHEMA,
+                    "pathname": pathname,
+                    "upload_required": False,
+                },
+            )
+        return httpx.Response(204)
+
+    original_client = httpx.Client
+    monkeypatch.setattr(
+        worker.httpx,
+        "Client",
+        lambda **kwargs: original_client(
+            headers=kwargs.get("headers"),
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    callback = worker.CallbackClient()
+    callback.upload_archive(archive, archive.stat().st_size, sha256)
+
+    assert [url.rsplit("/", 1)[-1] for url, _payload in observed] == [
+        "archive-upload-token",
+        "archive-ready",
+    ]
+    assert observed[-1][1] == {
+        "provider": "vercel_blob_private",
+        "pathname": pathname,
+        "byte_count": archive.stat().st_size,
+        "sha256": sha256,
+    }
+    assert callback.archive_delivery == observed[-1][1]
 
 
 def test_callback_coalesces_concurrent_progress_without_reusing_sequences(
