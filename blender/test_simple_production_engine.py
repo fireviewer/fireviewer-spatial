@@ -161,12 +161,45 @@ def test_interrupted_staging_cleanup_is_bounded_to_owned_patterns(
         "sources/.x1_y1.simple-sources.part",
         "packages/.x1_y1.simple-measured-tile.part",
         "tile-checkpoints/v1/.x1_y1.zip.part",
-        "shared/prototypes/.oak.part",
     ]
     assert not source_staging.exists()
     assert not package_staging.exists()
-    assert not prototype_staging.exists()
+    assert prototype_staging.is_dir()
+    assert (prototype_staging / "partial.bin").read_bytes() == b"partial"
     assert unrelated.read_bytes() == b"keep"
+
+
+def test_overlapping_retries_get_isolated_scratch_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        production,
+        "_absolute",
+        lambda path, _label, *, exists: Path(path).resolve(),
+    )
+    config = production.ProductionConfig(
+        work_root=tmp_path / "work",
+        scratch_root=tmp_path / "scratch",
+        portable_root=tmp_path,
+        asset_library=tmp_path / "asset-library.json",
+        review_batch=tmp_path / "assets",
+        elevation_revision="elevation-test",
+        orthophoto_revision="orthophoto-test",
+        context_revision="context-test",
+    )
+
+    first = production._prepare_scratch_job(config, "GPS-SAME-ZONE")
+    assert first is not None
+    sentinel = first / "active.part"
+    sentinel.write_bytes(b"active")
+    second = production._prepare_scratch_job(config, "GPS-SAME-ZONE")
+
+    assert second is not None
+    assert first != second
+    assert first.parent == second.parent == config.scratch_root / "jobs"
+    assert first.name.startswith("GPS-SAME-ZONE-")
+    assert second.name.startswith("GPS-SAME-ZONE-")
+    assert sentinel.read_bytes() == b"active"
 
 
 def test_checkpoint_is_deterministic_streamed_and_rehashed_before_restore(
@@ -364,10 +397,8 @@ def test_versioned_prototype_bundle_preserves_legacy_and_resumes_stably(
     assert resumed == first
     assert first.parent.name == production.PROTOTYPE_BUNDLE_COLLECTION_NAME
     assert first.name.startswith("v1-")
-    assert removed == [
-        first.relative_to(job).as_posix() + "/.tree.part",
-    ]
-    assert not interrupted.exists()
+    assert removed == []
+    assert interrupted.is_dir()
     assert legacy_wrapper.read_bytes() == b"r17-wrapper-must-remain"
 
     active_wrapper = first / "tree" / "prototype.usda"
@@ -593,7 +624,7 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
         )
         write_fixed_terrain(terrain, root / "terrain.fvtg")
         portable = Path(kwargs["portable_root"]).resolve()
-        bundle = Path(kwargs["asset_bundle_root"]).resolve()
+        bundle = Path(kwargs["asset_bundle_identity_root"]).resolve()
         request = {
             "schema": "fireviewer.simple-measured-tile-request.v1",
             "algorithm": "fireviewer.simple-measured-tile-algorithm.v1",
@@ -717,12 +748,13 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     assert not (network_job_root / production.BLEND_NAME).exists()
     assert receipt["tile_count"] > 1
     assert len(prepared_fixed_assets) == receipt["tile_count"]
-    assert all(
-        root.is_relative_to(
-            (config.scratch_root / "jobs" / receipt["zone_id"]).resolve()
-        )
-        for root in prepared_source_roots
-    )
+    scratch_jobs = (config.scratch_root / "jobs").resolve()
+    assert all(root.is_relative_to(scratch_jobs) for root in prepared_source_roots)
+    scratch_job_names = {
+        root.relative_to(scratch_jobs).parts[0] for root in prepared_source_roots
+    }
+    assert len(scratch_job_names) == 1
+    assert next(iter(scratch_job_names)).startswith(f"{receipt['zone_id']}-")
     assert receipt["building_count"] == 2 * receipt["tile_count"]
     assert receipt["tree_count"] == 7 * receipt["tile_count"]
     assert receipt["accepted_human"] is False
@@ -975,6 +1007,74 @@ def test_private_dataset_publication_retries_transient_xet_timeout(
         "dataset_publication_attempt",
     ]
     assert attempts[0][0] is not attempts[1][0]
+
+
+def test_optional_dataset_publication_records_retry_without_blocking_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    latitude, longitude = _pilot_gps()
+    plan = production.plan_zone(latitude, longitude, 0.5)
+    config = production.ProductionConfig(
+        work_root=tmp_path,
+        portable_root=tmp_path,
+        asset_library=tmp_path / "asset-library.json",
+        review_batch=tmp_path / "review-batch",
+        elevation_revision="e",
+        orthophoto_revision="o",
+        context_revision="c",
+        dataset_id="fireviewer/simple-measured-scenes-v1",
+        dataset_publication_required=False,
+    )
+    receipt = {
+        "build_id": "f" * 64,
+        "tile_count": 625,
+        "building_count": 16_000,
+        "tree_count": 100_000,
+    }
+    production._write_json(tmp_path / production.ZONE_RECEIPT_NAME, receipt)
+    archive = tmp_path / production.ZIP_NAME
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("fireviewer-zone/zone.usda", "#usda 1.0\n")
+
+    class FailingApi:
+        def __init__(self, *, token: str) -> None:
+            assert token == "secret-not-for-files"
+
+        def repo_info(self, *, repo_id: str, repo_type: str) -> SimpleNamespace:
+            assert repo_id == config.dataset_id
+            assert repo_type == "dataset"
+            return SimpleNamespace(private=True)
+
+        def create_commit(self, **_kwargs: object) -> SimpleNamespace:
+            raise TimeoutError(
+                "Timeout: Request error: error decoding response body, domain: no-url"
+            )
+
+    class FakeOperation:
+        def __init__(self, **kwargs: object) -> None:
+            self.values = dict(kwargs)
+
+    monkeypatch.setenv("HF_TOKEN", "secret-not-for-files")
+    monkeypatch.setattr(production.time, "sleep", lambda _delay: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(CommitOperationAdd=FakeOperation, HfApi=FailingApi),
+    )
+
+    publication = production._publish_dataset_entry(
+        config,
+        job_root=tmp_path,
+        plan=plan,
+        receipt=receipt,
+        archive=archive,
+    )
+
+    assert publication is not None
+    assert publication["status"] == "failed_pending_retry"
+    assert publication["archive_sha256"] == production._sha256_file(archive)
+    assert publication["captures"] == []
+    assert archive.is_file()
 
 
 def test_private_dataset_publication_does_not_retry_auth_failure(

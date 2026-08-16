@@ -45,7 +45,7 @@ validés. Elle ne télécharge aucune donnée géographique pendant sa construct
 
 Le job utilise :
 
-- l'image candidate `pilot-v1-20260816-r36-lightning`, qui embarque
+- l'image candidate `pilot-v1-20260816-r37-lightning`, qui embarque
   `fireviewer.mns-mnt-placement-algorithm.v2` ;
 - `Machine.CPU_X_8`, non interruptible, avec une durée maximale bornée ;
 - `/lightning-work/fireviewer-map-production` pour les checkpoints compressés
@@ -72,10 +72,12 @@ réparées et la distance maximale sont conservés dans le reçu de source ; une
 tuile n'arrête donc plus toute la zone pour un trou raster ponctuel.
 Sans volume persistant configuré, les checkpoints restent limités à la durée du
 Batch Job ; la requête et la progression restent néanmoins persistées côté
-backend. Seuls le ZIP final et ses petits reçus sont publiés sur Hugging Face.
-La publication Xet utilise le mode haut débit et reprend automatiquement les
-chunks déjà envoyés après un timeout transitoire, avec quatre tentatives bornées
-et un statut explicite pour chaque reprise.
+backend. Le ZIP final est d'abord envoyé vers le stockage privé Vercel afin de
+rester téléchargeable depuis l'administration même si Hugging Face est
+indisponible. La publication Hugging Face est ensuite facultative et ne bloque
+plus la livraison du ZIP. Lorsqu'elle est active, Xet utilise le mode haut débit
+et reprend automatiquement les chunks déjà envoyés après un timeout transitoire,
+avec quatre tentatives bornées et un statut explicite pour chaque reprise.
 
 Le backend Vercel reçoit exclusivement des variables serveur :
 
@@ -84,7 +86,7 @@ FV_MAP_PRODUCTION_PROVIDER=lightning
 FV_MAP_LIGHTNING_USER_ID=<identifiant programme Lightning>
 FV_MAP_LIGHTNING_API_KEY=<clé programme Lightning>
 FV_MAP_LIGHTNING_TEAMSPACE=<teamspace>
-FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260816-r36-lightning
+FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260816-r37-lightning
 FV_MAP_LIGHTNING_MAX_RUNTIME_SECONDS=86400
 FV_MAP_CALLBACK_BASE_URL=https://fireviewer-api.vercel.app
 FV_MAP_CALLBACK_SIGNING_SECRET=<secret serveur aléatoire>

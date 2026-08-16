@@ -798,6 +798,7 @@ def _request_identity(
     asset_library: Path,
     asset_roots: Mapping[str, Path],
     asset_bundle_root: Path | None,
+    asset_bundle_identity_root: Path | None,
     portable_root: Path,
 ) -> dict[str, Any]:
     request: dict[str, Any] = {
@@ -824,9 +825,10 @@ def _request_identity(
         "pipeline_files": _pipeline_file_hashes(),
     }
     if asset_bundle_root is not None:
+        identity_root = asset_bundle_identity_root or asset_bundle_root
         request["prototype_bundle"] = {
             "scope": "explicit_shared",
-            "portable_path": asset_bundle_root.relative_to(portable_root).as_posix(),
+            "portable_path": identity_root.relative_to(portable_root).as_posix(),
         }
     return request
 
@@ -1123,6 +1125,7 @@ def produce_simple_measured_tile(
     tile_id: str,
     tile_origin_l93_m: Sequence[float],
     asset_bundle_root: Path | str | None = None,
+    asset_bundle_identity_root: Path | str | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> SimpleMeasuredTilePackage:
     """Build or verify exactly one technical pilot tile, with no network access."""
@@ -1139,6 +1142,7 @@ def produce_simple_measured_tile(
         portable, _require_d_path(output_root, "tile output root"), "tile output root"
     )
     shared_bundle: Path | None = None
+    shared_bundle_identity: Path | None = None
     if asset_bundle_root is not None:
         shared_bundle = _inside(
             portable,
@@ -1149,6 +1153,18 @@ def produce_simple_measured_tile(
             raise SimpleMeasuredTileError(
                 "Shared asset bundle root must be outside the tile output"
             )
+        if asset_bundle_identity_root is not None:
+            shared_bundle_identity = _inside(
+                portable,
+                _require_d_path(
+                    asset_bundle_identity_root, "shared asset bundle identity root"
+                ),
+                "shared asset bundle identity root",
+            )
+    elif asset_bundle_identity_root is not None:
+        raise SimpleMeasuredTileError(
+            "Shared asset bundle identity requires one physical bundle root"
+        )
     inputs = {
         "mnt": _require_d_path(mnt_05m, "MNT input", kind="file"),
         "mns": _require_d_path(mns_05m, "MNS input", kind="file"),
@@ -1202,6 +1218,7 @@ def produce_simple_measured_tile(
         asset_library=inputs["asset_library"],
         asset_roots=roots,
         asset_bundle_root=shared_bundle,
+        asset_bundle_identity_root=shared_bundle_identity,
         portable_root=portable,
     )
     if destination.exists():

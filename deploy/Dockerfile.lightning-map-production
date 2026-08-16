@@ -5,9 +5,10 @@ ENV FIREVIEWER_TILE_WORKERS=6 \
     FIREVIEWER_TILE_STALL_TIMEOUT_SECONDS=480 \
     FIREVIEWER_PROTOTYPE_WORKERS=8 \
     FIREVIEWER_PROTOTYPE_BUNDLE_MODE=linked \
+    FIREVIEWER_HF_PUBLICATION_REQUIRED=0 \
     FIREVIEWER_WORK_ROOT=/lightning-work/fireviewer-map-production \
     FIREVIEWER_SCRATCH_ROOT=/lightning-scratch/fireviewer-map-production \
-    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260816-r36-lightning \
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260816-r37-lightning \
     HF_XET_HIGH_PERFORMANCE=1
 
 COPY fireviewer-spatial/requirements.lightning-map-production.txt /opt/fireviewer/requirements.lightning.txt

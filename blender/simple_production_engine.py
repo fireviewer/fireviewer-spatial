@@ -14,6 +14,7 @@ import os
 import queue
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import zipfile
@@ -112,6 +113,7 @@ class ProductionConfig:
     tile_stall_timeout_seconds: int = DEFAULT_TILE_STALL_TIMEOUT_SECONDS
     blender: Path = Path("/opt/blender/blender")
     dataset_id: str | None = None
+    dataset_publication_required: bool = True
     scratch_root: Path | None = None
 
     @classmethod
@@ -152,6 +154,12 @@ class ProductionConfig:
             ),
             blender=Path(os.environ.get("FIREVIEWER_BLENDER", "/opt/blender/blender")),
             dataset_id=(os.environ.get("FIREVIEWER_HF_DATASET_ID", "").strip() or None),
+            dataset_publication_required=os.environ.get(
+                "FIREVIEWER_HF_PUBLICATION_REQUIRED", "1"
+            )
+            .strip()
+            .casefold()
+            not in {"0", "false", "no", "off"},
             scratch_root=(
                 Path(value)
                 if (value := os.environ.get("FIREVIEWER_SCRATCH_ROOT", "").strip())
@@ -184,6 +192,7 @@ PrepareSources = Callable[..., PreparedSources]
 ProduceTile = Callable[..., SimpleMeasuredTilePackage]
 ProgressCallback = Callable[[float, str], None]
 DatasetPublicationProgress = Callable[[str, str], None]
+ArchiveReadyCallback = Callable[[Path, int, str], None]
 ZipProgress = Callable[[int, int, int, int, str], None]
 HF_PUBLICATION_MAX_ATTEMPTS = 4
 HF_PUBLICATION_BACKOFF_SECONDS = (5.0, 15.0, 30.0)
@@ -210,11 +219,26 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _unique_temporary_file(path: Path, *, label: str = "") -> Path:
+    """Allocate one same-filesystem staging file owned by this invocation."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = f".{label}.part" if label else ".part"
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=suffix, dir=path.parent
+    )
+    os.close(descriptor)
+    return Path(temporary)
+
+
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     content = _canonical_bytes(payload) + b"\n"
-    temporary = path.with_name(f".{path.name}.part")
-    temporary.write_bytes(content)
-    os.replace(temporary, path)
+    temporary = _unique_temporary_file(path, label="json")
+    try:
+        temporary.write_bytes(content)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _load_json(path: Path, label: str) -> dict[str, Any]:
@@ -418,10 +442,8 @@ def _write_tile_checkpoint(
             if existing is not None:
                 return existing
             archive_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary_archive = archive_path.with_name(f".{archive_path.name}.part")
-            temporary_receipt = receipt_path.with_name(f".{receipt_path.name}.part")
-            temporary_archive.unlink(missing_ok=True)
-            temporary_receipt.unlink(missing_ok=True)
+            temporary_archive = _unique_temporary_file(archive_path, label="checkpoint")
+            temporary_receipt = _unique_temporary_file(receipt_path, label="checkpoint")
             try:
                 _copy_checkpoint_file_with_timeout(
                     local_archive,
@@ -661,9 +683,12 @@ def _sync_prototype_bundle(
             if validated_files is not None:
                 validated_files[cache_key] = (source_signature, target_signature)
             continue
-        temporary = target.with_name(f".{target.name}.sync.part")
-        shutil.copyfile(item, temporary)
-        os.replace(temporary, target)
+        temporary = _unique_temporary_file(target, label="sync")
+        try:
+            shutil.copyfile(item, temporary)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
         if validated_files is not None:
             validated_files[relative.as_posix()] = (
                 _regular_file_signature(item),
@@ -1159,21 +1184,10 @@ def _remove_interrupted_staging(job_root: Path) -> list[str]:
             job_root / TILE_CHECKPOINT_COLLECTION_NAME / TILE_CHECKPOINT_VERSION,
             ".*.part",
         ),
-        # Legacy, unversioned r17 and earlier bundle. It is deliberately retained;
-        # only its process-owned staging children may be removed.
-        (job_root / "shared" / "prototypes", ".*.part"),
     ]
-    versioned_parent = job_root / "shared" / PROTOTYPE_BUNDLE_COLLECTION_NAME
-    if versioned_parent.is_dir() and not versioned_parent.is_symlink():
-        roots_and_patterns.extend(
-            (candidate, ".*.part")
-            for candidate in sorted(versioned_parent.iterdir())
-            if candidate.is_dir()
-            and not candidate.is_symlink()
-            and candidate.name.startswith("v1-")
-            and len(candidate.name) == 67
-            and all(character in "0123456789abcdef" for character in candidate.name[3:])
-        )
+    # Prototype staging directories are uniquely owned and may belong to a
+    # concurrent retry.  Their publisher removes its own staging in ``finally``;
+    # sweeping them here could delete an active asset from another process.
     removed: list[str] = []
     resolved_job = job_root.resolve(strict=True)
     for root, pattern in roots_and_patterns:
@@ -1582,14 +1596,14 @@ def _scratch_job_path(config: ProductionConfig, zone_id: str) -> Path | None:
 
 
 def _prepare_scratch_job(config: ProductionConfig, zone_id: str) -> Path | None:
-    destination = _scratch_job_path(config, zone_id)
-    if destination is None:
+    canonical = _scratch_job_path(config, zone_id)
+    if canonical is None:
         return None
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True, exist_ok=False)
-    return destination
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    # Scratch is disposable and must never be shared by overlapping retries of
+    # the same deterministic zone.  Checkpoints remain under work_root; each
+    # invocation gets an isolated SSD directory and cannot delete another run.
+    return Path(tempfile.mkdtemp(prefix=f"{zone_id}-", dir=canonical.parent))
 
 
 def _prepare_local_assembly(
@@ -1631,6 +1645,10 @@ def _prepare_local_assembly(
         job.rglob("*"), key=lambda value: value.relative_to(job).as_posix()
     ):
         relative = source.relative_to(job)
+        if any(
+            part.startswith(".") and part.endswith(".part") for part in relative.parts
+        ):
+            continue
         if relative.parts[0] in excluded_roots or source.name in excluded_files:
             continue
         if active_bundle_relative is not None and relative.parts[0] == "shared":
@@ -1689,6 +1707,10 @@ def _write_zip(
         if path.is_file()
         and path.name not in excluded_files
         and path.relative_to(job_root).parts[0] not in excluded_roots
+        and not any(
+            part.startswith(".") and part.endswith(".part")
+            for part in path.relative_to(job_root).parts
+        )
     ]
     total_bytes = sum(path.stat().st_size for path in files)
     written_bytes = 0
@@ -1905,10 +1927,6 @@ def _publish_dataset_entry(
     if config.dataset_id is None:
         return None
     token = os.environ.get("HF_TOKEN", "").strip()
-    if not token:
-        raise SimpleProductionError(
-            "HF_TOKEN absent: publication dans la dataset privée impossible"
-        )
     with zipfile.ZipFile(archive) as bundle:
         if bundle.testzip() is not None:
             raise SimpleProductionError("Le ZIP est altéré avant publication dataset")
@@ -1954,18 +1972,35 @@ def _publish_dataset_entry(
     publication_path = job_root / DATASET_PUBLICATION_NAME
     if publication_path.is_file():
         publication = _load_json(publication_path, "reçu de publication dataset")
-        _validate_existing_publication(
-            config,
-            plan=plan,
-            receipt=receipt,
-            publication=publication,
-            archive_sha256=archive_record["sha256"],
-        )
-        return publication
+        if publication.get("status") == "published_private":
+            _validate_existing_publication(
+                config,
+                plan=plan,
+                receipt=receipt,
+                publication=publication,
+                archive_sha256=archive_record["sha256"],
+            )
+            return publication
+        if (
+            publication.get("status") != "failed_pending_retry"
+            or publication.get("dataset_id") != config.dataset_id
+            or publication.get("zone_id") != plan.zone_id
+            or publication.get("build_id") != build_id
+            or publication.get("archive_sha256") != archive_record["sha256"]
+            or publication.get("entry_sha256") != entry["entry_sha256"]
+            or publication.get("captures") != []
+        ):
+            raise SimpleProductionError(
+                "Le reçu de publication différée est incohérent"
+            )
 
     _write_json(entry_path, entry)
 
     try:
+        if not token:
+            raise SimpleProductionError(
+                "HF_TOKEN absent: publication dans la dataset privée impossible"
+            )
         from huggingface_hub import CommitOperationAdd, HfApi
 
         api = HfApi(token=token)
@@ -2021,12 +2056,41 @@ def _publish_dataset_entry(
                 time.sleep(delay)
         if commit is None:
             raise SimpleProductionError("Publication Hugging Face sans reçu de commit")
-    except SimpleProductionError:
-        raise
+    except SimpleProductionError as error:
+        if config.dataset_publication_required:
+            raise
+        pending = {
+            "schema": "fireviewer.simple-measured-scene-dataset-publication.v1",
+            "status": "failed_pending_retry",
+            "dataset_id": config.dataset_id,
+            "zone_id": plan.zone_id,
+            "build_id": build_id,
+            "archive_sha256": archive_record["sha256"],
+            "entry_sha256": entry["entry_sha256"],
+            "error_type": type(error).__name__,
+            "error": "Publication Hugging Face à reprendre",
+            "captures": capture_records,
+        }
+        _write_json(publication_path, pending)
+        return pending
     except Exception as error:
-        raise SimpleProductionError(
-            f"Publication dataset privée échouée: {error}"
-        ) from error
+        wrapped = SimpleProductionError(f"Publication dataset privée échouée: {error}")
+        if config.dataset_publication_required:
+            raise wrapped from error
+        pending = {
+            "schema": "fireviewer.simple-measured-scene-dataset-publication.v1",
+            "status": "failed_pending_retry",
+            "dataset_id": config.dataset_id,
+            "zone_id": plan.zone_id,
+            "build_id": build_id,
+            "archive_sha256": archive_record["sha256"],
+            "entry_sha256": entry["entry_sha256"],
+            "error_type": type(error).__name__,
+            "error": "Publication Hugging Face à reprendre",
+            "captures": capture_records,
+        }
+        _write_json(publication_path, pending)
+        return pending
     publication = {
         "schema": "fireviewer.simple-measured-scene-dataset-publication.v1",
         "status": "published_private",
@@ -2191,6 +2255,7 @@ class ProductionEngine:
         side_km: float,
         *,
         progress_callback: ProgressCallback | None = None,
+        archive_ready_callback: ArchiveReadyCallback | None = None,
         fixed_asset_placements: Mapping[str, Any] | None = None,
     ) -> Iterator[tuple[str, str | None, GalleryItems]]:
         if not self._lock.acquire(blocking=False):
@@ -2201,6 +2266,7 @@ class ProductionEngine:
                 longitude,
                 side_km,
                 progress_callback=progress_callback,
+                archive_ready_callback=archive_ready_callback,
                 fixed_asset_placements=(
                     dict(EMPTY_FIXED_ASSET_REQUEST)
                     if fixed_asset_placements is None
@@ -2219,6 +2285,7 @@ class ProductionEngine:
         side_km: float,
         *,
         progress_callback: ProgressCallback | None,
+        archive_ready_callback: ArchiveReadyCallback | None,
         fixed_asset_placements: Mapping[str, Any],
     ) -> Iterator[tuple[str, str | None, GalleryItems]]:
         started = time.perf_counter()
@@ -2323,6 +2390,11 @@ class ProductionEngine:
             self.config.dataset_id is not None
             and existing_receipt.is_file()
             and existing_publication.is_file()
+            and (job_root / ZIP_NAME).is_file()
+            and _load_json(existing_publication, "reçu de publication dataset").get(
+                "status"
+            )
+            == "published_private"
         ):
             receipt = _load_json(existing_receipt, "reçu de zone existant")
             if (
@@ -2390,6 +2462,13 @@ class ProductionEngine:
                 expected = f"fireviewer-{plan.zone_id}/{ENTRY_STAGE}"
                 if expected not in archive.namelist() or archive.testzip() is not None:
                     raise SimpleProductionError("Le ZIP existant est altéré")
+            existing_archive_sha256 = _sha256_file(existing_archive)
+            if archive_ready_callback is not None:
+                archive_ready_callback(
+                    existing_archive,
+                    existing_archive.stat().st_size,
+                    existing_archive_sha256,
+                )
             gallery = self.render_gallery_fn(job_root, False, None)
             if self.config.dataset_id is not None:
                 report(
@@ -2647,6 +2726,7 @@ class ProductionEngine:
                         asset_roots=asset_roots,
                         portable_root=self.config.portable_root,
                         asset_bundle_root=shared_bundle,
+                        asset_bundle_identity_root=checkpoint_bundle,
                         output_root=package_root,
                         zone_id=plan.zone_id,
                         tile_id=tile.tile_id,
@@ -2901,6 +2981,15 @@ class ProductionEngine:
             plan.zone_id,
             progress_callback=report_zip_progress,
         )
+        archive_sha256 = _sha256_file(archive)
+        if archive_ready_callback is not None:
+            report(
+                0.994,
+                "admin_archive_upload",
+                "Mise à disposition du ZIP privé dans l'administration",
+                completed_tiles=completed,
+            )
+            archive_ready_callback(archive, archive.stat().st_size, archive_sha256)
         publication = None
         if self.config.dataset_id is not None:
             report(
@@ -2936,7 +3025,11 @@ class ProductionEngine:
             total=total,
         )
         dataset_suffix = (
-            f" Publié dans {publication['dataset_id']}." if publication else ""
+            f" Publié dans {publication['dataset_id']}."
+            if publication and publication.get("status") == "published_private"
+            else " Publication Hugging Face différée; téléchargement admin disponible."
+            if publication and publication.get("status") == "failed_pending_retry"
+            else ""
         )
         completed_message = (
             f"Terminé — {completed} terrains, {receipt['building_count']} bâtiments, "

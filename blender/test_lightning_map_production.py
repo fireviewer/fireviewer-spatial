@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import threading
@@ -26,6 +27,7 @@ def _environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIREVIEWER_MAP_REQUEST_URL": "https://api.example/request",
         "FIREVIEWER_MAP_PROGRESS_URL": "https://api.example/progress",
         "FIREVIEWER_MAP_RESULT_URL": "https://api.example/result",
+        "FIREVIEWER_MAP_ARCHIVE_TOKEN_URL": "https://api.example/archive-upload-token",
         "FIREVIEWER_MAP_CALLBACK_TOKEN": "b" * 64,
     }
     for name, value in values.items():
@@ -198,6 +200,7 @@ def test_job_publishes_result_without_captures_and_cleans_local_scratch(
         def __init__(self) -> None:
             self.progress_records: list[dict[str, Any]] = []
             self.result_record: dict[str, Any] | None = None
+            self.archive_delivery: dict[str, Any] | None = None
 
         def fetch_request(self) -> dict[str, Any]:
             return dict(REQUEST)
@@ -210,6 +213,18 @@ def test_job_publishes_result_without_captures_and_cleans_local_scratch(
         def result(self, payload: dict[str, Any]) -> None:
             self.result_record = payload
 
+        def upload_archive(self, archive: Path, byte_count: int, sha256: str) -> None:
+            assert archive.read_bytes() == b"zip"
+            self.archive_delivery = {
+                "provider": "vercel_blob_private",
+                "pathname": (
+                    f"firewarning/map-production/jobs/{self.job_id}/archive/"
+                    f"{sha256}/fireviewer-zone.zip"
+                ),
+                "byte_count": byte_count,
+                "sha256": sha256,
+            }
+
     callback = FakeCallback()
 
     class FakeEngine:
@@ -218,16 +233,24 @@ def test_job_publishes_result_without_captures_and_cleans_local_scratch(
         def __init__(self, received: ProductionConfig) -> None:
             assert received is config
 
-        def run(self, *_args: Any, progress_callback: Any, **_kwargs: Any) -> Any:
+        def run(
+            self,
+            *_args: Any,
+            progress_callback: Any,
+            archive_ready_callback: Any,
+            **_kwargs: Any,
+        ) -> Any:
             progress_callback(0.5, "Tuile 1/1 — terrain")
             root = scratch / "jobs" / "GPS-TEST"
             root.mkdir(parents=True)
             archive = root / "fireviewer-zone.zip"
             archive.write_bytes(b"zip")
+            archive_ready_callback(archive, 3, hashlib.sha256(b"zip").hexdigest())
             (root / "dataset-publication.json").write_text(
                 json.dumps(
                     {
                         "captures": [],
+                        "status": "published_private",
                         "path_in_repo": "zones/GPS-TEST/build",
                         "dataset_id": "fireviewer/simple-measured-scenes-v1",
                         "commit_oid": "d" * 40,
@@ -257,6 +280,8 @@ def test_job_publishes_result_without_captures_and_cleans_local_scratch(
     result = worker.run()
     assert result["schema"] == worker.RESULT_SCHEMA
     assert result["captures"] == []
+    assert result["archive"]["provider"] == "vercel_blob_private"
+    assert result["archive"]["byte_count"] == 3
     assert callback.result_record == result
     assert callback.progress_records[-1]["state"] == "completed"
     assert not (scratch / "jobs" / "GPS-TEST").exists()

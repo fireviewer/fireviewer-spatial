@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import threading
 import unicodedata
 from collections import OrderedDict
@@ -1757,43 +1758,54 @@ def _publish_shared_prototype(bundle_root: Path, prototype: _Prototype) -> None:
         _publish_shared_prototype_locked(bundle_root, prototype)
 
 
-def _publish_shared_prototype_locked(bundle_root: Path, prototype: _Prototype) -> None:
-    asset_root = bundle_root / prototype.asset_id
-    artifacts = _prototype_artifact_hashes(prototype)
+def _validate_published_shared_prototype(
+    asset_root: Path,
+    prototype: _Prototype,
+    artifacts: Mapping[str, tuple[int, str]],
+) -> None:
+    if not asset_root.is_dir():
+        raise MeasuredSceneError(
+            f"shared prototype target is not a directory: {asset_root}"
+        )
     expected_relatives = {
         PurePosixPath(relative).relative_to(prototype.asset_id).as_posix()
         for relative in artifacts
     }
+    actual = {
+        path.relative_to(asset_root).as_posix()
+        for path in asset_root.rglob("*")
+        if path.is_file()
+    }
+    if actual != expected_relatives:
+        raise MeasuredSceneError(
+            f"shared prototype bundle layout differs: {prototype.asset_id}"
+        )
+    for relative, (expected_bytes, expected_hash) in artifacts.items():
+        within_asset = PurePosixPath(relative).relative_to(prototype.asset_id)
+        target = asset_root.joinpath(*within_asset.parts)
+        if (
+            target.stat().st_size != expected_bytes
+            or _cached_sha256_file(target) != expected_hash
+        ):
+            raise MeasuredSceneError(
+                "shared prototype bundle is immutable and differs: "
+                f"{prototype.asset_id}"
+            )
+
+
+def _publish_shared_prototype_locked(bundle_root: Path, prototype: _Prototype) -> None:
+    asset_root = bundle_root / prototype.asset_id
+    artifacts = _prototype_artifact_hashes(prototype)
     if asset_root.exists():
-        if not asset_root.is_dir():
-            raise MeasuredSceneError(
-                f"shared prototype target is not a directory: {asset_root}"
-            )
-        actual = {
-            path.relative_to(asset_root).as_posix()
-            for path in asset_root.rglob("*")
-            if path.is_file()
-        }
-        if actual != expected_relatives:
-            raise MeasuredSceneError(
-                f"shared prototype bundle layout differs: {prototype.asset_id}"
-            )
-        for relative, (expected_bytes, expected_hash) in artifacts.items():
-            within_asset = PurePosixPath(relative).relative_to(prototype.asset_id)
-            target = asset_root.joinpath(*within_asset.parts)
-            if (
-                target.stat().st_size != expected_bytes
-                or _cached_sha256_file(target) != expected_hash
-            ):
-                raise MeasuredSceneError(
-                    f"shared prototype bundle is immutable and differs: "
-                    f"{prototype.asset_id}"
-                )
+        _validate_published_shared_prototype(asset_root, prototype, artifacts)
         return
 
-    staging = bundle_root / f".{prototype.asset_id}.part"
-    if staging.exists():
-        raise MeasuredSceneError(f"shared prototype staging already exists: {staging}")
+    bundle_root.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f".{prototype.asset_id}.", suffix=".part", dir=bundle_root
+        )
+    )
     try:
         mode = _prototype_bundle_mode()
         payloads = (
@@ -1806,7 +1818,6 @@ def _publish_shared_prototype_locked(bundle_root: Path, prototype: _Prototype) -
             raise MeasuredSceneError(
                 f"prototype payload layout differs: {prototype.asset_id}"
             )
-        staging.mkdir(parents=False, exist_ok=False)
         for relative, content in payloads.items():
             within_asset = PurePosixPath(relative).relative_to(prototype.asset_id)
             target = staging.joinpath(*within_asset.parts)
@@ -1827,7 +1838,16 @@ def _publish_shared_prototype_locked(bundle_root: Path, prototype: _Prototype) -
             target = staging.joinpath(*within_asset.parts)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.symlink_to(resolved_source)
-        os.replace(staging, asset_root)
+        try:
+            os.replace(staging, asset_root)
+        except OSError:
+            # A second process may publish the same immutable prototype between
+            # the initial existence check and this atomic rename.  Accept only
+            # the exact expected winner; never overwrite a divergent bundle.
+            if not asset_root.exists():
+                raise
+            _validate_published_shared_prototype(asset_root, prototype, artifacts)
+            shutil.rmtree(staging)
         for relative, (_expected_bytes, expected_hash) in artifacts.items():
             within_asset = PurePosixPath(relative).relative_to(prototype.asset_id)
             _remember_file_hash(asset_root.joinpath(*within_asset.parts), expected_hash)

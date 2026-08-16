@@ -62,14 +62,14 @@
     ]
   },
   "output": {
-    "portable_zip": "built_on_worker_local_disk_then_uploaded_once",
+    "portable_zip": "built_on_worker_local_disk_then_uploaded_once_to_private_admin_storage",
     "entry_stage": "zone.usda",
     "standalone_blend": "zone.blend_with_packed_textures",
     "visual_gallery": "not_produced",
     "scene": "unified_relative_references",
     "independent_after_extraction": true,
     "selected_assets": "materialized_once_as_regular_files_in_the_standalone_zip",
-    "dataset_publication": "optional_private_hugging_face_final_zip_and_small_receipts_only",
+    "dataset_publication": "optional_private_hugging_face_secondary_publication_non_blocking_for_admin_download",
     "dataset_credentials": "runtime_secret_only"
   },
   "perimeter_layer": {

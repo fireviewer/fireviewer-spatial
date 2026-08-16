@@ -1107,6 +1107,49 @@ def test_concurrent_shared_bundle_hashes_each_source_artifact_once(
         assert receipt["prototype_bundle"]["scope"] == "explicit_shared"
 
 
+def test_cross_process_style_publication_converges_without_shared_part_name(
+    fixture_root, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _terrain, source = fixture_root
+    shared = root / "shared" / "race-safe-prototypes"
+    output = root / "scene-plan"
+    asset = _library(_hash_bytes(source.read_bytes()))["assets"][0]
+    prototype = measured._plan_prototype_bundle(
+        asset,
+        family="buildings",
+        asset_roots={"review_batch": root / "assets"},
+        portable_root=root,
+        bundle_root=shared,
+        output_root=output,
+        native_min_y=0.0,
+        native_extents=(2.0, 4.0, 4.0),
+        qualification_blockers=(),
+    )
+    real_replace = measured.os.replace
+    both_ready = threading.Barrier(2)
+
+    def racing_replace(source_path: Path, target_path: Path) -> None:
+        both_ready.wait(timeout=2.0)
+        real_replace(source_path, target_path)
+
+    monkeypatch.setattr(measured.os, "replace", racing_replace)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(
+            executor.map(
+                lambda _index: measured._publish_shared_prototype_locked(
+                    shared, prototype
+                ),
+                range(2),
+            )
+        )
+
+    artifacts = measured._prototype_artifact_hashes(prototype)
+    measured._validate_published_shared_prototype(
+        shared / prototype.asset_id, prototype, artifacts
+    )
+    assert not list(shared.glob(".*.part"))
+
+
 def test_unrelated_shared_prototypes_publish_without_one_global_lock(
     tmp_path: Path, monkeypatch
 ) -> None:

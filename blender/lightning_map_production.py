@@ -2,7 +2,8 @@
 
 The job uses the embedded immutable assets, a mounted data connection for tile
 checkpoints and local scratch for assembly. Only progress metadata is sent back
-to the admin backend; the standalone ZIP is uploaded directly to Hugging Face.
+to the admin backend. The standalone ZIP is uploaded once to private admin
+storage before the secondary Hugging Face publication is attempted.
 """
 
 from __future__ import annotations
@@ -28,7 +29,8 @@ from simple_production_engine import ProductionConfig, ProductionEngine, plan_zo
 
 REQUEST_SCHEMA = "fireviewer.map-production-request.v1"
 PROGRESS_SCHEMA = "fireviewer.map-production-progress.v1"
-RESULT_SCHEMA = "fireviewer.map-production-result.v1"
+RESULT_SCHEMA = "fireviewer.map-production-result.v2"
+ARCHIVE_UPLOAD_SCHEMA = "fireviewer.map-archive-upload.v1"
 PROGRESS_MIN_INTERVAL_SECONDS = 10.0
 
 
@@ -49,11 +51,15 @@ class CallbackClient:
         self.request_url = _required_environment("FIREVIEWER_MAP_REQUEST_URL")
         self.progress_url = _required_environment("FIREVIEWER_MAP_PROGRESS_URL")
         self.result_url = _required_environment("FIREVIEWER_MAP_RESULT_URL")
+        self.archive_token_url = _required_environment(
+            "FIREVIEWER_MAP_ARCHIVE_TOKEN_URL"
+        )
         self.token = _required_environment("FIREVIEWER_MAP_CALLBACK_TOKEN")
         self.sequence = 0
         self._last_sent_at = 0.0
         self._last_progress = -1.0
         self._progress_lock = threading.Lock()
+        self.archive_delivery: dict[str, Any] | None = None
         self._client = httpx.Client(
             headers={"X-FireViewer-Map-Token": self.token},
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
@@ -129,6 +135,62 @@ class CallbackClient:
     def result(self, payload: dict[str, Any]) -> None:
         self._request("POST", self.result_url, payload=payload)
 
+    def upload_archive(self, archive: Path, byte_count: int, sha256: str) -> None:
+        if archive.stat().st_size != byte_count:
+            raise LightningMapContractError(
+                "La taille du ZIP a changé avant son upload"
+            )
+        last_error: BaseException | None = None
+        for attempt in range(3):
+            try:
+                grant = self._request(
+                    "POST",
+                    self.archive_token_url,
+                    payload={"byte_count": byte_count, "sha256": sha256},
+                )
+                if (
+                    not isinstance(grant, Mapping)
+                    or grant.get("schema") != ARCHIVE_UPLOAD_SCHEMA
+                    or not isinstance(grant.get("pathname"), str)
+                    or not isinstance(grant.get("upload_required"), bool)
+                ):
+                    raise LightningMapContractError("Autorisation de ZIP invalide")
+                pathname = str(grant["pathname"])
+                if grant["upload_required"]:
+                    from vercel.blob import BlobClient
+
+                    client_token = grant.get("client_token")
+                    if not isinstance(client_token, str) or not client_token:
+                        raise LightningMapContractError("Jeton d'upload ZIP absent")
+                    result = BlobClient(token=client_token).upload_file(
+                        archive,
+                        pathname,
+                        access="private",
+                        content_type="application/zip",
+                        add_random_suffix=False,
+                        overwrite=False,
+                        cache_control_max_age=31_536_000,
+                        multipart=True,
+                    )
+                    if result.pathname != pathname:
+                        raise LightningMapContractError(
+                            "Vercel Blob a retourné un chemin ZIP inattendu"
+                        )
+                self.archive_delivery = {
+                    "provider": "vercel_blob_private",
+                    "pathname": pathname,
+                    "byte_count": byte_count,
+                    "sha256": sha256,
+                }
+                return
+            except BaseException as error:
+                last_error = error
+                if attempt < 2:
+                    time.sleep(2**attempt)
+        raise LightningMapContractError(
+            "Upload du ZIP privé vers l'administration échoué"
+        ) from last_error
+
 
 def _status_snapshot(
     config: ProductionConfig,
@@ -170,7 +232,23 @@ def _result_payload(
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     if publication.get("captures") != []:
         raise LightningMapContractError("La publication contient une galerie obsolète")
-    remote_root = publication["path_in_repo"]
+    delivery = callback.archive_delivery
+    if not isinstance(delivery, dict):
+        raise LightningMapContractError("Le ZIP privé n'a pas été remis au backend")
+    publication_status = publication.get("status")
+    if publication_status not in {"published_private", "failed_pending_retry"}:
+        raise LightningMapContractError("Le reçu Hugging Face est invalide")
+    dataset: dict[str, Any] = {
+        "repo_id": publication["dataset_id"],
+        "status": publication_status,
+    }
+    if publication_status == "published_private":
+        dataset.update(
+            {
+                "revision": publication["commit_oid"],
+                "root": publication["path_in_repo"],
+            }
+        )
     return {
         "schema": RESULT_SCHEMA,
         "job_id": callback.job_id,
@@ -181,15 +259,8 @@ def _result_payload(
         "message": final_message,
         "tile_count": receipt["tile_count"],
         "degraded_mns_tile_count": receipt.get("degraded_mns_tile_count", 0),
-        "dataset": {
-            "repo_id": publication["dataset_id"],
-            "revision": publication["commit_oid"],
-            "root": remote_root,
-        },
-        "archive": {
-            "path": f"{remote_root}/fireviewer-zone.zip",
-            "sha256": publication["archive_sha256"],
-        },
+        "dataset": dataset,
+        "archive": dict(delivery),
         "captures": [],
     }
 
@@ -259,6 +330,7 @@ def run() -> dict[str, Any]:
             request["longitude"],
             request["side_km"],
             progress_callback=report,
+            archive_ready_callback=callback.upload_archive,
             fixed_asset_placements=fixed,
         ):
             final_message = message
