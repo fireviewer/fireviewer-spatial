@@ -1,2 +1,4 @@
 httpx==0.28.1
+huggingface_hub>=0.32.0,<2
+hf-xet>=1.1.5,<2
 vercel==0.7.0
