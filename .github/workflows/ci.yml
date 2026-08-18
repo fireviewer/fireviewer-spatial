@@ -27,11 +27,13 @@ jobs:
           blender/build_asset_library_53.py
           blender/build_reference_usd_asset_library.py
           blender/compact_zone_stage.py
+          blender/export_complete_viewer_glb.py
           blender/fixed_asset_placement.py
           blender/fixed_terrain_grid.py
           blender/geographic_perimeter_layer.py
           blender/geographic_perimeter_viewer.py
           blender/inspect_reference_usd_candidates.py
+          blender/lightning_map_production.py
           blender/mid_distance_roads.py
           blender/mns_mnt_placement_inventory.py
           blender/orthophoto_ground_texture.py
@@ -57,6 +59,7 @@ jobs:
           blender/test_build_asset_library_53.py
           blender/test_build_reference_usd_asset_library.py
           blender/test_compact_zone_stage.py
+          blender/test_export_complete_viewer_glb.py
           blender/test_fixed_asset_placement.py
           blender/test_fixed_terrain_grid.py
           blender/test_geographic_perimeter_layer.py
