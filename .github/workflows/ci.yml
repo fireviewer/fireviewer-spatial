@@ -26,6 +26,7 @@ jobs:
           blender/accept_simple_measured_tile_review.py
           blender/build_asset_library_53.py
           blender/build_reference_usd_asset_library.py
+          blender/compact_zone_stage.py
           blender/fixed_asset_placement.py
           blender/fixed_terrain_grid.py
           blender/geographic_perimeter_layer.py
@@ -55,6 +56,7 @@ jobs:
           blender/test_accept_simple_measured_tile_review.py
           blender/test_build_asset_library_53.py
           blender/test_build_reference_usd_asset_library.py
+          blender/test_compact_zone_stage.py
           blender/test_fixed_asset_placement.py
           blender/test_fixed_terrain_grid.py
           blender/test_geographic_perimeter_layer.py
