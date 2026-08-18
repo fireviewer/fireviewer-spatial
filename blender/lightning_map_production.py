@@ -112,18 +112,24 @@ def _status_snapshot(config: ProductionConfig, request: dict[str, Any], fixed: M
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _export_viewer(config: ProductionConfig, job_root: Path) -> dict[str, Any]:
-    script = Path(__file__).with_name("export_complete_viewer_glb.py").resolve()
+def _run_blender_script(config: ProductionConfig, job_root: Path, script_name: str) -> None:
+    script = Path(__file__).with_name(script_name).resolve()
     command = (str(config.blender), "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1", "--python", str(script), "--", "--job-root", str(job_root))
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30 * 60, check=False)
     if result.returncode != 0:
-        raise LightningMapContractError("Export du viewer 3D complet échoué:\n" + (result.stdout + "\n" + result.stderr)[-4000:])
+        raise LightningMapContractError(f"{script_name} a échoué:\n" + (result.stdout + "\n" + result.stderr)[-4000:])
+
+
+def _export_viewer(config: ProductionConfig, job_root: Path) -> dict[str, Any]:
+    _run_blender_script(config, job_root, "export_complete_viewer_glb.py")
+    _run_blender_script(config, job_root, "validate_complete_viewer_meshes.py")
     receipt_path = job_root / RECEIPT_NAME
     glb_path = job_root / GLB_NAME
     if not receipt_path.is_file() or not glb_path.is_file():
         raise LightningMapContractError("Artefacts viewer complets absents")
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    if not isinstance(receipt, dict) or receipt.get("schema") != VIEWER_SCHEMA or receipt.get("status") != VIEWER_STATUS or receipt.get("viewer", {}).get("sha256") != _sha256_file(glb_path):
+    completeness = receipt.get("completeness") if isinstance(receipt, dict) else None
+    if not isinstance(receipt, dict) or receipt.get("schema") != VIEWER_SCHEMA or receipt.get("status") != VIEWER_STATUS or receipt.get("viewer", {}).get("sha256") != _sha256_file(glb_path) or not isinstance(completeness, Mapping) or completeness.get("mesh_coverage") != "complete":
         raise LightningMapContractError("Reçu de complétude viewer invalide")
     return receipt
 

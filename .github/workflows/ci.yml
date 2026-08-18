@@ -46,6 +46,7 @@ jobs:
           blender/simple_production_api.py
           blender/simple_production_engine.py
           blender/spatial_data.py
+          blender/validate_complete_viewer_meshes.py
           blender/validate_measured_scene.py
           omniverse/build_measured_scene_usd.py
           omniverse/fixed_terrain_usd.py
@@ -76,6 +77,7 @@ jobs:
           blender/test_simple_production_engine.py
           blender/test_simple_production_api.py
           blender/test_spatial_data.py
+          blender/test_validate_complete_viewer_meshes.py
           blender/test_validate_measured_scene.py
           omniverse/test_build_measured_scene_usd.py
           omniverse/test_fixed_terrain_usd.py
