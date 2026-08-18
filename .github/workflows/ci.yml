@@ -65,6 +65,7 @@ jobs:
           blender/test_fixed_terrain_grid.py
           blender/test_geographic_perimeter_layer.py
           blender/test_geographic_perimeter_viewer.py
+          blender/test_lightning_map_production.py
           blender/test_mid_distance_roads.py
           blender/test_mns_mnt_placement_inventory.py
           blender/test_orthophoto_ground_texture.py
