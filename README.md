@@ -1,35 +1,54 @@
 # FireViewer Spatial
 
-Outils de production, validation et scellement des cartes 3D OpenUSD et des
-timelines de périmètres observés de FireViewer. Les sorties lourdes vivent hors
-Git ; ce dépôt contient uniquement le code, les contrats et de petites fixtures
-synthétiques.
+**Headless map production, portable spatial packages and temporal fire layers for reproducible FireViewer incidents.**
 
-## Pipeline actif
+This repository owns the spatial-production side of FireViewer: building a measured geographic reference, validating and sealing its artifacts, and producing time-indexed perimeter layers that can later be replayed without rebuilding the terrain.
 
-Le moteur headless [`simple_production_api.py`](./blender/simple_production_api.py)
-expose deux jobs séparés et séquentiels :
+The cross-project architecture and project positioning are maintained in [`fireviewer/Fireviewer_doc`](https://github.com/fireviewer/Fireviewer_doc).
 
-1. une carte carrée à partir d'un centre GPS et de la longueur d'un côté ;
-2. une timeline supplémentaire de périmètres observés, liée à une carte déjà
-   produite.
+> FireViewer Spatial is a research/engineering component. It is not an emergency-response system, a certified wildfire forecast or an official geographic authority.
 
-Une carte est découpée sur la grille Lambert-93 en tuiles de 500 m. Pour chaque
-tuile, le pipeline acquiert temporairement MNT, MNS et orthophoto, puis produit :
+## Role in FireViewer
 
-- un relief fixe `terrain.fvtg` avec trois LOD déterministes ;
-- une texture de sol orthophoto bakée, légère et locale ;
-- un inventaire d'objets mesuré par `MNS−MNT` et confirmé par le contexte
-  géographique disponible ;
-- une scène OpenUSD autonome utilisant les assets embarqués et hashés.
+```text
+map request
+   ↓
+headless spatial production
+   ↓
+immutable map package
+   ├── observed/reviewed temporal layers
+   ├── replay / post-event studies
+   ├── datasets / benchmarks
+   └── browser-friendly derived views
+```
 
-Les rasters source sont supprimés seulement après validation de la tuile. Ils
-ne figurent jamais dans le ZIP final. Les placements fixes optionnels sont
-validés par le schéma
-[`fixed_asset_placement_request.v1.schema.json`](./blender/fixed_asset_placement_request.v1.schema.json)
-et prennent leur altitude sur le MNT.
+The browser is a consumer of these artifacts. It is not responsible for reconstructing the terrain.
 
-La zone finale contient notamment :
+## Canonical map builder
+
+The active engine [`simple_production_api.py`](./blender/simple_production_api.py) exposes a headless production path from a geographic centre and requested square side length.
+
+The build is planned on a **Lambert-93 / EPSG:2154 grid of 500 m tiles**. For each tile, the pipeline can temporarily acquire:
+
+- MNT / terrain elevation;
+- MNS / surface elevation;
+- orthophotography;
+- geographic context required by the active placement rules.
+
+It then produces, among other artifacts:
+
+- deterministic terrain geometry with multiple LODs;
+- a baked local ground texture;
+- context/object placement derived from measured `MNS − MNT` information and validated rules;
+- references to the exact assets actually used;
+- compact provenance receipts;
+- integrity hashes.
+
+Raw geographic rasters are temporary processing inputs and are not required in the delivered map ZIP once the tile has passed validation.
+
+## Zone package
+
+A completed zone contains files such as:
 
 ```text
 zone.usda
@@ -42,14 +61,28 @@ shared/prototypes/
 provenance/<tile>/
 ```
 
-`zone.usda` et `zone.blend` sont les scènes unifiées autonomes. La production
-active ne calcule plus de galerie PNG ; elle privilégie la génération du ZIP,
-son contrôle dans l'administration et son ouverture indépendante.
+`zone.usda` and `zone.blend` are autonomous scene representations of the accepted build.
 
-## Périmètres observés
+The active production path prioritises the **validated package itself**. A PNG capture gallery is not part of the canonical measured-map contract.
 
-[`geographic_perimeter_layer.py`](./blender/geographic_perimeter_layer.py)
-normalise un JSON/GeoJSON observé vers `EPSG:2154` et produit :
+Active contracts include:
+
+- `fireviewer.simple-measured-map-package.v2`;
+- `fireviewer.simple-measured-map-upload-contract.v2`.
+
+## Endpoint-driven execution
+
+Map production is designed to run behind a provider-independent job boundary.
+
+The FireViewer administration calls the backend, which can submit an asynchronous map job to the current compute provider. Provider credentials remain server-side.
+
+The current Lightning-oriented deployment path is documented in [`docs/SIMPLE_PRODUCTION_POD.md`](./docs/SIMPLE_PRODUCTION_POD.md) and uses an ephemeral batch workload rather than keeping heavy compute online permanently.
+
+The HTTP/job contract is described by [`simple_production_api_contract.v1.json`](./blender/simple_production_api_contract.v1.json).
+
+## Observed perimeter layers
+
+[`geographic_perimeter_layer.py`](./blender/geographic_perimeter_layer.py) normalises FireViewer JSON/GeoJSON geometry to `EPSG:2154` and can produce:
 
 ```text
 geographic-perimeters.usda
@@ -60,66 +93,64 @@ preview/perimeter-viewer.manifest.json
 preview/frame-*.glb
 ```
 
-Chaque état correspond à un instant observé ou à une plage temporelle
-explicitement fournie. Entre observations, la valeur est `undefined` ; aucune
-interpolation ni prédiction n'est inventée. Les GLB sont uniquement des vues
-dérivées pour le navigateur. L'USD, le JSON normalisé et la timeline restent
-les données de référence.
+Each state belongs to an explicit observation time or interval. Between known states, the canonical value may remain `undefined`.
 
-## Reconstructions rétrospectives
+No interpolation, propagation speed or future perimeter is silently invented.
 
-Les packs FireViewer de juillet 2026 constituent une famille distincte des périmètres observés. Les géométries marquées `reconstructed` sont dérivées de bilans de surface, secteurs, cartes et observations disponibles : elles ne sont ni des observations directes, ni des contours officiels, ni des prévisions. Une reconstruction ne doit jamais être publiée sous le contrat `observed-perimeter`.
+The OpenUSD layer, normalised geometry and timeline are reference artifacts. Browser-oriented GLB files are derived views.
 
-## Upload, simulation et datasets
+Active contracts include:
 
-[`portable_scene_package.py`](./blender/portable_scene_package.py) inventorie et
-rehash chaque octet avant l'archive. Les contrats actifs sont :
+- `fireviewer.observed-perimeter-package.v1`;
+- `fireviewer.observed-perimeter-upload-contract.v1`.
 
-- `fireviewer.simple-measured-map-package.v2` et
-  `fireviewer.simple-measured-map-upload-contract.v2` ;
-- `fireviewer.observed-perimeter-package.v1` et
-  `fireviewer.observed-perimeter-upload-contract.v1`.
+## Retrospective reconstruction
 
-Le backend et le frontend importent le dossier extrait du ZIP, contrôlent ces
-contrats, chaque hash, la scène Blender autonome et toutes les vues de timeline.
-Ils ne convertissent et ne reconstruisent aucune donnée.
+Historical FireViewer reconstruction packs are a separate artifact family.
 
-Une simulation, un dataset ou un replay lie ensuite les artefacts immuables via
-[`scene-consumer-input.schema.json`](./contracts/spatial/v1/scene-consumer-input.schema.json).
-Une carte publiée ou `technical_unpublished` est admissible pour un travail
-interne. Le consommateur n'a jamais le droit de reconstruire le terrain ou les
-périmètres et l'exécution de la simulation reste hors de ce dépôt.
+A geometry marked `reconstructed` can be derived from historical maps, area reports, sectors, remote-sensing information and reviewed evidence, but it must not be published under the observed-perimeter contract.
 
-Lors de la publication, le ZIP original de la carte reste un téléchargement de
-la fiche incident. Les futurs packs de simulation sont des archives séparées,
-liées au build de carte et à la timeline consommée ; ils ne remplacent jamais
-le package de base.
+```text
+observed ≠ reconstructed ≠ simulated ≠ predicted
+```
 
-## API et image Docker
+## Replay and downstream consumers
 
-Le contrat HTTP est décrit par
-[`simple_production_api_contract.v1.json`](./blender/simple_production_api_contract.v1.json)
-et le déploiement par
-[`SIMPLE_PRODUCTION_POD.md`](./docs/SIMPLE_PRODUCTION_POD.md). L'API FastAPI
-reste sans base de données et n'autorise qu'une production à la fois. Les
-secrets sont fournis au démarrage ; ils ne sont jamais intégrés à l'image, aux
-reçus ou aux archives.
+[`scene-consumer-input.schema.json`](./contracts/spatial/v1/scene-consumer-input.schema.json) allows a replay, dataset or optional simulation workflow to reference an accepted map build and temporal package without silently reconstructing them.
 
-## Référentiels spatiaux
+A consumer can create a **new derived study or simulation artifact**, but it must preserve the identity of the exact inputs it consumed.
 
-- coordonnées d'entrée : `EPSG:4326`, ordre longitude/latitude dans les JSON ;
-- production : `EPSG:2154`, grille de 500 m ;
-- altitude : `NGF-IGN69` ;
-- unités OpenUSD : mètres, axe vertical Z.
+The original map ZIP remains the canonical spatial artifact when published or archived.
 
-Les contrats événementiels et les outils de recalage restent distincts de la
-production de carte. Ils peuvent référencer une révision spatiale ; ils ne la
-modifient pas.
+## No Unity / Omniverse dependency in the core path
 
-## Contrôles
+The canonical FireViewer map builder does **not** depend on Unity or NVIDIA Omniverse.
 
-En développement Windows, les temporaires du pipeline doivent être dirigés
-vers `D:` :
+Older experiments may remain in repository history or specialised directories. Omniverse can also remain useful inside optional synthetic-data research in `fireviewer-sdg`, but it is not a dependency of this repository's canonical production contract.
+
+## Coordinate systems
+
+- request coordinates: `EPSG:4326`, longitude/latitude order in JSON;
+- production CRS: `EPSG:2154` / Lambert-93;
+- current vertical reference: `NGF-IGN69` where required by the active contract;
+- OpenUSD units: metres, Z-up.
+
+## Package integrity
+
+[`portable_scene_package.py`](./blender/portable_scene_package.py) inventories and hashes accepted package content before archive publication.
+
+A reproducible package should preserve enough information to identify:
+
+- exact build/contract revision;
+- source receipts;
+- CRS and transformations;
+- used prototype/asset bundle;
+- integrity hashes;
+- exceptional repairs or source gaps.
+
+The canonical doctrine is documented in [FireViewer Provenance and Reproducibility](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/PROVENANCE_AND_REPRODUCIBILITY.md).
+
+## Local validation
 
 ```powershell
 $env:TEMP = 'C:\FireViewerWorkspace\temp'
@@ -130,25 +161,22 @@ python -m pytest -q
 python -m ruff check .
 ```
 
-Dans l'image Docker et sur le pod, l'espace de travail et les temporaires sont
-placés sous `/work`, conformément au guide de déploiement.
+A green local suite does not prove live geographic-source availability, deployed provider reliability or field accuracy. Those gates are tracked separately in the canonical [Status Matrix](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/STATUS_MATRIX.md).
 
-Une suite locale verte ne prouve ni une acquisition IGN live, ni un rendu
-Blender/Omniverse, ni un pod. Ces gates sont rapportés séparément.
+## Data and licences
 
-## Données et licences
+This Git repository does not contain production maps, orthophotos, generated scene archives, model weights, tokens or production datasets.
 
-Ce dépôt Git n'embarque aucune carte, orthophoto, scène générée, archive, asset
-3D, modèle, token ou dataset de production. Les sorties de l'ancien pipeline
-ont été retirées localement ; `ground-context` et les ressources du pipeline
-définitif restent des dépendances externes hashées. Le code est sous
-AGPL-3.0-or-later ; la documentation est sous CC BY 4.0. Les données IGN et les
-autres sources externes conservent leurs licences et attributions propres.
+The code is licensed under AGPL-3.0-or-later and the repository documentation under CC BY 4.0. External geographic sources and assets retain their own licences and attribution requirements.
 
-## Identité et contact
+## Support and collaboration
 
-FireViewer est un projet distinct de recherche et développement maintenu par **Unicorn Who Dev**.
+The spatial workstream benefits directly from CPU compute credits, object storage, bandwidth, GIS/geodesy expertise and independent package/replay validation.
 
-> FireViewer n’est ni un service d’alerte, ni une source officielle, ni un outil de conduite des secours. Les sorties et artefacts de ce dépôt exigent leur provenance, leurs gates propres et, lorsqu’ils concernent un incident, une validation humaine.
+See the FireViewer [Funding Brief](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/FUNDING_BRIEF.md) and [Support & Partnerships](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/SUPPORT_AND_PARTNERSHIPS.md).
 
-Contact public, provenance, droits, sécurité et demandes de retrait : [unicornwhodev@gmail.com](mailto:unicornwhodev@gmail.com).
+## Contact
+
+FireViewer is maintained by **Unicorn Who Dev**.
+
+Research collaboration, infrastructure support, provenance, security and data-removal requests: **unicornwhodev@gmail.com**.
