@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/opt/fireviewer/fireviewer-spatial/blender \
+    FIREVIEWER_WORK_ROOT=/lightning-scratch/fireviewer-perimeter-production
+
+COPY fireviewer-spatial/requirements.lightning-perimeter-production.txt /opt/fireviewer/requirements.txt
+RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.txt
+
+WORKDIR /opt/fireviewer/fireviewer-spatial/blender
+COPY fireviewer-spatial/blender/lightning_perimeter_production.py ./
+COPY fireviewer-spatial/blender/geographic_perimeter_layer.py ./
+COPY fireviewer-spatial/blender/geographic_perimeter_layer_contract.v1.json ./
+COPY fireviewer-spatial/blender/geographic_perimeter_viewer.py ./
+COPY fireviewer-spatial/blender/portable_scene_package.py ./
+COPY fireviewer-spatial/blender/fixed_terrain_grid.py ./
+COPY fireviewer-spatial/blender/fixed_terrain_grid_contract.v1.json ./
+
+RUN python -c "import lightning_perimeter_production, geographic_perimeter_layer, geographic_perimeter_viewer, portable_scene_package"
+
+HEALTHCHECK NONE
+
+CMD ["python", "/opt/fireviewer/fireviewer-spatial/blender/lightning_perimeter_production.py"]

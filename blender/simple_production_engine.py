@@ -31,6 +31,12 @@ from build_reference_usd_asset_library import (
 from build_reference_usd_asset_library import (
     validate_reference_asset_library,
 )
+from compact_zone_stage import (
+    CompactTile,
+    CompactZoneStageError,
+    build_compact_zone_stage,
+    validate_compact_zone_stage,
+)
 from fixed_asset_placement import (
     EMPTY_REQUEST as EMPTY_FIXED_ASSET_REQUEST,
 )
@@ -73,6 +79,8 @@ HALO_M = 10
 SOURCE_METATILE_TILES = 4
 SOURCE_METATILE_SIZE_M = TILE_SIZE_M * SOURCE_METATILE_TILES
 ENTRY_STAGE = "zone.usda"
+ZONE_PAYLOAD_DIRECTORY = "payloads"
+ZONE_STAGE_LAYOUT_NAME = "zone-stage-layout.v1.json"
 ZIP_NAME = "fireviewer-zone.zip"
 STATUS_NAME = "job-status.json"
 PLAN_NAME = "zone-plan.json"
@@ -86,6 +94,11 @@ PARALLEL_HEARTBEAT_SECONDS = 15.0
 DEFAULT_TILE_STALL_TIMEOUT_SECONDS = 480
 CHECKPOINT_PUBLISH_TIMEOUT_SECONDS = 180.0
 CHECKPOINT_COPY_USES_SUBPROCESS = os.name != "nt"
+DEFAULT_MAX_ARCHIVE_BYTES = 12 * 1024 * 1024 * 1024
+MIN_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024 * 1024
+ARCHIVE_BUDGET_NAME = "archive-budget.v1.json"
+ARCHIVE_BUDGET_SCHEMA = "fireviewer.map-archive-budget.v1"
 PROTOTYPE_BUNDLE_NAMESPACE_SCHEMA = "fireviewer.prototype-bundle-namespace.v1"
 PROTOTYPE_BUNDLE_COLLECTION_NAME = "prototype-bundles"
 TILE_CHECKPOINT_SCHEMA = "fireviewer.simple-measured-tile-checkpoint.v1"
@@ -115,6 +128,7 @@ class ProductionConfig:
     dataset_id: str | None = None
     dataset_publication_required: bool = True
     scratch_root: Path | None = None
+    max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES
 
     @classmethod
     def from_environment(cls) -> ProductionConfig:
@@ -164,6 +178,12 @@ class ProductionConfig:
                 Path(value)
                 if (value := os.environ.get("FIREVIEWER_SCRATCH_ROOT", "").strip())
                 else None
+            ),
+            max_archive_bytes=int(
+                os.environ.get(
+                    "FIREVIEWER_MAX_ARCHIVE_BYTES",
+                    str(DEFAULT_MAX_ARCHIVE_BYTES),
+                )
             ),
         )
 
@@ -725,7 +745,15 @@ def _load_contract() -> dict[str, Any]:
         != "one_bounded_metatile_attempt_then_three_bounded_individual_tile_attempts"
         or payload.get("output", {}).get("entry_stage") != ENTRY_STAGE
         or payload.get("output", {}).get("portable_zip")
-        != "built_on_worker_local_disk_then_uploaded_once"
+        != "built_on_worker_local_disk_then_uploaded_once_to_private_admin_storage"
+        or payload.get("output", {}).get("maximum_archive_bytes")
+        != DEFAULT_MAX_ARCHIVE_BYTES
+        or payload.get("output", {}).get("size_gate")
+        != "before_admin_and_hugging_face_upload"
+        or payload.get("output", {}).get("openusd_assembly")
+        != "one_zone_prototype_scope_and_4x4_metatile_payloads"
+        or payload.get("output", {}).get("blender_instances")
+        != "point_instancers_preserved_with_internal_blend_compression"
         or payload.get("perimeter_layer", {}).get("fixed_layers") is not True
         or payload.get("perimeter_layer", {}).get("timeline_data")
         != "observed_instants_and_explicit_ranges"
@@ -863,6 +891,7 @@ def validate_embedded_runtime(config: ProductionConfig) -> dict[str, Any]:
         raise SimpleProductionError("Blender embarqué est absent")
     required = (
         Path(__file__),
+        Path(__file__).with_name("compact_zone_stage.py"),
         Path(__file__).with_name("prepare_simple_measured_zone_context.py"),
         Path(__file__).with_name("prepare_simple_measured_tile_sources.py"),
         Path(__file__).with_name("elevation_nodata.py"),
@@ -946,6 +975,9 @@ def validate_production_config(config: ProductionConfig) -> dict[str, Any]:
         or not 1 <= config.tile_workers <= 8
         or not config.tile_workers <= config.source_workers <= 16
         or not 120 <= config.tile_stall_timeout_seconds <= 3_600
+        or not MIN_MAX_ARCHIVE_BYTES
+        <= config.max_archive_bytes
+        <= MAX_MAX_ARCHIVE_BYTES
     ):
         raise SimpleProductionError("Limites du pod invalides")
     portable = _absolute(config.portable_root, "racine portable", exists=True)
@@ -1434,39 +1466,19 @@ def _expected_request_from_receipt(
 
 
 def _write_zone_stage(job_root: Path, plan: ZonePlan) -> Path:
-    west, south, _east, _north = plan.production_bounds_l93_m
-    lines = [
-        "#usda 1.0",
-        "(",
-        '    defaultPrim = "FireViewerZone"',
-        "    metersPerUnit = 1",
-        '    upAxis = "Z"',
-        ")",
-        "",
-        'def Xform "FireViewerZone"',
-        "{",
-        f'    custom string fireviewer:zone_id = "{plan.zone_id}"',
-        f"    custom int fireviewer:tile_count = {len(plan.tiles)}",
-    ]
-    for tile in plan.tiles:
-        x, y = tile.origin_l93_m
-        reference = f"packages/{tile.tile_id}/scene/scene.usda"
-        lines.extend(
-            [
-                "",
-                f'    def Xform "{tile.tile_id}" (',
-                f"        prepend references = @{reference}@",
-                "    )",
-                "    {",
-                f"        double3 xformOp:translate = ({x - west}, {y - south}, 0)",
-                '        uniform token[] xformOpOrder = ["xformOp:translate"]',
-                "    }",
-            ]
+    try:
+        return build_compact_zone_stage(
+            job_root,
+            zone_id=plan.zone_id,
+            production_bounds_l93_m=plan.production_bounds_l93_m,
+            tiles=tuple(
+                CompactTile(tile.tile_id, tile.origin_l93_m) for tile in plan.tiles
+            ),
         )
-    lines.extend(["}", ""])
-    destination = job_root / ENTRY_STAGE
-    destination.write_text("\n".join(lines), encoding="utf-8", newline="\n")
-    return destination
+    except CompactZoneStageError as error:
+        raise SimpleProductionError(
+            f"Assemblage OpenUSD compact impossible: {error}"
+        ) from error
 
 
 def _write_zone_receipt(
@@ -1538,6 +1550,16 @@ def _write_zone_receipt(
     context_path = job_root / ZONE_CONTEXT_NAME
     plan_path = job_root / PLAN_NAME
     stage_path = job_root / ENTRY_STAGE
+    try:
+        stage_layout = validate_compact_zone_stage(
+            job_root,
+            expected_tile_ids=[tile.tile_id for tile in plan.tiles],
+        )
+    except CompactZoneStageError as error:
+        raise SimpleProductionError(
+            f"Scène OpenUSD compacte invalide: {error}"
+        ) from error
+    stage_layout_path = job_root / ZONE_STAGE_LAYOUT_NAME
     payload: dict[str, Any] = {
         "schema": ZONE_RECEIPT_SCHEMA,
         "status": "technical_scene_produced",
@@ -1548,6 +1570,15 @@ def _write_zone_receipt(
             "path": ENTRY_STAGE,
             "byte_count": stage_path.stat().st_size,
             "sha256": _sha256_file(stage_path),
+        },
+        "stage_layout": {
+            "path": ZONE_STAGE_LAYOUT_NAME,
+            "byte_count": stage_layout_path.stat().st_size,
+            "sha256": _sha256_file(stage_layout_path),
+            "payload_count": stage_layout["payload_count"],
+            "prototype_count": stage_layout["prototype_count"],
+            "prototype_policy": stage_layout["prototype_policy"],
+            "instance_policy": stage_layout["instance_policy"],
         },
         "plan": {"path": PLAN_NAME, "sha256": _sha256_file(plan_path)},
         "context": {
@@ -1689,30 +1720,117 @@ def _prepare_local_assembly(
     return scratch
 
 
+def _archive_input_files(job_root: Path, temporary_name: str) -> list[Path]:
+    excluded_roots = {"sources", "download", TILE_CHECKPOINT_COLLECTION_NAME}
+    excluded_files = {STATUS_NAME, ZIP_NAME, temporary_name}
+    return sorted(
+        (
+            path
+            for path in job_root.rglob("*")
+            if path.is_file()
+            and path.name not in excluded_files
+            and path.relative_to(job_root).parts[0] not in excluded_roots
+            and not any(
+                part.startswith(".") and part.endswith(".part")
+                for part in path.relative_to(job_root).parts
+            )
+        ),
+        key=lambda value: value.relative_to(job_root).as_posix(),
+    )
+
+
+def _archive_size_breakdown(job_root: Path, files: Sequence[Path]) -> dict[str, int]:
+    totals = {
+        "standalone_blend": 0,
+        "tile_packages": 0,
+        "shared_prototypes": 0,
+        "compact_openusd": 0,
+        "other": 0,
+    }
+    for path in files:
+        relative = path.relative_to(job_root)
+        if relative.as_posix() == BLEND_NAME:
+            category = "standalone_blend"
+        elif relative.parts[0] == "packages":
+            category = "tile_packages"
+        elif relative.parts[0] == "shared":
+            category = "shared_prototypes"
+        elif relative.parts[0] == ZONE_PAYLOAD_DIRECTORY or relative.as_posix() in {
+            ENTRY_STAGE,
+            ZONE_STAGE_LAYOUT_NAME,
+        }:
+            category = "compact_openusd"
+        else:
+            category = "other"
+        totals[category] += path.stat().st_size
+    return totals
+
+
+def _write_archive_budget_receipt(job_root: Path, maximum_bytes: int) -> dict[str, Any]:
+    """Fail before ZIP/upload when the portable inputs exceed the fixed budget."""
+
+    receipt_path = job_root / ARCHIVE_BUDGET_NAME
+    receipt_path.unlink(missing_ok=True)
+    files = _archive_input_files(job_root, f".{ZIP_NAME}.part")
+    breakdown = _archive_size_breakdown(job_root, files)
+    input_bytes = sum(breakdown.values())
+    if input_bytes > maximum_bytes:
+        raise SimpleProductionError(
+            "Pack autonome hors budget avant compression: "
+            f"{input_bytes / (1024**3):.2f} Gio > "
+            f"{maximum_bytes / (1024**3):.2f} Gio"
+        )
+    payload: dict[str, Any] = {
+        "schema": ARCHIVE_BUDGET_SCHEMA,
+        "status": "within_limit",
+        "maximum_archive_bytes": maximum_bytes,
+        "input_byte_count": input_bytes,
+        "input_file_count": len(files),
+        "breakdown_bytes": breakdown,
+        "prototype_policy": "one_shared_bundle_and_one_zone_definition_per_family_asset",
+        "standalone_blend_policy": "point_instances_preserved_and_internal_compression",
+        "upload_policy": "archive_size_rechecked_before_admin_and_hugging_face_upload",
+    }
+    payload["receipt_sha256"] = hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+    _write_json(receipt_path, payload)
+    total_with_receipt = input_bytes + receipt_path.stat().st_size
+    if total_with_receipt > maximum_bytes:
+        receipt_path.unlink(missing_ok=True)
+        raise SimpleProductionError(
+            "Le reçu de budget ferait dépasser la taille maximale du pack"
+        )
+    return payload
+
+
+def _validate_archive_budget(archive: Path, maximum_bytes: int) -> None:
+    byte_count = archive.stat().st_size
+    if byte_count > maximum_bytes:
+        raise SimpleProductionError(
+            "Archive autonome hors budget: "
+            f"{byte_count / (1024**3):.2f} Gio > "
+            f"{maximum_bytes / (1024**3):.2f} Gio"
+        )
+
+
 def _write_zip(
     job_root: Path,
     zone_id: str,
     *,
     destination: Path | None = None,
     progress_callback: ZipProgress | None = None,
+    maximum_bytes: int | None = None,
 ) -> Path:
     destination = job_root / ZIP_NAME if destination is None else destination
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.part")
-    excluded_roots = {"sources", "download", TILE_CHECKPOINT_COLLECTION_NAME}
-    excluded_files = {STATUS_NAME, ZIP_NAME, temporary.name}
-    files = [
-        path
-        for path in job_root.rglob("*")
-        if path.is_file()
-        and path.name not in excluded_files
-        and path.relative_to(job_root).parts[0] not in excluded_roots
-        and not any(
-            part.startswith(".") and part.endswith(".part")
-            for part in path.relative_to(job_root).parts
-        )
-    ]
+    files = _archive_input_files(job_root, temporary.name)
     total_bytes = sum(path.stat().st_size for path in files)
+    if maximum_bytes is not None and total_bytes > maximum_bytes:
+        raise SimpleProductionError(
+            "Pack autonome hors budget avant écriture ZIP: "
+            f"{total_bytes / (1024**3):.2f} Gio > "
+            f"{maximum_bytes / (1024**3):.2f} Gio"
+        )
     written_bytes = 0
     prefix = PurePosixPath(f"fireviewer-{zone_id}")
     already_compressed_suffixes = {
@@ -1728,41 +1846,45 @@ def _write_zip(
         ".webp",
         ".zip",
     }
-    with zipfile.ZipFile(
-        temporary,
-        "w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=1,
-        allowZip64=True,
-    ) as archive:
-        sorted_files = sorted(
-            files, key=lambda value: value.relative_to(job_root).as_posix()
-        )
-        for file_index, path in enumerate(sorted_files, start=1):
-            relative = path.relative_to(job_root).as_posix()
-            info = zipfile.ZipInfo((prefix / relative).as_posix())
-            info.date_time = (1980, 1, 1, 0, 0, 0)
-            info.compress_type = (
-                zipfile.ZIP_STORED
-                if path.suffix.lower() in already_compressed_suffixes
-                else zipfile.ZIP_DEFLATED
-            )
-            info.external_attr = 0o100644 << 16
-            with (
-                path.open("rb") as input_stream,
-                archive.open(info, "w", force_zip64=True) as output_stream,
-            ):
-                while chunk := input_stream.read(1024 * 1024):
-                    output_stream.write(chunk)
-                    written_bytes += len(chunk)
-                    if progress_callback is not None:
-                        progress_callback(
-                            written_bytes,
-                            total_bytes,
-                            file_index,
-                            len(sorted_files),
-                            relative,
-                        )
+    temporary.unlink(missing_ok=True)
+    try:
+        with zipfile.ZipFile(
+            temporary,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=1,
+            allowZip64=True,
+        ) as archive:
+            for file_index, path in enumerate(files, start=1):
+                relative = path.relative_to(job_root).as_posix()
+                info = zipfile.ZipInfo((prefix / relative).as_posix())
+                info.date_time = (1980, 1, 1, 0, 0, 0)
+                info.compress_type = (
+                    zipfile.ZIP_STORED
+                    if path.suffix.lower() in already_compressed_suffixes
+                    else zipfile.ZIP_DEFLATED
+                )
+                info.external_attr = 0o100644 << 16
+                with (
+                    path.open("rb") as input_stream,
+                    archive.open(info, "w", force_zip64=True) as output_stream,
+                ):
+                    while chunk := input_stream.read(1024 * 1024):
+                        output_stream.write(chunk)
+                        written_bytes += len(chunk)
+                        if progress_callback is not None:
+                            progress_callback(
+                                written_bytes,
+                                total_bytes,
+                                file_index,
+                                len(files),
+                                relative,
+                            )
+        if maximum_bytes is not None:
+            _validate_archive_budget(temporary, maximum_bytes)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
     os.replace(temporary, destination)
     return destination
 
@@ -1927,6 +2049,7 @@ def _publish_dataset_entry(
     if config.dataset_id is None:
         return None
     token = os.environ.get("HF_TOKEN", "").strip()
+    _validate_archive_budget(archive, config.max_archive_bytes)
     with zipfile.ZipFile(archive) as bundle:
         if bundle.testzip() is not None:
             raise SimpleProductionError("Le ZIP est altéré avant publication dataset")
@@ -2940,6 +3063,10 @@ class ProductionEngine:
             completed_tiles=completed,
         )
         gallery = self.render_gallery_fn(assembly_root, True, None)
+        _write_archive_budget_receipt(
+            assembly_root,
+            self.config.max_archive_bytes,
+        )
         seal_map_upload_package(assembly_root)
         report(
             0.99, "zip_write", "Compression du pack autonome", completed_tiles=completed
@@ -2980,7 +3107,9 @@ class ProductionEngine:
             assembly_root,
             plan.zone_id,
             progress_callback=report_zip_progress,
+            maximum_bytes=self.config.max_archive_bytes,
         )
+        _validate_archive_budget(archive, self.config.max_archive_bytes)
         archive_sha256 = _sha256_file(archive)
         if archive_ready_callback is not None:
             report(

@@ -63,8 +63,12 @@
   },
   "output": {
     "portable_zip": "built_on_worker_local_disk_then_uploaded_once_to_private_admin_storage",
+    "maximum_archive_bytes": 12884901888,
+    "size_gate": "before_admin_and_hugging_face_upload",
     "entry_stage": "zone.usda",
     "standalone_blend": "zone.blend_with_packed_textures",
+    "openusd_assembly": "one_zone_prototype_scope_and_4x4_metatile_payloads",
+    "blender_instances": "point_instancers_preserved_with_internal_blend_compression",
     "visual_gallery": "not_produced",
     "scene": "unified_relative_references",
     "independent_after_extraction": true,

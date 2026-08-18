@@ -1,0 +1,17 @@
+**
+
+!fireviewer-spatial/
+!fireviewer-spatial/requirements.lightning-perimeter-production.txt
+!fireviewer-spatial/blender/
+!fireviewer-spatial/blender/lightning_perimeter_production.py
+!fireviewer-spatial/blender/geographic_perimeter_layer.py
+!fireviewer-spatial/blender/geographic_perimeter_layer_contract.v1.json
+!fireviewer-spatial/blender/geographic_perimeter_viewer.py
+!fireviewer-spatial/blender/portable_scene_package.py
+!fireviewer-spatial/blender/fixed_terrain_grid.py
+!fireviewer-spatial/blender/fixed_terrain_grid_contract.v1.json
+
+**/__pycache__/**
+**/*.pyc
+**/.pytest_cache/**
+**/.ruff_cache/**

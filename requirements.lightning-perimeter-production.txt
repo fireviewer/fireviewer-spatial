@@ -1,0 +1,6 @@
+httpx==0.28.1
+huggingface-hub==1.27.0
+numpy==2.4.6
+Pillow==12.1.1
+pyproj==3.7.1
+shapely==2.1.2

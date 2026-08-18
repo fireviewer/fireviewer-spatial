@@ -44,17 +44,29 @@ def test_pilot_center_and_1_5_km_produce_the_exact_validated_3x3() -> None:
     ]
 
 
-def test_zone_stage_is_one_portable_entry_over_all_tiles(tmp_path: Path) -> None:
+def test_zone_stage_delegates_all_tiles_to_the_compact_author(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     latitude, longitude = _pilot_gps()
     plan = production.plan_zone(latitude, longitude, 1.5)
+    observed: dict[str, object] = {}
+
+    def build(root: Path, **kwargs: object) -> Path:
+        observed.update(kwargs)
+        stage = root / production.ENTRY_STAGE
+        stage.write_text("#usda 1.0\n", encoding="utf-8")
+        return stage
+
+    monkeypatch.setattr(production, "build_compact_zone_stage", build)
     stage = production._write_zone_stage(tmp_path, plan)
-    text = stage.read_text(encoding="utf-8")
-    assert 'defaultPrim = "FireViewerZone"' in text
-    assert text.count("prepend references") == 9
-    assert "packages/x819500_y6312000/scene/scene.usda" in text
-    assert "double3 xformOp:translate = (0, 0, 0)" in text
-    assert "double3 xformOp:translate = (1000, 1000, 0)" in text
-    assert ":\\" not in text
+    assert stage == tmp_path / production.ENTRY_STAGE
+    assert observed["zone_id"] == plan.zone_id
+    assert observed["production_bounds_l93_m"] == plan.production_bounds_l93_m
+    compact_tiles = observed["tiles"]
+    assert isinstance(compact_tiles, tuple)
+    assert [(tile.tile_id, tile.origin_l93_m) for tile in compact_tiles] == [
+        (tile.tile_id, tile.origin_l93_m) for tile in plan.tiles
+    ]
 
 
 def _fake_sources(root: Path) -> SimpleNamespace:
@@ -91,6 +103,9 @@ def test_config_defaults_to_six_workers_and_keeps_eight_as_measured_ceiling(
     monkeypatch.delenv("FIREVIEWER_SOURCE_WORKERS", raising=False)
     assert production.ProductionConfig.from_environment().tile_workers == 6
     assert production.ProductionConfig.from_environment().source_workers == 12
+    assert (
+        production.ProductionConfig.from_environment().max_archive_bytes == 12 * 1024**3
+    )
     config = production.ProductionConfig(
         work_root=tmp_path,
         portable_root=tmp_path,
@@ -677,8 +692,29 @@ def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
         assert callback is None
         return []
 
+    compact_layout = {
+        "payload_count": 1,
+        "prototype_count": 1,
+        "prototype_policy": "one_zone_definition_per_family_asset",
+        "instance_policy": "tile_point_instancers_preserved",
+    }
+
+    def fake_compact_stage(root: Path, **_kwargs: object) -> Path:
+        stage = root / production.ENTRY_STAGE
+        stage.write_text('#usda 1.0\ndef Xform "FireViewerZone" {}\n', encoding="utf-8")
+        (root / production.ZONE_STAGE_LAYOUT_NAME).write_text(
+            json.dumps(compact_layout), encoding="utf-8"
+        )
+        return stage
+
     monkeypatch.setattr(
         production, "validate_simple_measured_tile_package", fake_validate
+    )
+    monkeypatch.setattr(production, "build_compact_zone_stage", fake_compact_stage)
+    monkeypatch.setattr(
+        production,
+        "validate_compact_zone_stage",
+        lambda *_args, **_kwargs: compact_layout,
     )
     engine = production.ProductionEngine(
         config,
@@ -1170,6 +1206,56 @@ def test_final_zip_streams_files_and_skips_recompression_for_binary_assets(
     assert progress[-1][0] == progress[-1][1]
     assert progress[-1][2] == progress[-1][3] == 2
     assert progress[-1][4] == "zone.usda"
+
+
+def test_archive_budget_blocks_oversized_pack_before_zip_or_upload(
+    tmp_path: Path,
+) -> None:
+    assembly = tmp_path / "assembly"
+    assembly.mkdir()
+    (assembly / "zone.blend").write_bytes(b"x" * 32)
+
+    with pytest.raises(production.SimpleProductionError, match="hors budget"):
+        production._write_archive_budget_receipt(assembly, 16)
+    assert not (assembly / production.ARCHIVE_BUDGET_NAME).exists()
+    assert not (assembly / production.ZIP_NAME).exists()
+
+
+def test_archive_budget_receipt_records_blend_prototypes_tiles_and_payloads(
+    tmp_path: Path,
+) -> None:
+    assembly = tmp_path / "assembly"
+    (assembly / "packages" / "tile").mkdir(parents=True)
+    (assembly / "shared" / "prototype").mkdir(parents=True)
+    (assembly / production.ZONE_PAYLOAD_DIRECTORY).mkdir(parents=True)
+    (assembly / "zone.blend").write_bytes(b"b" * 11)
+    (assembly / "packages" / "tile" / "terrain.fvtg").write_bytes(b"t" * 13)
+    (assembly / "shared" / "prototype" / "source.usdc").write_bytes(b"p" * 17)
+    (assembly / production.ZONE_PAYLOAD_DIRECTORY / "meta.usda").write_bytes(b"u" * 19)
+    (assembly / production.ENTRY_STAGE).write_bytes(b"s" * 23)
+
+    receipt = production._write_archive_budget_receipt(assembly, 1024)
+
+    assert receipt["input_byte_count"] == 83
+    assert receipt["breakdown_bytes"] == {
+        "standalone_blend": 11,
+        "tile_packages": 13,
+        "shared_prototypes": 17,
+        "compact_openusd": 42,
+        "other": 0,
+    }
+    assert receipt["status"] == "within_limit"
+
+
+def test_final_archive_size_is_rechecked_before_publication(tmp_path: Path) -> None:
+    assembly = tmp_path / "assembly"
+    assembly.mkdir()
+    (assembly / "empty.txt").write_bytes(b"")
+
+    with pytest.raises(production.SimpleProductionError, match="Archive.*hors budget"):
+        production._write_zip(assembly, "GPS-BUDGET", maximum_bytes=1)
+    assert not (assembly / production.ZIP_NAME).exists()
+    assert not (assembly / f".{production.ZIP_NAME}.part").exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="worker links are Linux-only")

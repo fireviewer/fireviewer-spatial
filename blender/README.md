@@ -18,6 +18,7 @@ livrable.
 | `fixed_asset_placement.py` | placements GPS explicites vers une tuile propriétaire et une altitude MNT |
 | `produce_simple_measured_tile.py` | scellement atomique d'une tuile complète |
 | `build_reference_usd_asset_library.py` | catalogue complet d'identités et substitution déterministe par un USD réel compatible |
+| `compact_zone_stage.py` | prototype unique de zone et payloads OpenUSD regroupant jusqu'à 4 × 4 tuiles |
 | `render_simple_zone_gallery.py` | import OpenUSD et scellement de `zone.blend`, sans rendu PNG dans le parcours actif |
 | `portable_scene_package.py` | inventaire byte-for-byte, contrats d'upload et ZIP déterministe |
 | `geographic_perimeter_layer.py` | calques USD et timeline observée sans interpolation |
@@ -37,8 +38,10 @@ Les exporteurs OpenUSD sont
   possible par le contexte ;
 - sol : orthophoto bakée par tuile, jamais la mosaïque source brute ;
 - assets : USD et textures rehashés, bundle autonome, aucun cube noir ;
-- sortie : `zone.usda`, `zone.blend`, packages de tuiles, prototypes utilisés
-  et reçus ;
+- sortie : `zone.usda`, payloads de métatuiles, `zone.blend`, packages de
+  tuiles, prototypes utilisés une seule fois et reçus ;
+- taille : `zone.blend` conserve les PointInstancers et active la compression
+  interne ; un budget de 12 Gio est contrôlé avant tout upload ;
 - stockage : travail temporaire sur `D:`, aucun artefact FireViewer durable sur
   `C:`.
 
@@ -63,11 +66,13 @@ automatiquement le donneur sans changer la demande de placement.
 Le package carte n'est scellé qu'après :
 
 1. validation de chaque tuile et de ses dépendances ;
-2. composition de la scène unifiée ;
+2. composition de la scène unifiée avec un prototype global par asset/famille
+   et des payloads regroupant au plus 16 tuiles ;
 3. vérification des assets utilisés ;
 4. import OpenUSD, vérification des instances et scellement de `zone.blend` ;
 5. suppression des rasters source ;
-6. inventaire final et relecture complète du contrat portable.
+6. contrôle de taille, inventaire final et relecture complète du contrat
+   portable.
 
 Le package périmètre est scellé après validation du JSON/GeoJSON normalisé, de
 l'USD, de la timeline, du lien à la carte et de chaque GLB de contrôle.

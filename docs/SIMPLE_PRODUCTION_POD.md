@@ -45,7 +45,7 @@ validés. Elle ne télécharge aucune donnée géographique pendant sa construct
 
 Le job utilise :
 
-- l'image candidate `pilot-v1-20260816-r37-lightning`, qui embarque
+- l'image déployée `pilot-v1-20260816-r37-lightning`, qui embarque
   `fireviewer.mns-mnt-placement-algorithm.v2` ;
 - `Machine.CPU_X_8`, non interruptible, avec une durée maximale bornée ;
 - `/lightning-work/fireviewer-map-production` pour les checkpoints compressés
@@ -77,7 +77,15 @@ rester téléchargeable depuis l'administration même si Hugging Face est
 indisponible. La publication Hugging Face est ensuite facultative et ne bloque
 plus la livraison du ZIP. Lorsqu'elle est active, Xet utilise le mode haut débit
 et reprend automatiquement les chunks déjà envoyés après un timeout transitoire,
-avec quatre tentatives bornées et un statut explicite pour chaque reprise.
+avec une tentative bornée ; un échec est enregistré pour reprise sans retirer
+le téléchargement admin.
+
+`r37` reste la dernière image publiée et configurée côté backend. La candidate
+source `r38`, non publiée tant qu'elle n'a pas reçu son autorisation dédiée,
+ajoute l'assemblage compact : prototypes définis une seule fois dans la zone,
+payloads de 4 × 4 tuiles, PointInstancers conservés dans `zone.blend`,
+compression Blender interne et refus de tout pack dépassant 12 Gio avant
+upload.
 
 Le backend Vercel reçoit exclusivement des variables serveur :
 
@@ -100,12 +108,16 @@ La production active rend zéro capture et expose toujours `captures: []`. Le
 ZIP contient au minimum :
 
 - `zone.usda`, scène OpenUSD unifiée ;
-- `zone.blend`, scène Blender autonome avec textures emballées ;
+- `payloads/*.usda`, assemblages OpenUSD regroupant jusqu'à 16 tuiles sans
+  redéfinir leurs prototypes ;
+- `zone.blend`, scène Blender autonome compressée avec textures emballées et
+  arbres/bâtiments conservés comme instances ;
 - `packages/<tile>/`, chaque terrain de 500 m ;
 - `shared/prototype-bundles/v1-<sha256>/`, les assets réellement utilisés,
   incorporés une seule fois dans le ZIP ;
 - `provenance/<tile>/`, les reçus source compacts ;
-- `zone-context.json`, `zone-plan.json` et `zone.done.json`.
+- `zone-context.json`, `zone-plan.json`, `zone-stage-layout.v1.json`,
+  `archive-budget.v1.json` et `zone.done.json`.
 
 Les MNT, MNS et orthophotos bruts sont supprimés après validation des tuiles et
 n'entrent jamais dans l'archive. Les contrats actifs sont

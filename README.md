@@ -38,13 +38,17 @@ zone.done.json
 zone-plan.json
 zone-context.json
 packages/<tile>/
-shared/prototypes/
+payloads/
+shared/prototype-bundles/v1-<sha256>/
 provenance/<tile>/
 ```
 
-`zone.usda` et `zone.blend` sont les scènes unifiées autonomes. La production
-active ne calcule plus de galerie PNG ; elle privilégie la génération du ZIP,
-son contrôle dans l'administration et son ouverture indépendante.
+`zone.usda` définit chaque prototype utilisé une seule fois et charge des
+payloads regroupant jusqu'à 4 × 4 tuiles. `zone.blend` conserve les arbres et
+bâtiments comme PointInstancers et est sauvegardé avec la compression interne
+de Blender. La production active ne calcule plus de galerie PNG ; elle refuse
+un pack hors budget avant tout upload, puis privilégie son contrôle dans
+l'administration et son ouverture indépendante.
 
 ## Périmètres observés
 

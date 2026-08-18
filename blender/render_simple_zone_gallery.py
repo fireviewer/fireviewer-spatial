@@ -319,12 +319,12 @@ def _configure_scene(bpy: Any) -> None:
 
 
 def _save_standalone_blend(bpy: Any, blend_path: Path) -> None:
-    """Write the standalone scene atomically without redundant compression."""
+    """Write the standalone scene atomically with Blender compression enabled."""
 
     temporary = blend_path.with_name(f".{blend_path.name}.part.blend")
     temporary.unlink(missing_ok=True)
     result = bpy.ops.wm.save_as_mainfile(
-        filepath=str(temporary), check_existing=False, compress=False
+        filepath=str(temporary), check_existing=False, compress=True
     )
     if (
         "FINISHED" not in result
@@ -336,6 +336,17 @@ def _save_standalone_blend(bpy: Any, blend_path: Path) -> None:
             "Blender failed to write the standalone scene atomically"
         )
     os.replace(temporary, blend_path)
+
+
+def _import_usd_scene(bpy: Any, stage: Path) -> None:
+    """Import the compact zone while explicitly preserving USD scene instances."""
+
+    result = bpy.ops.wm.usd_import(
+        filepath=str(stage),
+        support_scene_instancing=True,
+    )
+    if "FINISHED" not in result:
+        raise SimpleZoneGalleryError("Blender failed to import the unified zone")
 
 
 def _validate_measured_instances(bpy: Any) -> dict[str, int]:
@@ -502,9 +513,7 @@ def render_gallery(
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     _configure_scene(bpy)
-    result = bpy.ops.wm.usd_import(filepath=str(stage))
-    if "FINISHED" not in result:
-        raise SimpleZoneGalleryError("Blender failed to import the unified zone")
+    _import_usd_scene(bpy, stage)
     instance_counts = _validate_measured_instances(bpy)
     if (
         zone_receipt.get("building_count") != instance_counts["buildings"]

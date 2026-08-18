@@ -174,7 +174,7 @@ def test_tree_instance_gate_rejects_non_uniform_or_non_upright_scales() -> None:
         )
 
 
-def test_standalone_blend_is_written_atomically_without_inner_compression(
+def test_standalone_blend_is_written_atomically_with_inner_compression(
     zone_root: Path,
 ) -> None:
     output = zone_root / gallery.BLEND_NAME
@@ -196,10 +196,32 @@ def test_standalone_blend_is_written_atomically_without_inner_compression(
         {
             "filepath": str(zone_root / ".zone.blend.part.blend"),
             "check_existing": False,
-            "compress": False,
+            "compress": True,
         }
     ]
     assert not (zone_root / ".zone.blend.part.blend").exists()
+
+
+def test_usd_import_explicitly_preserves_scene_instances(zone_root: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    def usd_import(**kwargs: object) -> set[str]:
+        calls.append(kwargs)
+        return {"FINISHED"}
+
+    bpy = SimpleNamespace(
+        ops=SimpleNamespace(wm=SimpleNamespace(usd_import=usd_import))
+    )
+    stage = zone_root / "zone.usda"
+
+    gallery._import_usd_scene(bpy, stage)
+
+    assert calls == [
+        {
+            "filepath": str(stage),
+            "support_scene_instancing": True,
+        }
+    ]
 
 
 def test_pack_scene_images_ignores_orphan_usd_import_images(
