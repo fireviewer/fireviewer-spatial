@@ -9,7 +9,8 @@ ENV FIREVIEWER_TILE_WORKERS=6 \
     FIREVIEWER_MAX_ARCHIVE_BYTES=68719476736 \
     FIREVIEWER_WORK_ROOT=/lightning-work/fireviewer-map-production \
     FIREVIEWER_SCRATCH_ROOT=/lightning-scratch/fireviewer-map-production \
-    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260818-r40-lightning \
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260818-r41-lightning \
+    HF_XET_CACHE=/lightning-scratch/hf-xet \
     HF_XET_HIGH_PERFORMANCE=1
 
 COPY fireviewer-spatial/requirements.lightning-map-production.txt /opt/fireviewer/requirements.lightning.txt
@@ -18,7 +19,7 @@ RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.lightn
 COPY fireviewer-spatial/blender/ /opt/fireviewer/fireviewer-spatial/blender/
 COPY fireviewer-spatial/omniverse/ /opt/fireviewer/fireviewer-spatial/omniverse/
 
-RUN mkdir -p /lightning-work/fireviewer-map-production /lightning-scratch/fireviewer-map-production \
+RUN mkdir -p /lightning-work/fireviewer-map-production /lightning-scratch/fireviewer-map-production /lightning-scratch/hf-xet \
     && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-assets-only \
     && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-runtime-only
 
