@@ -203,6 +203,48 @@ def test_compact_zone_defines_one_prototype_and_four_metatile_payloads(
     assert max(record["tile_count"] for record in layout["payloads"]) <= 16
 
 
+def test_render_root_groups_multi_family_bindings_under_one_tile_override() -> None:
+    payload = {
+        "path": "payloads/x883000_y6412000.usda",
+        "prim_name": "Metatile_x883000_y6412000",
+        "origin_l93_m": [883000, 6412000],
+        "prototype_bindings": [
+            {
+                "tile_id": "x883000_y6412000",
+                "prim_name": "Buildings",
+                "targets": [
+                    "</FireViewerZone/Prototypes/Buildings/Asset_building_fixture>"
+                ],
+            },
+            {
+                "tile_id": "x883000_y6412000",
+                "prim_name": "Trees",
+                "targets": ["</FireViewerZone/Prototypes/Trees/Asset_tree_fixture>"],
+            },
+            {
+                "tile_id": "x883000_y6412000",
+                "prim_name": "ContextAssets",
+                "targets": [
+                    "</FireViewerZone/Prototypes/ContextAssets/Asset_context_fixture>"
+                ],
+            },
+        ],
+    }
+
+    root_text = compact._render_root(
+        zone_id="GPS-COMPACT",
+        tile_count=1,
+        production_origin=(883000, 6412000),
+        prototypes=(),
+        payloads=[payload],
+    ).decode("utf-8")
+
+    assert root_text.count('            over "x883000_y6412000"') == 1
+    assert root_text.count('                over "Buildings"') == 1
+    assert root_text.count('                over "Trees"') == 1
+    assert root_text.count('                over "ContextAssets"') == 1
+
+
 def test_compact_zone_zip_contains_shared_prototype_files_once(
     tmp_path: Path,
 ) -> None:
