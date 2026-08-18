@@ -9,7 +9,7 @@ ENV FIREVIEWER_TILE_WORKERS=6 \
     FIREVIEWER_MAX_ARCHIVE_BYTES=12884901888 \
     FIREVIEWER_WORK_ROOT=/lightning-work/fireviewer-map-production \
     FIREVIEWER_SCRATCH_ROOT=/lightning-scratch/fireviewer-map-production \
-    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260816-r38-lightning \
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260818-r39-lightning \
     HF_XET_HIGH_PERFORMANCE=1
 
 COPY fireviewer-spatial/requirements.lightning-map-production.txt /opt/fireviewer/requirements.lightning.txt
