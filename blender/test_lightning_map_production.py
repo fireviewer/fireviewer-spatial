@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
+import sys
 import threading
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -27,9 +29,8 @@ def _environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIREVIEWER_MAP_REQUEST_URL": "https://api.example/request",
         "FIREVIEWER_MAP_PROGRESS_URL": "https://api.example/progress",
         "FIREVIEWER_MAP_RESULT_URL": "https://api.example/result",
-        "FIREVIEWER_MAP_ARCHIVE_TOKEN_URL": "https://api.example/archive-upload-token",
-        "FIREVIEWER_MAP_ARCHIVE_READY_URL": "https://api.example/archive-ready",
         "FIREVIEWER_MAP_CALLBACK_TOKEN": "b" * 64,
+        "HF_TOKEN": "hf-test-token",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -107,60 +108,6 @@ def test_callback_rejects_request_hash_divergence(
         worker.CallbackClient().fetch_request()
 
 
-def test_callback_marks_private_archive_ready_immediately_after_upload(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    _environment(monkeypatch)
-    archive = tmp_path / "fireviewer-zone.zip"
-    archive.write_bytes(b"standalone-scene")
-    sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
-    pathname = (
-        "firewarning/map-production/jobs/map-"
-        + "a" * 32
-        + f"/archive/{sha256}/fireviewer-zone.zip"
-    )
-    observed: list[tuple[str, dict[str, Any]]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        payload = json.loads(request.content)
-        observed.append((str(request.url), payload))
-        if request.url.path.endswith("/archive-upload-token"):
-            return httpx.Response(
-                200,
-                json={
-                    "schema": worker.ARCHIVE_UPLOAD_SCHEMA,
-                    "pathname": pathname,
-                    "upload_required": False,
-                },
-            )
-        return httpx.Response(204)
-
-    original_client = httpx.Client
-    monkeypatch.setattr(
-        worker.httpx,
-        "Client",
-        lambda **kwargs: original_client(
-            headers=kwargs.get("headers"),
-            transport=httpx.MockTransport(handler),
-        ),
-    )
-    callback = worker.CallbackClient()
-    callback.upload_archive(archive, archive.stat().st_size, sha256)
-
-    assert [url.rsplit("/", 1)[-1] for url, _payload in observed] == [
-        "archive-upload-token",
-        "archive-ready",
-    ]
-    assert observed[-1][1] == {
-        "provider": "vercel_blob_private",
-        "pathname": pathname,
-        "byte_count": archive.stat().st_size,
-        "sha256": sha256,
-    }
-    assert callback.archive_delivery == observed[-1][1]
-
-
 def test_callback_coalesces_concurrent_progress_without_reusing_sequences(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -222,10 +169,105 @@ def test_callback_coalesces_concurrent_progress_without_reusing_sequences(
     assert [payload["message"] for payload in observed] == ["first", "later"]
 
 
-def test_job_publishes_result_without_captures_and_cleans_local_scratch(
+def test_hf_publication_uses_resumable_folder_upload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv("HF_TOKEN", "hf-test-token")
+    for name in ("fireviewer-zone.zip", "zone.done.json", "dataset-entry.json"):
+        (tmp_path / name).write_bytes(b"payload")
+    calls: dict[str, Any] = {}
+
+    class FakeApi:
+        def __init__(self, *, token: str) -> None:
+            calls["token"] = token
+
+        def repo_info(self, *, repo_id: str, repo_type: str) -> Any:
+            calls["repo_info"] = (repo_id, repo_type)
+            return SimpleNamespace(private=True)
+
+        def upload_folder(self, **kwargs: Any) -> Any:
+            calls["upload_folder"] = kwargs
+            return SimpleNamespace(oid="a" * 40)
+
+        def file_exists(self, **kwargs: Any) -> bool:
+            calls.setdefault("file_exists", []).append(kwargs)
+            return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(HfApi=FakeApi),
+    )
+    revision = worker._upload_hf_folder(
+        tmp_path,
+        dataset_id="fireviewer/simple-measured-scenes-v1",
+        remote_root="zones/GPS-TEST/" + "b" * 64,
+        file_names=(
+            "fireviewer-zone.zip",
+            "zone.done.json",
+            "dataset-entry.json",
+        ),
+        commit_message="test upload",
+    )
+
+    assert revision == "a" * 40
+    upload = calls["upload_folder"]
+    assert upload["folder_path"] == str(tmp_path)
+    assert upload["allow_patterns"] == [
+        "fireviewer-zone.zip",
+        "zone.done.json",
+        "dataset-entry.json",
+    ]
+    assert len(calls["file_exists"]) == 3
+
+
+def test_archive_publication_writes_verified_private_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "fireviewer-zone.zip"
+    archive.write_bytes(b"complete map")
+    archive_sha256 = worker._sha256_file(archive)
+    entry = {
+        "dataset_id": "fireviewer/simple-measured-scenes-v1",
+        "zone_id": "GPS-TEST",
+        "build_id": "b" * 64,
+        "entry_sha256": "c" * 64,
+        "archive": {
+            "file": "fireviewer-zone.zip",
+            "byte_count": archive.stat().st_size,
+            "sha256": archive_sha256,
+        },
+    }
+    receipt = {"zone_id": "GPS-TEST", "build_id": "b" * 64}
+    config = SimpleNamespace(dataset_id="fireviewer/simple-measured-scenes-v1")
+    monkeypatch.setattr(
+        worker,
+        "_upload_hf_folder",
+        lambda *_args, **_kwargs: "d" * 40,
+    )
+
+    publication = worker._publish_archive(
+        config,
+        job_root=tmp_path,
+        archive_path=archive,
+        zone_receipt=receipt,
+        dataset_entry=entry,
+    )
+
+    assert publication["status"] == "published_private"
+    assert publication["transport"] == "huggingface_hub.upload_folder+xet"
+    assert publication["commit_oid"] == "d" * 40
+    stored = worker._load_json(tmp_path / "dataset-publication.json", "receipt")
+    assert stored == publication
+
+
+def test_job_publishes_hf_result_and_cleans_local_scratch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _environment(monkeypatch)
     work = tmp_path / "work"
     scratch = tmp_path / "scratch"
     assets = tmp_path / "assets.json"
@@ -255,7 +297,6 @@ def test_job_publishes_result_without_captures_and_cleans_local_scratch(
         def __init__(self) -> None:
             self.progress_records: list[dict[str, Any]] = []
             self.result_record: dict[str, Any] | None = None
-            self.archive_delivery: dict[str, Any] | None = None
 
         def fetch_request(self) -> dict[str, Any]:
             return dict(REQUEST)
@@ -268,25 +309,14 @@ def test_job_publishes_result_without_captures_and_cleans_local_scratch(
         def result(self, payload: dict[str, Any]) -> None:
             self.result_record = payload
 
-        def upload_archive(self, archive: Path, byte_count: int, sha256: str) -> None:
-            assert archive.read_bytes() == b"zip"
-            self.archive_delivery = {
-                "provider": "vercel_blob_private",
-                "pathname": (
-                    f"firewarning/map-production/jobs/{self.job_id}/archive/"
-                    f"{sha256}/fireviewer-zone.zip"
-                ),
-                "byte_count": byte_count,
-                "sha256": sha256,
-            }
-
     callback = FakeCallback()
 
     class FakeEngine:
         asset_library_payload: dict[str, Any] = {}
 
         def __init__(self, received: ProductionConfig) -> None:
-            assert received is config
+            assert received.dataset_publication_required is False
+            assert received.dataset_id == config.dataset_id
 
         def run(
             self,
@@ -295,21 +325,29 @@ def test_job_publishes_result_without_captures_and_cleans_local_scratch(
             archive_ready_callback: Any,
             **_kwargs: Any,
         ) -> Any:
+            assert archive_ready_callback is None
             progress_callback(0.5, "Tuile 1/1 — terrain")
             root = scratch / "jobs" / "GPS-TEST"
             root.mkdir(parents=True)
             archive = root / "fireviewer-zone.zip"
             archive.write_bytes(b"zip")
-            archive_ready_callback(archive, 3, hashlib.sha256(b"zip").hexdigest())
+            archive_sha256 = hashlib.sha256(b"zip").hexdigest()
             (root / "dataset-publication.json").write_text(
+                json.dumps({"status": "failed_pending_retry"}),
+                encoding="utf-8",
+            )
+            (root / "dataset-entry.json").write_text(
                 json.dumps(
                     {
-                        "captures": [],
-                        "status": "published_private",
-                        "path_in_repo": "zones/GPS-TEST/build",
-                        "dataset_id": "fireviewer/simple-measured-scenes-v1",
-                        "commit_oid": "d" * 40,
-                        "archive_sha256": "e" * 64,
+                        "dataset_id": config.dataset_id,
+                        "zone_id": "GPS-TEST",
+                        "build_id": "c" * 64,
+                        "entry_sha256": "f" * 64,
+                        "archive": {
+                            "file": "fireviewer-zone.zip",
+                            "byte_count": 3,
+                            "sha256": archive_sha256,
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -324,19 +362,45 @@ def test_job_publishes_result_without_captures_and_cleans_local_scratch(
                 ),
                 encoding="utf-8",
             )
-            yield "Terminé", str(archive), []
+            yield "Terminé — Publication Hugging Face différée; téléchargement admin disponible.", str(archive), []
 
     monkeypatch.setattr(worker, "CallbackClient", lambda: callback)
     monkeypatch.setattr(worker.ProductionConfig, "from_environment", lambda: config)
     monkeypatch.setattr(worker, "ProductionEngine", FakeEngine)
     monkeypatch.setattr(
-        worker, "normalize_fixed_assets", lambda request, _catalog: request
+        worker,
+        "normalize_fixed_assets",
+        lambda request, _catalog: request,
     )
+    monkeypatch.setattr(
+        worker,
+        "_publish_archive",
+        lambda *_args, **_kwargs: {
+            "dataset_id": config.dataset_id,
+            "path_in_repo": "zones/GPS-TEST/" + "c" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        worker,
+        "_export_viewer",
+        lambda *_args, **_kwargs: {
+            "zone_id": "GPS-TEST",
+            "viewer": {"sha256": "d" * 64, "byte_count": 123},
+            "completeness": {"mesh_coverage": "complete"},
+        },
+    )
+    monkeypatch.setattr(
+        worker,
+        "_publish_viewer",
+        lambda *_args, **_kwargs: "e" * 40,
+    )
+
     result = worker.run()
+
     assert result["schema"] == worker.RESULT_SCHEMA
     assert result["captures"] == []
-    assert result["archive"]["provider"] == "vercel_blob_private"
-    assert result["archive"]["byte_count"] == 3
+    assert result["dataset"]["revision"] == "e" * 40
+    assert result["viewer"]["completeness"]["mesh_coverage"] == "complete"
     assert callback.result_record == result
     assert callback.progress_records[-1]["state"] == "completed"
     assert not (scratch / "jobs" / "GPS-TEST").exists()
