@@ -558,23 +558,35 @@ def _render_root(
                 '            uniform token[] xformOpOrder = ["xformOp:translate"]',
             ]
         )
+        bindings_by_tile: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
         for binding in payload["prototype_bindings"]:
-            lines.extend(
-                [
-                    f'            over "{binding["tile_id"]}"',
-                    "            {",
-                    f'                over "{binding["prim_name"]}"',
-                    "                {",
-                    "                    rel prototypes = [",
-                    *[
-                        f"                        {target},"
-                        for target in binding["targets"]
-                    ],
-                    "                    ]",
-                    "                }",
-                    "            }",
-                ]
-            )
+            bindings_by_tile[str(binding["tile_id"])].append(binding)
+        for tile_id in sorted(bindings_by_tile):
+            lines.extend([f'            over "{tile_id}"', "            {"])
+            observed_prim_names: set[str] = set()
+            for binding in sorted(
+                bindings_by_tile[tile_id], key=lambda item: str(item["prim_name"])
+            ):
+                prim_name = str(binding["prim_name"])
+                if prim_name in observed_prim_names:
+                    raise CompactZoneStageError(
+                        f"Relation de prototype dupliquée: {tile_id}/{prim_name}"
+                    )
+                observed_prim_names.add(prim_name)
+                lines.extend(
+                    [
+                        f'                over "{prim_name}"',
+                        "                {",
+                        "                    rel prototypes = [",
+                        *[
+                            f"                        {target},"
+                            for target in binding["targets"]
+                        ],
+                        "                    ]",
+                        "                }",
+                    ]
+                )
+            lines.append("            }")
         lines.append("        }")
     lines.extend(["    }", "}", ""])
     return "\n".join(lines).encode("utf-8")
@@ -840,6 +852,8 @@ def validate_compact_zone_stage(
             raise CompactZoneStageError(
                 f"Relations de prototypes de payload invalides: {relative}"
             )
+        binding_tile_ids: set[str] = set()
+        binding_keys: set[tuple[str, str]] = set()
         for binding in bindings:
             if (
                 not isinstance(binding, Mapping)
@@ -851,11 +865,26 @@ def validate_compact_zone_stage(
                 raise CompactZoneStageError(
                     f"Relation globale de prototype invalide: {relative}"
                 )
+            tile_id = str(binding["tile_id"])
+            prim_name = str(binding["prim_name"])
+            binding_key = (tile_id, prim_name)
+            if binding_key in binding_keys:
+                raise CompactZoneStageError(
+                    f"Relation globale de prototype dupliquée: {tile_id}/{prim_name}"
+                )
+            binding_keys.add(binding_key)
+            binding_tile_ids.add(tile_id)
             for target in binding["targets"]:
                 if not isinstance(target, str) or target not in root_text:
                     raise CompactZoneStageError(
                         f"Cible globale de prototype absente: {relative}"
                     )
+        for tile_id in tile_ids:
+            expected_over_count = 1 if tile_id in binding_tile_ids else 0
+            if root_text.count(f'            over "{tile_id}"') != expected_over_count:
+                raise CompactZoneStageError(
+                    f"Spécification OpenUSD de tuile dupliquée: {tile_id}"
+                )
     if len(observed_tiles) != layout.get("tile_count") or len(observed_tiles) != len(
         set(observed_tiles)
     ):
