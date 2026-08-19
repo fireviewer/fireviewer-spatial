@@ -15,14 +15,15 @@ map request
    ↓
 headless spatial production
    ↓
-immutable map package
+sealed map folder
+   ├── browser viewer publication
+   ├── scientific/source publication
    ├── observed/reviewed temporal layers
    ├── replay / post-event studies
-   ├── datasets / benchmarks
-   └── browser-friendly derived views
+   └── datasets / benchmarks
 ```
 
-The browser is a consumer of these artifacts. It is not responsible for reconstructing the terrain.
+The browser is a consumer of derived artifacts. It is not responsible for reconstructing the terrain.
 
 ## Canonical map builder
 
@@ -44,7 +45,7 @@ It then produces, among other artifacts:
 - compact provenance receipts;
 - integrity hashes.
 
-Raw geographic rasters are temporary processing inputs and are not required in the delivered map ZIP once the tile has passed validation.
+Raw geographic rasters are temporary processing inputs and are not required in the sealed publication folder once their derived artifacts have passed validation.
 
 ## Zone package
 
@@ -62,23 +63,27 @@ shared/prototype-bundles/v1-<sha256>/
 provenance/<tile>/
 ```
 
-<<<<<<< HEAD
-`zone.usda` définit chaque prototype utilisé une seule fois et charge des
-payloads regroupant jusqu'à 4 × 4 tuiles. `zone.blend` conserve les arbres et
-bâtiments comme PointInstancers et est sauvegardé avec la compression interne
-de Blender. La production active ne calcule plus de galerie PNG ; elle refuse
-un pack hors budget avant tout upload, puis privilégie son contrôle dans
-l'administration et son ouverture indépendante.
-=======
-`zone.usda` and `zone.blend` are autonomous scene representations of the accepted build.
->>>>>>> 6c8ce484031a1e766f0d2ad22ffe23523d05ab54
+`zone.usda` defines shared prototypes once and references grouped payloads instead of duplicating them per tile. `zone.blend` preserves the accepted Blender representation, including instanced trees and buildings where the active production path uses them. Both are portable scene representations of the accepted build.
 
-The active production path prioritises the **validated package itself**. A PNG capture gallery is not part of the canonical measured-map contract.
+The active production path does not require a PNG capture gallery. The production artifact is the validated spatial package itself, with its provenance and integrity metadata.
 
 Active contracts include:
 
 - `fireviewer.simple-measured-map-package.v2`;
 - `fireviewer.simple-measured-map-upload-contract.v2`.
+
+## Folder-native publication
+
+The current Lightning batch entrypoint is [`lightning_map_production.py`](./blender/lightning_map_production.py).
+
+New map jobs **do not create a final ZIP**. Publication is intentionally split into two stages:
+
+1. the complete browser viewer is published first to the public Hugging Face dataset and can become eligible for incident publication;
+2. the sealed scientific/source folder is uploaded independently through Hugging Face/Xet as a resumable publication.
+
+A later source-folder upload failure does not invalidate a viewer that was already published successfully. The scientific publication nevertheless remains a separate reproducibility artifact and its status must be tracked explicitly.
+
+This separation keeps browser availability independent from long-running publication of the complete source folder without collapsing the two artifacts into one status.
 
 ## Endpoint-driven execution
 
@@ -121,7 +126,7 @@ Historical FireViewer reconstruction packs are a separate artifact family.
 A geometry marked `reconstructed` can be derived from historical maps, area reports, sectors, remote-sensing information and reviewed evidence, but it must not be published under the observed-perimeter contract.
 
 ```text
-observed ≠ reconstructed ≠ simulated ≠ predicted
+observed ≠ reconstructed ≠ interpolated ≠ simulated ≠ predicted
 ```
 
 ## Replay and downstream consumers
@@ -130,7 +135,7 @@ observed ≠ reconstructed ≠ simulated ≠ predicted
 
 A consumer can create a **new derived study or simulation artifact**, but it must preserve the identity of the exact inputs it consumed.
 
-The original map ZIP remains the canonical spatial artifact when published or archived.
+The sealed map folder, its source/publication receipts and the exact viewer artifact together provide the reproducible spatial identity of a published build. A derived browser representation must not silently replace those canonical inputs.
 
 ## No Unity / Omniverse dependency in the core path
 
@@ -147,7 +152,7 @@ Older experiments may remain in repository history or specialised directories. O
 
 ## Package integrity
 
-[`portable_scene_package.py`](./blender/portable_scene_package.py) inventories and hashes accepted package content before archive publication.
+[`portable_scene_package.py`](./blender/portable_scene_package.py) inventories and hashes accepted package content before publication.
 
 A reproducible package should preserve enough information to identify:
 
@@ -177,16 +182,17 @@ A green local suite does not prove live geographic-source availability, deployed
 
 This Git repository does not contain production maps, orthophotos, generated scene archives, model weights, tokens or production datasets.
 
-The code is licensed under AGPL-3.0-or-later and the repository documentation under CC BY 4.0. External geographic sources and assets retain their own licences and attribution requirements.
+The code is licensed under **AGPL-3.0-or-later** through [`LICENSE`](LICENSE). Repository documentation is licensed under **CC BY 4.0** through [`LICENSE-DOCS.md`](LICENSE-DOCS.md). External geographic sources and assets retain their own licences and attribution requirements.
 
-## Support and collaboration
+## Project documentation
 
-The spatial workstream benefits directly from CPU compute credits, object storage, bandwidth, GIS/geodesy expertise and independent package/replay validation.
-
-See the FireViewer [Funding Brief](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/FUNDING_BRIEF.md) and [Support & Partnerships](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/SUPPORT_AND_PARTNERSHIPS.md).
+- [FireViewer documentation](https://github.com/fireviewer/Fireviewer_doc)
+- [Map Builder](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/MAP_BUILDER.md)
+- [Status Matrix](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/STATUS_MATRIX.md)
+- [Provenance and Reproducibility](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/PROVENANCE_AND_REPRODUCIBILITY.md)
 
 ## Contact
 
 FireViewer is maintained by **Unicorn Who Dev**.
 
-Research collaboration, infrastructure support, provenance, security and data-removal requests: **unicornwhodev@gmail.com**.
+Research collaboration, provenance, security and data-removal requests: **unicornwhodev@gmail.com**.
