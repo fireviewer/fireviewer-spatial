@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -56,6 +56,8 @@ RESULT_SCHEMA = "fireviewer.map-production-result.v3"
 VIEWER_READY_SCHEMA = "fireviewer.map-viewer-ready.v1"
 SOURCE_PUBLICATION_SCHEMA = "fireviewer.map-source-publication.v1"
 PROGRESS_MIN_INTERVAL_SECONDS = 10.0
+BLENDER_HEARTBEAT_SECONDS = 15.0
+BLENDER_SCRIPT_TIMEOUT_SECONDS = 30 * 60
 HF_UPLOAD_MAX_ATTEMPTS = 4
 HF_UPLOAD_BACKOFF_SECONDS = (5.0, 15.0, 30.0)
 _SOURCE_METADATA_FILES = (MANIFEST_NAME, INVENTORY_NAME, MAP_CONTRACT_PATH)
@@ -257,6 +259,8 @@ def _run_blender_script(
     config: ProductionConfig,
     job_root: Path,
     script_name: str,
+    *,
+    heartbeat: Callable[[float], None] | None = None,
 ) -> None:
     script = Path(__file__).with_name(script_name).resolve()
     command = (
@@ -272,28 +276,64 @@ def _run_blender_script(
         "--job-root",
         str(job_root),
     )
-    result = subprocess.run(
+    process = subprocess.Popen(
         command,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=30 * 60,
-        check=False,
     )
-    if result.returncode != 0:
+    started_at = time.monotonic()
+    stdout = ""
+    stderr = ""
+    while True:
+        elapsed = time.monotonic() - started_at
+        remaining = BLENDER_SCRIPT_TIMEOUT_SECONDS - elapsed
+        if remaining <= 0:
+            process.kill()
+            stdout, stderr = process.communicate()
+            raise LightningMapContractError(
+                f"{script_name} a dépassé {BLENDER_SCRIPT_TIMEOUT_SECONDS // 60} minutes:\n"
+                + (stdout + "\n" + stderr)[-4000:]
+            )
+        try:
+            stdout, stderr = process.communicate(
+                timeout=min(BLENDER_HEARTBEAT_SECONDS, remaining)
+            )
+            break
+        except subprocess.TimeoutExpired:
+            if heartbeat is not None:
+                heartbeat(time.monotonic() - started_at)
+    if process.returncode != 0:
         raise LightningMapContractError(
-            f"{script_name} a échoué:\n"
-            + (result.stdout + "\n" + result.stderr)[-4000:]
+            f"{script_name} a échoué:\n" + (stdout + "\n" + stderr)[-4000:]
         )
 
 
 def _export_viewer(
     config: ProductionConfig,
     job_root: Path,
+    *,
+    callback: CallbackClient,
+    tile_count: int,
 ) -> dict[str, Any]:
-    _run_blender_script(config, job_root, "export_complete_viewer_glb.py")
-    _run_blender_script(config, job_root, "validate_complete_viewer_meshes.py")
+    def heartbeat(elapsed: float) -> None:
+        callback.progress(
+            0.967,
+            f"Export viewer Blender en cours · {int(elapsed)} s",
+            phase="viewer_export_blender",
+            current_tile=tile_count,
+            tile_count=tile_count,
+            force=True,
+        )
+
+    _run_blender_script(
+        config,
+        job_root,
+        "export_complete_viewer_glb.py",
+        heartbeat=heartbeat,
+    )
     receipt_path = job_root / RECEIPT_NAME
     glb_path = job_root / GLB_NAME
     if not receipt_path.is_file() or not glb_path.is_file():
@@ -655,23 +695,30 @@ def run() -> dict[str, Any]:
         ):
             raise LightningMapContractError("Identité finale de la map invalide")
 
+        last_fraction, last_message = 0.965, "Export de la map 3D complète pour le viewer"
         callback.progress(
-            0.965,
-            "Export de la map 3D complète pour le viewer",
+            last_fraction,
+            last_message,
             phase="viewer_export",
             current_tile=tile_count,
             tile_count=tile_count,
             force=True,
         )
-        viewer_receipt = _export_viewer(config, job_root)
+        viewer_receipt = _export_viewer(
+            config,
+            job_root,
+            callback=callback,
+            tile_count=tile_count,
+        )
 
         base_root = f"maps/{zone_id}/{build_id}"
         runtime_root = f"{base_root}/runtime"
         source_root = f"{base_root}/source"
 
+        last_fraction, last_message = 0.975, "Publication du viewer 3D sur Hugging Face/Xet"
         callback.progress(
-            0.975,
-            "Publication du viewer 3D sur Hugging Face/Xet",
+            last_fraction,
+            last_message,
             phase="viewer_publication_xet",
             current_tile=tile_count,
             tile_count=tile_count,
@@ -697,9 +744,11 @@ def run() -> dict[str, Any]:
         callback.viewer_ready(viewer_ready)
         viewer_ready_sent = True
 
+        last_fraction = 0.985
+        last_message = "Viewer prêt à publier — envoi du dossier scientifique sur Hugging Face/Xet"
         callback.progress(
-            0.985,
-            "Viewer prêt à publier — envoi du dossier scientifique sur Hugging Face/Xet",
+            last_fraction,
+            last_message,
             phase="source_publication_xet",
             current_tile=tile_count,
             tile_count=tile_count,
