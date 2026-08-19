@@ -30,10 +30,12 @@ jobs:
           blender/export_complete_viewer_glb.py
           blender/fixed_asset_placement.py
           blender/fixed_terrain_grid.py
+          blender/geographic_perimeter_folder_map.py
           blender/geographic_perimeter_layer.py
           blender/geographic_perimeter_viewer.py
           blender/inspect_reference_usd_candidates.py
           blender/lightning_map_production.py
+          blender/lightning_perimeter_production.py
           blender/mid_distance_roads.py
           blender/mns_mnt_placement_inventory.py
           blender/orthophoto_ground_texture.py
@@ -66,6 +68,7 @@ jobs:
           blender/test_geographic_perimeter_layer.py
           blender/test_geographic_perimeter_viewer.py
           blender/test_lightning_map_production.py
+          blender/test_lightning_perimeter_production.py
           blender/test_mid_distance_roads.py
           blender/test_mns_mnt_placement_inventory.py
           blender/test_orthophoto_ground_texture.py
