@@ -28,6 +28,7 @@ jobs:
           blender/build_reference_usd_asset_library.py
           blender/compact_zone_stage.py
           blender/export_complete_viewer_glb.py
+          blender/export_complete_viewer_glb_gpu.py
           blender/fixed_asset_placement.py
           blender/fixed_terrain_grid.py
           blender/geographic_perimeter_folder_map.py
@@ -63,6 +64,7 @@ jobs:
           blender/test_build_reference_usd_asset_library.py
           blender/test_compact_zone_stage.py
           blender/test_export_complete_viewer_glb.py
+          blender/test_export_complete_viewer_gpu.py
           blender/test_fixed_asset_placement.py
           blender/test_fixed_terrain_grid.py
           blender/test_geographic_perimeter_layer.py
