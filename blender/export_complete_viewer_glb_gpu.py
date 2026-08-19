@@ -392,15 +392,15 @@ def export_complete_viewer(job_root: Path | str) -> Path:
             f"Instances source incomplètes: attendu={expected}, obtenu={counts}"
         )
     sources = [source for _family, source, _matrices in groups]
+    source_meshes, source_unique_meshes, source_images = _source_metrics(
+        bpy, sources
+    )
     print(
         "FIREVIEWER_VIEWER_STAGE build_gpu_batches "
         f"instances={sum(counts.values())} prototypes={len(groups)}",
         flush=True,
     )
     _build_gpu_batches(bpy, groups, expected)
-    source_meshes, source_unique_meshes, source_images = _source_metrics(
-        bpy, sources
-    )
     output = root / GLB_NAME
     print("FIREVIEWER_VIEWER_STAGE export_glb", flush=True)
     _export_glb(bpy, output)
