@@ -7,7 +7,7 @@ ENV FIREVIEWER_TILE_WORKERS=6 \
     FIREVIEWER_PROTOTYPE_BUNDLE_MODE=linked \
     FIREVIEWER_WORK_ROOT=/lightning-work/fireviewer-map-production \
     FIREVIEWER_SCRATCH_ROOT=/lightning-scratch/fireviewer-map-production \
-    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260819-r45-lightning \
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260819-r46-lightning \
     HF_XET_CACHE=/lightning-scratch/hf-xet \
     HF_XET_HIGH_PERFORMANCE=1
 
@@ -16,6 +16,13 @@ RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.lightn
 
 COPY fireviewer-spatial/blender/ /opt/fireviewer/fireviewer-spatial/blender/
 COPY fireviewer-spatial/omniverse/ /opt/fireviewer/fireviewer-spatial/omniverse/
+
+# Keep r45's exporter in the image for immediate rollback, but make the
+# exact-count Geometry Nodes GPU exporter the canonical r46 runtime module.
+RUN cp /opt/fireviewer/fireviewer-spatial/blender/export_complete_viewer_glb.py \
+       /opt/fireviewer/fireviewer-spatial/blender/export_complete_viewer_glb_legacy.py \
+    && cp /opt/fireviewer/fireviewer-spatial/blender/export_complete_viewer_glb_gpu.py \
+          /opt/fireviewer/fireviewer-spatial/blender/export_complete_viewer_glb.py
 
 RUN mkdir -p /lightning-work/fireviewer-map-production /lightning-scratch/fireviewer-map-production /lightning-scratch/hf-xet \
     && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-assets-only \
