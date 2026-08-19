@@ -1,10 +1,11 @@
 """Export one complete, browser-ready GLB from the sealed FireViewer zone.
 
-The exporter runs inside Blender. USD PointInstancer content is materialized as
-lightweight Blender objects sharing prototype mesh datablocks, then exported
-with EXT_mesh_gpu_instancing. Publication is fail-closed: family instance
-counts, renderable mesh coverage and embedded textures are checked against the
-sealed zone before a viewer receipt is written.
+The exporter reuses the already packed ``zone.blend`` produced from the sealed
+OpenUSD scene. PointInstancer content is materialized as lightweight Blender
+objects sharing prototype mesh datablocks, then exported with
+EXT_mesh_gpu_instancing. Publication is fail-closed: family instance counts,
+renderable mesh coverage and embedded textures are checked against the sealed
+zone before a viewer receipt is written.
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ SCHEMA = "fireviewer.complete-viewer-scene.v1"
 STATUS = "complete"
 GLB_NAME = "viewer.glb"
 RECEIPT_NAME = "viewer-scene.v1.json"
+BLEND_NAME = "zone.blend"
 FAMILY_MARKERS = {
     "buildings": "Buildings",
     "trees": "Trees",
@@ -133,6 +135,28 @@ def _snapshot_instances(bpy: Any) -> list[tuple[str, Any, Any]]:
         matrix = instance.matrix_world.copy()
         snapshots.append((family, source, matrix))
     return snapshots
+
+
+def _unique_source_mesh_count(bpy: Any) -> int:
+    """Count unique source mesh datablocks before instance materialization."""
+
+    identities: set[int] = set()
+    for obj in bpy.context.scene.objects:
+        if getattr(obj, "type", None) == "MESH" and getattr(obj, "data", None) is not None:
+            identities.add(int(obj.data.as_pointer()))
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    for instance in depsgraph.object_instances:
+        evaluated = getattr(instance, "object", None)
+        source = getattr(evaluated, "original", evaluated)
+        if (
+            source is not None
+            and getattr(source, "type", None) == "MESH"
+            and getattr(source, "data", None) is not None
+        ):
+            identities.add(int(source.data.as_pointer()))
+    if not identities:
+        raise CompleteViewerExportError("La scène Blender ne contient aucun mesh source")
+    return len(identities)
 
 
 def _materialize_instances(bpy: Any, expected: Mapping[str, int]) -> dict[str, int]:
@@ -416,9 +440,10 @@ def _validate_gltf_payload(
 def export_complete_viewer(job_root: Path | str) -> Path:
     root = _require_root(job_root)
     stage = root / "zone.usda"
+    blend = root / BLEND_NAME
     zone_receipt_path = root / "zone.done.json"
-    if not stage.is_file() or not zone_receipt_path.is_file():
-        raise CompleteViewerExportError("zone.usda ou zone.done.json absent")
+    if not stage.is_file() or not blend.is_file() or not zone_receipt_path.is_file():
+        raise CompleteViewerExportError("zone.usda, zone.blend ou zone.done.json absent")
     zone_receipt = _load_json(zone_receipt_path, "reçu de zone")
     expected = _expected_counts(zone_receipt)
     try:
@@ -427,17 +452,21 @@ def export_complete_viewer(job_root: Path | str) -> Path:
         raise CompleteViewerExportError(
             "L'export viewer doit s'exécuter dans Blender"
         ) from error
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-    result = bpy.ops.wm.usd_import(
-        filepath=str(stage),
-        support_scene_instancing=True,
-    )
+
+    print("FIREVIEWER_VIEWER_STAGE open_blend", flush=True)
+    result = bpy.ops.wm.open_mainfile(filepath=str(blend), load_ui=False)
     if "FINISHED" not in result:
-        raise CompleteViewerExportError("Import OpenUSD de la zone impossible")
+        raise CompleteViewerExportError("Ouverture de zone.blend impossible")
+
+    print("FIREVIEWER_VIEWER_STAGE inspect_source_meshes", flush=True)
+    source_unique_meshes = _unique_source_mesh_count(bpy)
+    print("FIREVIEWER_VIEWER_STAGE materialize_instances", flush=True)
     materialized = _materialize_instances(bpy, expected)
     source_meshes, source_images = _scene_metrics(bpy)
     output = root / GLB_NAME
+    print("FIREVIEWER_VIEWER_STAGE export_glb", flush=True)
     _export_glb(bpy, output)
+    print("FIREVIEWER_VIEWER_STAGE validate_glb", flush=True)
     summary = _validate_gltf_payload(
         _read_glb_json(output),
         expected_counts=expected,
@@ -448,6 +477,12 @@ def export_complete_viewer(job_root: Path | str) -> Path:
         raise CompleteViewerExportError(
             "Le GLB diverge de la matérialisation Blender"
         )
+    if int(summary["mesh_count"]) < source_unique_meshes:
+        raise CompleteViewerExportError(
+            "Meshes viewer incomplets: "
+            f"{summary['mesh_count']} exportés < {source_unique_meshes} meshes source uniques"
+        )
+
     payload: dict[str, Any] = {
         "schema": SCHEMA,
         "status": STATUS,
@@ -456,6 +491,8 @@ def export_complete_viewer(job_root: Path | str) -> Path:
         "source": {
             "entry_stage": "zone.usda",
             "entry_stage_sha256": _sha256_file(stage),
+            "standalone_blend": BLEND_NAME,
+            "standalone_blend_sha256": _sha256_file(blend),
             "zone_receipt": "zone.done.json",
             "zone_receipt_sha256": _sha256_file(zone_receipt_path),
         },
@@ -470,6 +507,9 @@ def export_complete_viewer(job_root: Path | str) -> Path:
             "policy": "fail_closed_exact_visual_scene",
             "terrain_and_non_instanced_meshes_required": True,
             "source_mesh_object_count": source_meshes,
+            "source_unique_mesh_count": source_unique_meshes,
+            "viewer_mesh_count": int(summary["mesh_count"]),
+            "mesh_coverage": "complete",
             "source_image_count": source_images,
             **summary,
         },
@@ -494,7 +534,7 @@ def _parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(values)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None) -> int:
     receipt = export_complete_viewer(_parse_arguments(argv).job_root)
     print(
         json.dumps(
