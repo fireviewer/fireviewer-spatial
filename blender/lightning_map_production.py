@@ -1,9 +1,11 @@
-"""Lightning Batch Job entrypoint for complete FireViewer map production.
+"""Lightning Batch Job entrypoint for FireViewer map production.
 
-The complete reproduction ZIP and the separately validated complete viewer GLB
-are published to the private Hugging Face dataset with the resumable Xet-backed
-folder uploader. The final callback uses the result-v1 contract only after both
-remote publications have been verified.
+New map jobs never create a final ZIP. The portable scene is sealed as a normal
+folder, the complete browser viewer is published first to the public Hugging
+Face dataset, and a viewer-ready callback immediately makes the map eligible
+for incident publication. The sealed scientific folder is then uploaded through
+Hugging Face/Xet as an independent, resumable publication. A source-folder
+upload failure never invalidates an already published viewer.
 """
 from __future__ import annotations
 
@@ -14,20 +16,34 @@ import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import httpx
+import simple_production_engine as production_engine
 
-from export_complete_viewer_glb import GLB_NAME, RECEIPT_NAME, SCHEMA as VIEWER_SCHEMA, STATUS as VIEWER_STATUS
-from fixed_asset_placement import EMPTY_REQUEST, normalize_request as normalize_fixed_assets, request_sha256 as fixed_assets_request_sha256
+from export_complete_viewer_glb import (
+    GLB_NAME,
+    RECEIPT_NAME,
+    SCHEMA as VIEWER_SCHEMA,
+    STATUS as VIEWER_STATUS,
+)
+from fixed_asset_placement import (
+    EMPTY_REQUEST,
+    normalize_request as normalize_fixed_assets,
+    request_sha256 as fixed_assets_request_sha256,
+)
+from portable_scene_package import (
+    INVENTORY_NAME,
+    MANIFEST_NAME,
+    MAP_CONTRACT_PATH,
+    validate_map_upload_package,
+)
 from runpod_map_production import normalize_map_request, request_sha256
 from simple_production_engine import (
-    DATASET_ENTRY_NAME,
-    DATASET_PUBLICATION_NAME,
-    ZIP_NAME,
     ZONE_RECEIPT_NAME,
     ProductionConfig,
     ProductionEngine,
@@ -36,15 +52,23 @@ from simple_production_engine import (
 
 REQUEST_SCHEMA = "fireviewer.map-production-request.v1"
 PROGRESS_SCHEMA = "fireviewer.map-production-progress.v1"
-RESULT_SCHEMA = "fireviewer.map-production-result.v1"
-DATASET_PUBLICATION_SCHEMA = "fireviewer.simple-measured-scene-dataset-publication.v1"
+RESULT_SCHEMA = "fireviewer.map-production-result.v3"
+VIEWER_READY_SCHEMA = "fireviewer.map-viewer-ready.v1"
+SOURCE_PUBLICATION_SCHEMA = "fireviewer.map-source-publication.v1"
 PROGRESS_MIN_INTERVAL_SECONDS = 10.0
-HF_UPLOAD_MAX_ATTEMPTS = 3
-HF_UPLOAD_BACKOFF_SECONDS = (5.0, 20.0)
+HF_UPLOAD_MAX_ATTEMPTS = 4
+HF_UPLOAD_BACKOFF_SECONDS = (5.0, 15.0, 30.0)
+_SOURCE_METADATA_FILES = (MANIFEST_NAME, INVENTORY_NAME, MAP_CONTRACT_PATH)
 
 
 class LightningMapContractError(ValueError):
     pass
+
+
+class _SealedFolderReady(RuntimeError):
+    def __init__(self, root: Path) -> None:
+        super().__init__(str(root))
+        self.root = root
 
 
 def _required_environment(name: str) -> str:
@@ -120,6 +144,7 @@ class CallbackClient:
         self.job_id = _required_environment("FIREVIEWER_MAP_JOB_ID")
         self.request_url = _required_environment("FIREVIEWER_MAP_REQUEST_URL")
         self.progress_url = _required_environment("FIREVIEWER_MAP_PROGRESS_URL")
+        self.viewer_ready_url = _required_environment("FIREVIEWER_MAP_VIEWER_READY_URL")
         self.result_url = _required_environment("FIREVIEWER_MAP_RESULT_URL")
         self.token = _required_environment("FIREVIEWER_MAP_CALLBACK_TOKEN")
         self.sequence = 0
@@ -197,6 +222,9 @@ class CallbackClient:
             self.sequence += 1
             self._last_sent_at = now
         self._request("POST", self.progress_url, payload=payload)
+
+    def viewer_ready(self, payload: dict[str, Any]) -> None:
+        self._request("POST", self.viewer_ready_url, payload=payload)
 
     def result(self, payload: dict[str, Any]) -> None:
         self._request("POST", self.result_url, payload=payload)
@@ -295,7 +323,7 @@ def _verify_remote_files(
 ) -> None:
     missing: list[str] = []
     for file_name in file_names:
-        remote_path = f"{remote_root}/{file_name}"
+        remote_path = f"{remote_root.rstrip('/')}/{file_name}"
         available = False
         for attempt in range(5):
             if api.file_exists(
@@ -317,29 +345,31 @@ def _verify_remote_files(
 
 
 def _upload_hf_folder(
-    job_root: Path,
+    folder: Path,
     *,
     dataset_id: str,
     remote_root: str,
     file_names: Sequence[str],
+    verify_names: Sequence[str],
     commit_message: str,
 ) -> str:
     from huggingface_hub import HfApi
 
     token = _required_environment("HF_TOKEN")
     last_error: Exception | None = None
+    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
     for attempt in range(1, HF_UPLOAD_MAX_ATTEMPTS + 1):
         try:
             api = HfApi(token=token)
             info = api.repo_info(repo_id=dataset_id, repo_type="dataset")
-            if info.private is not True:
+            if getattr(info, "private", None) is not False:
                 raise LightningMapContractError(
-                    "La dataset cible doit être privée avant toute publication"
+                    "La dataset cible FireViewer doit être publique"
                 )
             commit = api.upload_folder(
                 repo_id=dataset_id,
                 repo_type="dataset",
-                folder_path=str(job_root),
+                folder_path=str(folder),
                 path_in_repo=remote_root,
                 allow_patterns=list(file_names),
                 commit_message=commit_message,
@@ -352,15 +382,12 @@ def _upload_hf_folder(
                 dataset_id=dataset_id,
                 revision=oid,
                 remote_root=remote_root,
-                file_names=file_names,
+                file_names=verify_names,
             )
             return oid
         except Exception as error:
             last_error = error
-            if (
-                attempt >= HF_UPLOAD_MAX_ATTEMPTS
-                or _is_authentication_error(error)
-            ):
+            if attempt >= HF_UPLOAD_MAX_ATTEMPTS or _is_authentication_error(error):
                 break
             time.sleep(HF_UPLOAD_BACKOFF_SECONDS[attempt - 1])
     raise LightningMapContractError(
@@ -368,94 +395,120 @@ def _upload_hf_folder(
     ) from last_error
 
 
-def _publish_archive(
-    config: ProductionConfig,
-    *,
-    job_root: Path,
-    archive_path: Path,
-    zone_receipt: Mapping[str, Any],
-    dataset_entry: Mapping[str, Any],
-) -> dict[str, Any]:
-    dataset_id = config.dataset_id
-    zone_id = zone_receipt.get("zone_id")
-    build_id = zone_receipt.get("build_id")
-    entry_sha256 = dataset_entry.get("entry_sha256")
-    archive_sha256 = _sha256_file(archive_path)
-    archive_record = dataset_entry.get("archive")
-    if (
-        not isinstance(dataset_id, str)
-        or not dataset_id
-        or dataset_entry.get("dataset_id") != dataset_id
-        or not isinstance(zone_id, str)
-        or not zone_id
-        or dataset_entry.get("zone_id") != zone_id
-        or not _is_sha256(build_id)
-        or dataset_entry.get("build_id") != build_id
-        or not _is_sha256(entry_sha256)
-        or not isinstance(archive_record, Mapping)
-        or archive_record.get("file") != ZIP_NAME
-        or archive_record.get("sha256") != archive_sha256
-        or archive_record.get("byte_count") != archive_path.stat().st_size
-    ):
-        raise LightningMapContractError(
-            "Métadonnées du pack incohérentes avant publication Hugging Face"
-        )
-
-    remote_root = f"zones/{zone_id}/{build_id}"
-    revision = _upload_hf_folder(
-        job_root,
-        dataset_id=dataset_id,
-        remote_root=remote_root,
-        file_names=(ZIP_NAME, ZONE_RECEIPT_NAME, DATASET_ENTRY_NAME),
-        commit_message=f"Add measured FireViewer scene {zone_id}",
-    )
-    publication = {
-        "schema": DATASET_PUBLICATION_SCHEMA,
-        "status": "published_private",
-        "dataset_id": dataset_id,
-        "zone_id": zone_id,
-        "build_id": build_id,
-        "archive_sha256": archive_sha256,
-        "entry_sha256": entry_sha256,
-        "commit_oid": revision,
-        "path_in_repo": remote_root,
-        "captures": [],
-        "transport": "huggingface_hub.upload_folder+xet",
+def _skip_archive_budget(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+    return {
+        "schema": "fireviewer.map-folder-publication.v1",
+        "status": "zip_disabled",
     }
-    _write_json(job_root / DATASET_PUBLICATION_NAME, publication)
-    return publication
 
 
-def _publish_viewer(
-    job_root: Path,
-    publication: Mapping[str, Any],
-    viewer: Mapping[str, Any],
-) -> str:
-    dataset_id = publication.get("dataset_id")
-    remote_root = publication.get("path_in_repo")
-    zone_id = viewer.get("zone_id")
+@contextmanager
+def _sealed_folder_mode() -> Iterator[None]:
+    """Stop the legacy engine immediately after it seals the portable folder.
+
+    The core engine remains backward compatible for local/legacy callers that
+    still request a ZIP. Lightning explicitly uses the folder-native contract:
+    no archive budget and no ZIP writer are reached.
+    """
+
+    original_budget = production_engine._write_archive_budget_receipt
+    original_seal = production_engine.seal_map_upload_package
+
+    def seal_and_stop(root: Path | str) -> None:
+        original_seal(root)
+        raise _SealedFolderReady(Path(root).resolve(strict=True))
+
+    production_engine._write_archive_budget_receipt = _skip_archive_budget
+    production_engine.seal_map_upload_package = seal_and_stop
+    try:
+        yield
+    finally:
+        production_engine._write_archive_budget_receipt = original_budget
+        production_engine.seal_map_upload_package = original_seal
+
+
+def _safe_inventory_path(value: object) -> str:
+    if not isinstance(value, str) or not value or "\\" in value:
+        raise LightningMapContractError("Chemin d'inventaire portable invalide")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise LightningMapContractError("Chemin d'inventaire portable non confiné")
+    return path.as_posix()
+
+
+def _source_file_names(job_root: Path) -> tuple[tuple[str, ...], dict[str, Any]]:
+    inventory = _load_json(job_root / INVENTORY_NAME, "Inventaire portable")
+    files = inventory.get("files")
     if (
-        not isinstance(dataset_id, str)
-        or not dataset_id
-        or not isinstance(remote_root, str)
-        or not remote_root
-        or not isinstance(zone_id, str)
-        or not zone_id
+        inventory.get("schema") != "fireviewer.portable-package-inventory.v1"
+        or inventory.get("status") != "sealed"
+        or inventory.get("package_role") != "map"
+        or not isinstance(files, list)
+        or inventory.get("file_count") != len(files)
+        or not files
     ):
-        raise LightningMapContractError("Publication HF de base invalide")
-    return _upload_hf_folder(
-        job_root,
-        dataset_id=dataset_id,
-        remote_root=remote_root,
-        file_names=(GLB_NAME, RECEIPT_NAME),
-        commit_message=f"Add complete viewer scene for {zone_id}",
-    )
+        raise LightningMapContractError("Inventaire portable incomplet")
+    paths: list[str] = []
+    total_bytes = 0
+    for record in files:
+        if not isinstance(record, Mapping):
+            raise LightningMapContractError("Entrée d'inventaire portable invalide")
+        relative = _safe_inventory_path(record.get("path"))
+        byte_count = record.get("byte_count")
+        sha256 = record.get("sha256")
+        if (
+            isinstance(byte_count, bool)
+            or not isinstance(byte_count, int)
+            or byte_count <= 0
+            or not _is_sha256(sha256)
+        ):
+            raise LightningMapContractError("Entrée d'inventaire portable invalide")
+        path = job_root / relative
+        if not path.is_file() or path.stat().st_size != byte_count:
+            raise LightningMapContractError(
+                f"Fichier scellé absent avant publication: {relative}"
+            )
+        paths.append(relative)
+        total_bytes += byte_count
+    for relative in _SOURCE_METADATA_FILES:
+        path = job_root / relative
+        if not path.is_file():
+            raise LightningMapContractError(f"Métadonnée scellée absente: {relative}")
+        paths.append(relative)
+        total_bytes += path.stat().st_size
+    names = tuple(sorted(set(paths)))
+    return names, {
+        "schema": SOURCE_PUBLICATION_SCHEMA,
+        "file_count": len(names),
+        "byte_count": total_bytes,
+        "inventory_sha256": _sha256_file(job_root / INVENTORY_NAME),
+        "manifest_sha256": _sha256_file(job_root / MANIFEST_NAME),
+        "contract_sha256": _sha256_file(job_root / MAP_CONTRACT_PATH),
+    }
 
 
-def _cleanup_local_result(
-    config: ProductionConfig,
-    job_root: Path,
-) -> None:
+def _materialize_sealed_symlinks(job_root: Path, file_names: Sequence[str]) -> None:
+    """Turn portable file symlinks into regular files before remote upload."""
+
+    for relative in file_names:
+        path = job_root / relative
+        if not path.is_symlink():
+            continue
+        target = path.resolve(strict=True)
+        if not target.is_file():
+            raise LightningMapContractError(
+                f"Lien scellé non régulier avant publication: {relative}"
+            )
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.materialize")
+        try:
+            shutil.copyfile(target, temporary)
+            path.unlink()
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _cleanup_local_result(config: ProductionConfig, job_root: Path) -> None:
     if config.scratch_root is None:
         return
     scratch = config.scratch_root.resolve(strict=True)
@@ -465,10 +518,48 @@ def _cleanup_local_result(
     except ValueError:
         return
     if len(relative.parts) != 2 or relative.parts[0] != "jobs":
-        raise LightningMapContractError(
-            "Le résultat local sort du staging de job"
-        )
+        raise LightningMapContractError("Le résultat local sort du staging de job")
     shutil.rmtree(root)
+
+
+def _viewer_payload(
+    *,
+    callback: CallbackClient,
+    request: Mapping[str, Any],
+    zone_receipt: Mapping[str, Any],
+    viewer_receipt: Mapping[str, Any],
+    dataset_id: str,
+    runtime_root: str,
+    revision: str,
+) -> dict[str, Any]:
+    viewer = viewer_receipt.get("viewer")
+    completeness = viewer_receipt.get("completeness")
+    if not isinstance(viewer, Mapping) or not isinstance(completeness, Mapping):
+        raise LightningMapContractError("Reçu viewer incomplet")
+    return {
+        "schema": VIEWER_READY_SCHEMA,
+        "job_id": callback.job_id,
+        "status": "viewer_ready",
+        "request_sha256": request_sha256(dict(request)),
+        "zone_id": zone_receipt["zone_id"],
+        "build_id": zone_receipt["build_id"],
+        "tile_count": zone_receipt["tile_count"],
+        "degraded_mns_tile_count": zone_receipt.get("degraded_mns_tile_count", 0),
+        "dataset": {
+            "repo_id": dataset_id,
+            "revision": revision,
+            "root": runtime_root,
+            "visibility": "public",
+        },
+        "viewer": {
+            "path": f"{runtime_root}/{GLB_NAME}",
+            "receipt_path": f"{runtime_root}/{RECEIPT_NAME}",
+            "sha256": viewer["sha256"],
+            "byte_count": viewer["byte_count"],
+            "completeness": dict(completeness),
+        },
+        "captures": [],
+    }
 
 
 def run() -> dict[str, Any]:
@@ -476,16 +567,19 @@ def run() -> dict[str, Any]:
     request: dict[str, Any] | None = None
     last_fraction = 0.0
     last_message = "Initialisation Lightning"
+    viewer_ready_sent = False
     try:
         request = callback.fetch_request()
         config = ProductionConfig.from_environment()
         if config.dataset_id is None:
-            raise LightningMapContractError(
-                "FIREVIEWER_HF_DATASET_ID est obligatoire"
-            )
-        hf_token = _required_environment("HF_TOKEN")
+            raise LightningMapContractError("FIREVIEWER_HF_DATASET_ID est obligatoire")
+        _required_environment("HF_TOKEN")
+
+        # The spatial engine remains the authority for measured-scene creation
+        # and sealing. Dataset/ZIP delivery is owned by this Lightning wrapper.
         engine_config = replace(
             config,
+            dataset_id=None,
             dataset_publication_required=False,
         )
         engine = ProductionEngine(engine_config)
@@ -522,128 +616,164 @@ def run() -> dict[str, Any]:
             tile_count=None,
             force=True,
         )
-        archive_path: Path | None = None
-        final_message = "Production terminée"
-        gallery: list[tuple[str, str]] = []
 
-        # The engine still creates the canonical dataset entry and retry receipt,
-        # but its legacy one-shot create_commit upload is deliberately bypassed.
-        # The wrapper below performs the real resumable Xet upload.
-        os.environ.pop("HF_TOKEN", None)
+        job_root: Path | None = None
         try:
-            for message, archive, items in engine.run(
-                request["latitude"],
-                request["longitude"],
-                request["side_km"],
-                progress_callback=report,
-                archive_ready_callback=None,
-                fixed_asset_placements=fixed,
-            ):
-                final_message = message
-                if archive:
-                    archive_path = Path(archive)
-                if items:
-                    gallery = items
-        finally:
-            os.environ["HF_TOKEN"] = hf_token
+            with _sealed_folder_mode():
+                for _message, archive, _gallery in engine.run(
+                    request["latitude"],
+                    request["longitude"],
+                    request["side_km"],
+                    progress_callback=report,
+                    archive_ready_callback=None,
+                    fixed_asset_placements=fixed,
+                ):
+                    if archive is not None:
+                        raise LightningMapContractError(
+                            "Le mode Lightning folder-only a produit une archive inattendue"
+                        )
+        except _SealedFolderReady as ready:
+            job_root = ready.root
 
-        if archive_path is None or gallery:
+        if job_root is None:
             raise LightningMapContractError(
-                "Le moteur n'a pas publié le pack complet"
+                "Le moteur n'a pas livré le dossier scellé de la map"
             )
-        job_root = archive_path.parent
-        publication_path = job_root / DATASET_PUBLICATION_NAME
-        entry_path = job_root / DATASET_ENTRY_NAME
-        zone_receipt_path = job_root / ZONE_RECEIPT_NAME
-        if (
-            not publication_path.is_file()
-            or not entry_path.is_file()
-            or not zone_receipt_path.is_file()
-        ):
-            raise LightningMapContractError("Reçus finaux du pack absents")
 
-        zone_receipt = _load_json(zone_receipt_path, "Reçu de zone")
-        dataset_entry = _load_json(entry_path, "Entrée dataset")
+        validate_map_upload_package(job_root)
+        zone_receipt = _load_json(job_root / ZONE_RECEIPT_NAME, "Reçu de zone")
         tile_count = zone_receipt.get("tile_count")
-        if isinstance(tile_count, bool) or not isinstance(tile_count, int) or tile_count <= 0:
-            raise LightningMapContractError("Nombre de tuiles final invalide")
+        zone_id = zone_receipt.get("zone_id")
+        build_id = zone_receipt.get("build_id")
+        if (
+            isinstance(tile_count, bool)
+            or not isinstance(tile_count, int)
+            or tile_count <= 0
+            or not isinstance(zone_id, str)
+            or not zone_id
+            or not _is_sha256(build_id)
+        ):
+            raise LightningMapContractError("Identité finale de la map invalide")
 
         callback.progress(
-            0.995,
-            "Publication résumable du ZIP complet sur Hugging Face/Xet",
-            phase="dataset_publication_xet",
-            current_tile=tile_count,
-            tile_count=tile_count,
-            force=True,
-        )
-        publication = _publish_archive(
-            config,
-            job_root=job_root,
-            archive_path=archive_path,
-            zone_receipt=zone_receipt,
-            dataset_entry=dataset_entry,
-        )
-        final_message = final_message.replace(
-            " Publication Hugging Face différée; téléchargement admin disponible.",
-            f" Publié dans {config.dataset_id}.",
-        )
-
-        callback.progress(
-            0.997,
+            0.965,
             "Export de la map 3D complète pour le viewer",
             phase="viewer_export",
             current_tile=tile_count,
             tile_count=tile_count,
             force=True,
         )
-        viewer = _export_viewer(config, job_root)
+        viewer_receipt = _export_viewer(config, job_root)
+
+        base_root = f"maps/{zone_id}/{build_id}"
+        runtime_root = f"{base_root}/runtime"
+        source_root = f"{base_root}/source"
 
         callback.progress(
-            0.999,
-            "Publication de la map viewer complète sur Hugging Face/Xet",
+            0.975,
+            "Publication du viewer 3D sur Hugging Face/Xet",
             phase="viewer_publication_xet",
             current_tile=tile_count,
             tile_count=tile_count,
             force=True,
         )
-        revision = _publish_viewer(job_root, publication, viewer)
-        remote_root = str(publication["path_in_repo"])
+        viewer_revision = _upload_hf_folder(
+            job_root,
+            dataset_id=config.dataset_id,
+            remote_root=runtime_root,
+            file_names=(GLB_NAME, RECEIPT_NAME),
+            verify_names=(GLB_NAME, RECEIPT_NAME),
+            commit_message=f"Publish FireViewer runtime {zone_id}",
+        )
+        viewer_ready = _viewer_payload(
+            callback=callback,
+            request=request,
+            zone_receipt=zone_receipt,
+            viewer_receipt=viewer_receipt,
+            dataset_id=config.dataset_id,
+            runtime_root=runtime_root,
+            revision=viewer_revision,
+        )
+        callback.viewer_ready(viewer_ready)
+        viewer_ready_sent = True
+
+        callback.progress(
+            0.985,
+            "Viewer prêt à publier — envoi du dossier scientifique sur Hugging Face/Xet",
+            phase="source_publication_xet",
+            current_tile=tile_count,
+            tile_count=tile_count,
+            force=True,
+        )
+
+        source_names, source_record = _source_file_names(job_root)
+        _materialize_sealed_symlinks(job_root, source_names)
+        validate_map_upload_package(job_root)
+        source_record.update(
+            {
+                "status": "failed_pending_retry",
+                "root": source_root,
+                "visibility": "public",
+            }
+        )
+        try:
+            source_revision = _upload_hf_folder(
+                job_root,
+                dataset_id=config.dataset_id,
+                remote_root=source_root,
+                file_names=source_names,
+                verify_names=(
+                    MANIFEST_NAME,
+                    INVENTORY_NAME,
+                    MAP_CONTRACT_PATH,
+                    "zone.usda",
+                    ZONE_RECEIPT_NAME,
+                ),
+                commit_message=f"Publish measured FireViewer scene {zone_id}",
+            )
+            source_record.update(
+                {
+                    "status": "published_public",
+                    "revision": source_revision,
+                }
+            )
+        except Exception as source_error:
+            source_record.update(
+                {
+                    "error_type": type(source_error).__name__,
+                    "error": "Publication du dossier source à reprendre",
+                }
+            )
+
+        source_published = source_record["status"] == "published_public"
+        message = (
+            "Production terminée — viewer 3D et dossier scientifique publiés sur Hugging Face."
+            if source_published
+            else "Production terminée — viewer 3D publié et utilisable; dossier scientifique HF à reprendre."
+        )
         result = {
             "schema": RESULT_SCHEMA,
             "job_id": callback.job_id,
             "status": "technical_scene_produced",
             "request_sha256": request_sha256(request),
-            "zone_id": zone_receipt["zone_id"],
-            "build_id": zone_receipt["build_id"],
-            "message": final_message + " Viewer 3D complet validé.",
+            "zone_id": zone_id,
+            "build_id": build_id,
+            "message": message,
             "tile_count": tile_count,
             "degraded_mns_tile_count": zone_receipt.get(
                 "degraded_mns_tile_count",
                 0,
             ),
-            "dataset": {
-                "repo_id": publication["dataset_id"],
-                "revision": revision,
-                "root": remote_root,
-            },
-            "archive": {
-                "path": f"{remote_root}/{ZIP_NAME}",
-                "sha256": _sha256_file(archive_path),
-            },
-            "viewer": {
-                "path": f"{remote_root}/{GLB_NAME}",
-                "receipt_path": f"{remote_root}/{RECEIPT_NAME}",
-                "sha256": viewer["viewer"]["sha256"],
-                "byte_count": viewer["viewer"]["byte_count"],
-                "completeness": viewer["completeness"],
-            },
+            "dataset": dict(viewer_ready["dataset"]),
+            "viewer": dict(viewer_ready["viewer"]),
+            "source": source_record,
             "captures": [],
         }
         callback.result(result)
         callback.progress(
             1.0,
-            str(result["message"]),
-            phase="completed",
+            message,
+            phase=("completed" if source_published else "completed_source_pending"),
             current_tile=tile_count,
             tile_count=tile_count,
             state="completed",
@@ -655,11 +785,13 @@ def run() -> dict[str, Any]:
         callback.progress(
             last_fraction,
             (
-                last_message
+                "Viewer publié mais finalisation du job interrompue"
+                if viewer_ready_sent
+                else last_message
                 if last_message != "Initialisation Lightning"
                 else str(error)
             ),
-            phase="failed",
+            phase="failed_after_viewer" if viewer_ready_sent else "failed",
             current_tile=None,
             tile_count=None,
             state="failed",
