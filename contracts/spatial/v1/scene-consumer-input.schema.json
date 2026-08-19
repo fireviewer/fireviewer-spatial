@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/charli-dev420/fireviewer/contracts/spatial/v1/scene-consumer-input.schema.json",
+  "$id": "https://github.com/unicornwhodev/fireviewer/contracts/spatial/v1/scene-consumer-input.schema.json",
   "title": "FireViewer immutable map and observed timeline consumer input v1",
   "type": "object",
   "additionalProperties": false,
@@ -182,3 +182,4 @@
     }
   }
 }
+
