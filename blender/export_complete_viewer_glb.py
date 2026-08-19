@@ -534,7 +534,7 @@ def _parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(values)
 
 
-def main(argv: Sequence[str] | None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     receipt = export_complete_viewer(_parse_arguments(argv).job_root)
     print(
         json.dumps(
