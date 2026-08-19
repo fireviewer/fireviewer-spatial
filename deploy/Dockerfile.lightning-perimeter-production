@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.txt
 
 WORKDIR /opt/fireviewer/fireviewer-spatial/blender
 COPY fireviewer-spatial/blender/lightning_perimeter_production.py ./
+COPY fireviewer-spatial/blender/geographic_perimeter_folder_map.py ./
 COPY fireviewer-spatial/blender/geographic_perimeter_layer.py ./
 COPY fireviewer-spatial/blender/geographic_perimeter_layer_contract.v1.json ./
 COPY fireviewer-spatial/blender/geographic_perimeter_viewer.py ./
@@ -17,7 +18,7 @@ COPY fireviewer-spatial/blender/portable_scene_package.py ./
 COPY fireviewer-spatial/blender/fixed_terrain_grid.py ./
 COPY fireviewer-spatial/blender/fixed_terrain_grid_contract.v1.json ./
 
-RUN python -c "import lightning_perimeter_production, geographic_perimeter_layer, geographic_perimeter_viewer, portable_scene_package"
+RUN python -c "import lightning_perimeter_production, geographic_perimeter_folder_map, geographic_perimeter_layer, geographic_perimeter_viewer, portable_scene_package"
 
 HEALTHCHECK NONE
 
