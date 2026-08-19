@@ -14,11 +14,13 @@ from typing import Any
 
 import httpx
 
+from geographic_perimeter_folder_map import build_perimeter_timeline_viewer_for_map
 from geographic_perimeter_layer import produce_perimeter_layer
-from geographic_perimeter_viewer import build_perimeter_timeline_viewer
 from portable_scene_package import (
+    MapPackageReference,
     materialize_perimeter_upload_package,
     read_map_reference_from_archive,
+    validate_map_upload_package,
     validate_perimeter_upload_package,
 )
 
@@ -140,10 +142,71 @@ class CallbackClient:
         self._request("POST", self.result_url, payload=payload)
 
 
-def _download_map(base_map: Mapping[str, Any], root: Path, token: str) -> Path:
+def _download_map(
+    base_map: Mapping[str, Any],
+    root: Path,
+    token: str,
+) -> tuple[Path, MapPackageReference, dict[str, str]]:
     dataset = base_map.get("dataset")
     archive = base_map.get("archive")
-    if not isinstance(dataset, Mapping) or not isinstance(archive, Mapping):
+    source = base_map.get("source")
+    if not isinstance(dataset, Mapping):
+        raise LightningPerimeterContractError("Référence dataset de carte incomplète")
+
+    if isinstance(source, Mapping):
+        source_root = source.get("root")
+        source_revision = dataset.get("revision")
+        manifest_sha256 = source.get("manifest_sha256")
+        if (
+            source.get("status") != "published_public"
+            or dataset.get("visibility") != "public"
+            or not isinstance(source_root, str)
+            or not source_root
+            or dataset.get("root") != source_root
+            or not isinstance(source_revision, str)
+            or not isinstance(manifest_sha256, str)
+        ):
+            raise LightningPerimeterContractError(
+                "Le dossier source public de la carte n'est pas finalisé"
+            )
+        from huggingface_hub import snapshot_download
+
+        local_dir = root / "map-download"
+        try:
+            snapshot = Path(
+                snapshot_download(
+                    repo_id=str(dataset["repo_id"]),
+                    repo_type="dataset",
+                    revision=source_revision,
+                    allow_patterns=[f"{source_root}/**"],
+                    token=token,
+                    local_dir=local_dir,
+                )
+            ).resolve(strict=True)
+        except Exception as exc:
+            raise LightningPerimeterContractError(
+                "Téléchargement du dossier public de la carte impossible"
+            ) from exc
+        downloaded = (snapshot / source_root).resolve(strict=True)
+        if not downloaded.is_dir():
+            raise LightningPerimeterContractError(
+                "Le dossier public de la carte est absent après téléchargement"
+            )
+        try:
+            reference = validate_map_upload_package(downloaded)
+        except Exception as exc:
+            raise LightningPerimeterContractError(
+                "Le dossier public de la carte ne passe plus sa validation"
+            ) from exc
+        if reference.manifest_sha256 != manifest_sha256:
+            raise LightningPerimeterContractError(
+                "Le manifeste du dossier public de carte a changé"
+            )
+        return downloaded, reference, {
+            "source_manifest_sha256": reference.manifest_sha256,
+        }
+
+    if not isinstance(archive, Mapping):
         raise LightningPerimeterContractError("Référence de carte incomplète")
     from huggingface_hub import hf_hub_download
 
@@ -160,11 +223,13 @@ def _download_map(base_map: Mapping[str, Any], root: Path, token: str) -> Path:
         ).resolve(strict=True)
     except Exception as exc:
         raise LightningPerimeterContractError(
-            "Téléchargement de la carte privée impossible"
+            "Téléchargement de la carte historique impossible"
         ) from exc
     if _sha256_file(downloaded) != archive.get("sha256"):
-        raise LightningPerimeterContractError("Le ZIP de carte téléchargé a changé")
-    return downloaded
+        raise LightningPerimeterContractError("Le ZIP historique de carte téléchargé a changé")
+    return downloaded, read_map_reference_from_archive(downloaded), {
+        "archive_sha256": str(archive["sha256"]),
+    }
 
 
 def _publish(
@@ -181,9 +246,9 @@ def _publish(
     api = HfApi(token=token)
     try:
         info = api.repo_info(repo_id=dataset_id, repo_type="dataset")
-        if info.private is not True:
+        if info.private is not False:
             raise LightningPerimeterContractError(
-                "La dataset cible des périmètres doit rester privée"
+                "La dataset cible FireViewer doit être publique"
             )
         remote_root = f"perimeters/{layer_build_id}/{map_build_id}"
         captures: list[dict[str, Any]] = []
@@ -221,7 +286,7 @@ def _publish(
         raise
     except Exception as exc:
         raise LightningPerimeterContractError(
-            "Publication privée du périmètre impossible"
+            "Publication publique du périmètre impossible"
         ) from exc
     return str(commit.oid), remote_root, captures
 
@@ -255,8 +320,11 @@ def run() -> dict[str, Any]:
 
         callback.progress(0.25, "Calques OpenUSD produits", phase="perimeter_compile")
         last_fraction, last_message = 0.25, "Calques OpenUSD produits"
-        map_archive = _download_map(request["base_map"], job_root, token)
-        map_reference = read_map_reference_from_archive(map_archive)
+        map_source, map_reference, map_identity = _download_map(
+            request["base_map"],
+            job_root,
+            token,
+        )
         expected_map = request["base_map"]
         if map_reference.zone_id != expected_map.get(
             "zone_id"
@@ -267,8 +335,10 @@ def run() -> dict[str, Any]:
 
         callback.progress(0.45, "Carte de base contrôlée", phase="map_validation")
         last_fraction, last_message = 0.45, "Carte de base contrôlée"
-        viewer = build_perimeter_timeline_viewer(
-            map_archive, product.package_root, job_root
+        viewer = build_perimeter_timeline_viewer_for_map(
+            map_source,
+            product.package_root,
+            job_root,
         )
         _upload_root, archive, upload_manifest = materialize_perimeter_upload_package(
             product.package_root,
@@ -279,9 +349,11 @@ def run() -> dict[str, Any]:
         validate_perimeter_upload_package(_upload_root)
 
         callback.progress(
-            0.75, "Timeline 3D et ZIP validés", phase="package_validation"
+            0.75,
+            "Timeline 3D et package de périmètre validés",
+            phase="package_validation",
         )
-        last_fraction, last_message = 0.75, "Timeline 3D et ZIP validés"
+        last_fraction, last_message = 0.75, "Timeline 3D et package de périmètre validés"
         commit_oid, remote_root, captures = _publish(
             dataset_id=dataset_id,
             token=token,
@@ -305,12 +377,13 @@ def run() -> dict[str, Any]:
                 "job_id": request["base_map"]["job_id"],
                 "zone_id": map_reference.zone_id,
                 "build_id": map_reference.map_build_id,
-                "archive_sha256": request["base_map"]["archive"]["sha256"],
+                **map_identity,
             },
             "dataset": {
                 "repo_id": dataset_id,
                 "revision": commit_oid,
                 "root": remote_root,
+                "visibility": "public",
             },
             "archive": {
                 "path": f"{remote_root}/fireviewer-perimeter-layer.zip",
