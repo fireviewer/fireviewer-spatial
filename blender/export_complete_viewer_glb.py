@@ -22,7 +22,11 @@ SCHEMA = "fireviewer.complete-viewer-scene.v1"
 STATUS = "complete"
 GLB_NAME = "viewer.glb"
 RECEIPT_NAME = "viewer-scene.v1.json"
-FAMILY_MARKERS = {"buildings": "Buildings", "trees": "Trees", "context_assets": "ContextAssets"}
+FAMILY_MARKERS = {
+    "buildings": "Buildings",
+    "trees": "Trees",
+    "context_assets": "ContextAssets",
+}
 FAMILY_ROOTS = {key: f"FireViewer_{value}" for key, value in FAMILY_MARKERS.items()}
 
 
@@ -31,7 +35,13 @@ class CompleteViewerExportError(RuntimeError):
 
 
 def _canonical_bytes(value: Any) -> bytes:
-    return json.dumps(value, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
 
 
 def _sha256_file(path: Path) -> str:
@@ -74,14 +84,21 @@ def _expected_counts(receipt: Mapping[str, Any]) -> dict[str, int]:
         "trees": receipt.get("tree_count"),
         "context_assets": receipt.get("context_asset_count", 0),
     }
-    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in raw.values()):
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in raw.values()
+    ):
         raise CompleteViewerExportError("Comptages scellés de zone invalides")
     return {key: int(value) for key, value in raw.items()}
 
 
 def _family_from_instance(instance: Any) -> str | None:
     names: list[str] = []
-    for value in (getattr(instance, "parent", None), getattr(instance, "object", None), getattr(getattr(instance, "object", None), "original", None)):
+    for value in (
+        getattr(instance, "parent", None),
+        getattr(instance, "object", None),
+        getattr(getattr(instance, "object", None), "original", None),
+    ):
         name = getattr(value, "name", None)
         if isinstance(name, str):
             names.append(name)
@@ -101,6 +118,11 @@ def _materialize_instances(bpy: Any, expected: Mapping[str, int]) -> dict[str, i
         collection.objects.link(root)
         roots[family] = root
     counts = {family: 0 for family in FAMILY_MARKERS}
+
+    # Blender exposes both the prototype Xform instance and the actual child
+    # mesh instance for USD PointInstancers. Only mesh instances are material
+    # to the GLB. Skipping Xforms is safe because the exact sealed family counts
+    # below remain fail-closed and reject any genuinely missing mesh instance.
     for instance in list(bpy.context.evaluated_depsgraph_get().object_instances):
         if not bool(getattr(instance, "is_instance", False)):
             continue
@@ -110,7 +132,7 @@ def _materialize_instances(bpy: Any, expected: Mapping[str, int]) -> dict[str, i
         evaluated = getattr(instance, "object", None)
         source = getattr(evaluated, "original", evaluated)
         if source is None or getattr(source, "type", None) != "MESH":
-            raise CompleteViewerExportError(f"Instance {family} sans prototype mesh exportable")
+            continue
         clone = source.copy()
         clone.data = source.data
         clone.animation_data_clear()
@@ -122,11 +144,16 @@ def _materialize_instances(bpy: Any, expected: Mapping[str, int]) -> dict[str, i
         clone.name = f"FV_{family}_{counts[family]:08d}_{source.name}"
         collection.objects.link(clone)
         counts[family] += 1
+
     for obj in list(bpy.context.scene.objects):
-        if getattr(obj, "type", None) == "POINTCLOUD" and any(marker in obj.name for marker in FAMILY_MARKERS.values()):
+        if getattr(obj, "type", None) == "POINTCLOUD" and any(
+            marker in obj.name for marker in FAMILY_MARKERS.values()
+        ):
             bpy.data.objects.remove(obj, do_unlink=True)
     if counts != dict(expected):
-        raise CompleteViewerExportError(f"Instances viewer incomplètes: attendu={dict(expected)}, obtenu={counts}")
+        raise CompleteViewerExportError(
+            f"Instances viewer incomplètes: attendu={dict(expected)}, obtenu={counts}"
+        )
     return counts
 
 
@@ -158,7 +185,10 @@ def _scene_metrics(bpy: Any) -> tuple[int, int]:
         elif kind in {"CURVE", "SURFACE", "META", "FONT", "VOLUME"}:
             unsupported.append(f"{obj.name}:{kind}")
     if unsupported:
-        raise CompleteViewerExportError("Contenu visible non exportable en glTF: " + ", ".join(sorted(unsupported)[:20]))
+        raise CompleteViewerExportError(
+            "Contenu visible non exportable en glTF: "
+            + ", ".join(sorted(unsupported)[:20])
+        )
     if mesh_objects < 1:
         raise CompleteViewerExportError("Aucun mesh visible dans la scène viewer")
     return mesh_objects, len(images)
@@ -171,7 +201,11 @@ def _export_glb(bpy: Any, output: Path) -> None:
     supported = {prop.identifier for prop in operator.get_rna_type().properties}
     if "export_gpu_instances" not in supported:
         raise CompleteViewerExportError("Blender ne fournit pas EXT_mesh_gpu_instancing")
-    options: dict[str, Any] = {"filepath": str(temporary), "check_existing": False, "export_format": "GLB"}
+    options: dict[str, Any] = {
+        "filepath": str(temporary),
+        "check_existing": False,
+        "export_format": "GLB",
+    }
     for name, value in {
         "use_visible": True,
         "export_yup": True,
@@ -188,7 +222,11 @@ def _export_glb(bpy: Any, output: Path) -> None:
         if name in supported:
             options[name] = value
     result = operator(**options)
-    if "FINISHED" not in result or not temporary.is_file() or temporary.stat().st_size <= 20:
+    if (
+        "FINISHED" not in result
+        or not temporary.is_file()
+        or temporary.stat().st_size <= 20
+    ):
         temporary.unlink(missing_ok=True)
         raise CompleteViewerExportError("Blender n'a pas écrit le GLB viewer")
     os.replace(temporary, output)
@@ -234,46 +272,88 @@ def _descendants(nodes: Sequence[Any], root: int) -> set[int]:
         found.add(index)
         node = nodes[index]
         if isinstance(node, Mapping) and isinstance(node.get("children"), list):
-            pending.extend(item for item in node["children"] if isinstance(item, int) and not isinstance(item, bool))
+            pending.extend(
+                item
+                for item in node["children"]
+                if isinstance(item, int) and not isinstance(item, bool)
+            )
     return found
 
 
 def _node_instance_count(node: Mapping[str, Any], accessors: Sequence[Any]) -> int:
     extensions = node.get("extensions")
-    extension = extensions.get("EXT_mesh_gpu_instancing") if isinstance(extensions, Mapping) else None
+    extension = (
+        extensions.get("EXT_mesh_gpu_instancing")
+        if isinstance(extensions, Mapping)
+        else None
+    )
     if isinstance(extension, Mapping):
         attributes = extension.get("attributes")
         if not isinstance(attributes, Mapping) or not attributes:
             raise CompleteViewerExportError("Extension GPU instancing invalide")
         counts: set[int] = set()
         for index in attributes.values():
-            if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(accessors) or not isinstance(accessors[index], Mapping):
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or not 0 <= index < len(accessors)
+                or not isinstance(accessors[index], Mapping)
+            ):
                 raise CompleteViewerExportError("Accessor GPU instancing invalide")
             count = accessors[index].get("count")
             if isinstance(count, bool) or not isinstance(count, int) or count < 1:
                 raise CompleteViewerExportError("Comptage GPU instancing invalide")
             counts.add(count)
         if len(counts) != 1:
-            raise CompleteViewerExportError("Attributs GPU instancing de tailles différentes")
+            raise CompleteViewerExportError(
+                "Attributs GPU instancing de tailles différentes"
+            )
         return next(iter(counts))
     return 1 if isinstance(node.get("mesh"), int) else 0
 
 
-def _validate_gltf_payload(gltf: Mapping[str, Any], *, expected_counts: Mapping[str, int], source_images: int, source_meshes: int) -> dict[str, Any]:
+def _validate_gltf_payload(
+    gltf: Mapping[str, Any],
+    *,
+    expected_counts: Mapping[str, int],
+    source_images: int,
+    source_meshes: int,
+) -> dict[str, Any]:
     nodes = gltf.get("nodes", [])
     meshes = gltf.get("meshes", [])
     accessors = gltf.get("accessors", [])
     images = gltf.get("images", [])
     buffers = gltf.get("buffers", [])
-    if not all(isinstance(value, list) for value in (nodes, meshes, accessors, images, buffers)) or not meshes or source_meshes < 1:
+    if (
+        not all(
+            isinstance(value, list)
+            for value in (nodes, meshes, accessors, images, buffers)
+        )
+        or not meshes
+        or source_meshes < 1
+    ):
         raise CompleteViewerExportError("Tables GLB viewer invalides")
-    if any(not isinstance(item, Mapping) or item.get("uri") is not None for item in buffers):
+    if any(
+        not isinstance(item, Mapping) or item.get("uri") is not None
+        for item in buffers
+    ):
         raise CompleteViewerExportError("Le GLB viewer référence un buffer externe")
-    if any(not isinstance(item, Mapping) or item.get("uri") is not None or not isinstance(item.get("bufferView"), int) for item in images):
+    if any(
+        not isinstance(item, Mapping)
+        or item.get("uri") is not None
+        or not isinstance(item.get("bufferView"), int)
+        for item in images
+    ):
         raise CompleteViewerExportError("Le GLB viewer contient une texture externe")
     if len(images) < source_images:
-        raise CompleteViewerExportError(f"Textures viewer incomplètes: {len(images)} < {source_images}")
-    names = {item.get("name"): index for index, item in enumerate(nodes) if isinstance(item, Mapping) and isinstance(item.get("name"), str)}
+        raise CompleteViewerExportError(
+            f"Textures viewer incomplètes: {len(images)} < {source_images}"
+        )
+    names = {
+        item.get("name"): index
+        for index, item in enumerate(nodes)
+        if isinstance(item, Mapping) and isinstance(item.get("name"), str)
+    }
     actual: dict[str, int] = {}
     for family, expected in expected_counts.items():
         root = names.get(FAMILY_ROOTS[family])
@@ -281,18 +361,38 @@ def _validate_gltf_payload(gltf: Mapping[str, Any], *, expected_counts: Mapping[
             actual[family] = 0
             continue
         if not isinstance(root, int):
-            raise CompleteViewerExportError(f"Racine {FAMILY_ROOTS[family]} absente du GLB")
-        count = sum(_node_instance_count(nodes[index], accessors) for index in _descendants(nodes, root) if index != root and isinstance(nodes[index], Mapping))
+            raise CompleteViewerExportError(
+                f"Racine {FAMILY_ROOTS[family]} absente du GLB"
+            )
+        count = sum(
+            _node_instance_count(nodes[index], accessors)
+            for index in _descendants(nodes, root)
+            if index != root and isinstance(nodes[index], Mapping)
+        )
         actual[family] = count
         if count != expected:
-            raise CompleteViewerExportError(f"Viewer incomplet pour {family}: attendu={expected}, obtenu={count}")
+            raise CompleteViewerExportError(
+                f"Viewer incomplet pour {family}: attendu={expected}, obtenu={count}"
+            )
     return {
         "family_instance_counts": actual,
         "mesh_count": len(meshes),
         "node_count": len(nodes),
         "image_count": len(images),
-        "material_count": len(gltf.get("materials", [])) if isinstance(gltf.get("materials"), list) else 0,
-        "extensions_used": sorted(item for item in gltf.get("extensionsUsed", []) if isinstance(item, str)) if isinstance(gltf.get("extensionsUsed"), list) else [],
+        "material_count": (
+            len(gltf.get("materials", []))
+            if isinstance(gltf.get("materials"), list)
+            else 0
+        ),
+        "extensions_used": (
+            sorted(
+                item
+                for item in gltf.get("extensionsUsed", [])
+                if isinstance(item, str)
+            )
+            if isinstance(gltf.get("extensionsUsed"), list)
+            else []
+        ),
     }
 
 
@@ -307,30 +407,63 @@ def export_complete_viewer(job_root: Path | str) -> Path:
     try:
         import bpy  # type: ignore
     except ImportError as error:  # pragma: no cover
-        raise CompleteViewerExportError("L'export viewer doit s'exécuter dans Blender") from error
+        raise CompleteViewerExportError(
+            "L'export viewer doit s'exécuter dans Blender"
+        ) from error
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    result = bpy.ops.wm.usd_import(filepath=str(stage), support_scene_instancing=True)
+    result = bpy.ops.wm.usd_import(
+        filepath=str(stage),
+        support_scene_instancing=True,
+    )
     if "FINISHED" not in result:
         raise CompleteViewerExportError("Import OpenUSD de la zone impossible")
     materialized = _materialize_instances(bpy, expected)
     source_meshes, source_images = _scene_metrics(bpy)
     output = root / GLB_NAME
     _export_glb(bpy, output)
-    summary = _validate_gltf_payload(_read_glb_json(output), expected_counts=expected, source_images=source_images, source_meshes=source_meshes)
+    summary = _validate_gltf_payload(
+        _read_glb_json(output),
+        expected_counts=expected,
+        source_images=source_images,
+        source_meshes=source_meshes,
+    )
     if summary["family_instance_counts"] != materialized:
-        raise CompleteViewerExportError("Le GLB diverge de la matérialisation Blender")
+        raise CompleteViewerExportError(
+            "Le GLB diverge de la matérialisation Blender"
+        )
     payload: dict[str, Any] = {
         "schema": SCHEMA,
         "status": STATUS,
         "zone_id": zone_receipt.get("zone_id"),
         "build_id": zone_receipt.get("build_id"),
-        "source": {"entry_stage": "zone.usda", "entry_stage_sha256": _sha256_file(stage), "zone_receipt": "zone.done.json", "zone_receipt_sha256": _sha256_file(zone_receipt_path)},
-        "viewer": {"file": GLB_NAME, "byte_count": output.stat().st_size, "sha256": _sha256_file(output), "format": "glTF 2.0 binary", "external_dependencies": 0},
-        "completeness": {"policy": "fail_closed_exact_visual_scene", "terrain_and_non_instanced_meshes_required": True, "source_mesh_object_count": source_meshes, "source_image_count": source_images, **summary},
+        "source": {
+            "entry_stage": "zone.usda",
+            "entry_stage_sha256": _sha256_file(stage),
+            "zone_receipt": "zone.done.json",
+            "zone_receipt_sha256": _sha256_file(zone_receipt_path),
+        },
+        "viewer": {
+            "file": GLB_NAME,
+            "byte_count": output.stat().st_size,
+            "sha256": _sha256_file(output),
+            "format": "glTF 2.0 binary",
+            "external_dependencies": 0,
+        },
+        "completeness": {
+            "policy": "fail_closed_exact_visual_scene",
+            "terrain_and_non_instanced_meshes_required": True,
+            "source_mesh_object_count": source_meshes,
+            "source_image_count": source_images,
+            **summary,
+        },
     }
-    if not isinstance(payload["zone_id"], str) or not isinstance(payload["build_id"], str):
+    if not isinstance(payload["zone_id"], str) or not isinstance(
+        payload["build_id"], str
+    ):
         raise CompleteViewerExportError("Identité scellée de zone absente")
-    payload["receipt_sha256"] = hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+    payload["receipt_sha256"] = hashlib.sha256(
+        _canonical_bytes(payload)
+    ).hexdigest()
     _write_json(root / RECEIPT_NAME, payload)
     return root / RECEIPT_NAME
 
@@ -346,7 +479,15 @@ def _parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     receipt = export_complete_viewer(_parse_arguments(argv).job_root)
-    print(json.dumps({"viewer_receipt": str(receipt)}, ensure_ascii=False, separators=(",", ":"), sort_keys=True), flush=True)
+    print(
+        json.dumps(
+            {"viewer_receipt": str(receipt)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     return 0
 
 
