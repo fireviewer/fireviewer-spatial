@@ -109,6 +109,32 @@ def _family_from_instance(instance: Any) -> str | None:
     return None
 
 
+def _snapshot_instances(bpy: Any) -> list[tuple[str, Any, Any]]:
+    """Copy transient depsgraph instance data while each RNA handle is valid.
+
+    ``Depsgraph.object_instances`` yields ephemeral ``DepsgraphObjectInstance``
+    wrappers. Blender may invalidate a wrapper as soon as the iterator advances,
+    so materializing the iterator with ``list(...)`` and reading it afterwards is
+    unsafe. Only stable Blender ID datablocks plus a copied matrix leave this loop.
+    """
+
+    snapshots: list[tuple[str, Any, Any]] = []
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    for instance in depsgraph.object_instances:
+        if not bool(getattr(instance, "is_instance", False)):
+            continue
+        family = _family_from_instance(instance)
+        if family is None:
+            continue
+        evaluated = getattr(instance, "object", None)
+        source = getattr(evaluated, "original", evaluated)
+        if source is None or getattr(source, "type", None) != "MESH":
+            continue
+        matrix = instance.matrix_world.copy()
+        snapshots.append((family, source, matrix))
+    return snapshots
+
+
 def _materialize_instances(bpy: Any, expected: Mapping[str, int]) -> dict[str, int]:
     collection = bpy.context.scene.collection
     roots: dict[str, Any] = {}
@@ -119,25 +145,16 @@ def _materialize_instances(bpy: Any, expected: Mapping[str, int]) -> dict[str, i
         roots[family] = root
     counts = {family: 0 for family in FAMILY_MARKERS}
 
-    # Blender exposes both the prototype Xform instance and the actual child
-    # mesh instance for USD PointInstancers. Only mesh instances are material
-    # to the GLB. Skipping Xforms is safe because the exact sealed family counts
-    # below remain fail-closed and reject any genuinely missing mesh instance.
-    for instance in list(bpy.context.evaluated_depsgraph_get().object_instances):
-        if not bool(getattr(instance, "is_instance", False)):
-            continue
-        family = _family_from_instance(instance)
-        if family is None:
-            continue
-        evaluated = getattr(instance, "object", None)
-        source = getattr(evaluated, "original", evaluated)
-        if source is None or getattr(source, "type", None) != "MESH":
-            continue
+    # Never retain DepsgraphObjectInstance handles. Snapshot the family, stable
+    # source Object and world matrix before the depsgraph iterator advances, then
+    # mutate the Blender scene only after the snapshot is complete.
+    snapshots = _snapshot_instances(bpy)
+    for family, source, matrix_world in snapshots:
         clone = source.copy()
         clone.data = source.data
         clone.animation_data_clear()
         clone.parent = roots[family]
-        clone.matrix_world = instance.matrix_world.copy()
+        clone.matrix_world = matrix_world
         clone.hide_render = False
         clone.hide_viewport = False
         clone.hide_set(False)
