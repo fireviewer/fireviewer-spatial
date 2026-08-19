@@ -5,11 +5,9 @@ ENV FIREVIEWER_TILE_WORKERS=6 \
     FIREVIEWER_TILE_STALL_TIMEOUT_SECONDS=480 \
     FIREVIEWER_PROTOTYPE_WORKERS=8 \
     FIREVIEWER_PROTOTYPE_BUNDLE_MODE=linked \
-    FIREVIEWER_HF_PUBLICATION_REQUIRED=1 \
-    FIREVIEWER_MAX_ARCHIVE_BYTES=68719476736 \
     FIREVIEWER_WORK_ROOT=/lightning-work/fireviewer-map-production \
     FIREVIEWER_SCRATCH_ROOT=/lightning-scratch/fireviewer-map-production \
-    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260818-r41-lightning \
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260819-r42-lightning \
     HF_XET_CACHE=/lightning-scratch/hf-xet \
     HF_XET_HIGH_PERFORMANCE=1
 
