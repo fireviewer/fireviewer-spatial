@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -11,6 +12,8 @@ import lightning_perimeter_production as worker
 
 
 JOB_ID = "perimeter-" + "a" * 32
+MAP_BUILD_ID = "c" * 64
+MAP_SOURCE_ROOT = f"maps/GPS-TEST/{MAP_BUILD_ID}/source"
 REQUEST = {
     "source": {
         "schema": "fireviewer.geographic-perimeter-source.v1",
@@ -20,15 +23,19 @@ REQUEST = {
     "base_map": {
         "job_id": "map-" + "b" * 32,
         "zone_id": "GPS-TEST",
-        "build_id": "c" * 64,
+        "build_id": MAP_BUILD_ID,
         "dataset": {
             "repo_id": "fireviewer/simple-measured-scenes-v1",
             "revision": "d" * 40,
-            "root": "zones/GPS-TEST/build",
+            "root": MAP_SOURCE_ROOT,
+            "visibility": "public",
         },
-        "archive": {
-            "path": "zones/GPS-TEST/build/fireviewer-zone.zip",
-            "sha256": "e" * 64,
+        "source": {
+            "schema": "fireviewer.map-source-publication.v1",
+            "status": "published_public",
+            "root": MAP_SOURCE_ROOT,
+            "visibility": "public",
+            "manifest_sha256": "e" * 64,
         },
     },
 }
@@ -58,7 +65,47 @@ def test_callback_rejects_unsafe_job_id(
         worker.CallbackClient()
 
 
-def test_worker_publishes_timeline_and_cleans_scratch_without_blocking_result(
+def test_download_map_materializes_public_hf_folder_without_zip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    local_root = tmp_path / "downloaded"
+    source_root = local_root / MAP_SOURCE_ROOT
+    source_root.mkdir(parents=True)
+    reference = SimpleNamespace(
+        zone_id="GPS-TEST",
+        map_build_id=MAP_BUILD_ID,
+        manifest_sha256="e" * 64,
+    )
+    observed: dict[str, Any] = {}
+
+    def snapshot_download(**kwargs: Any) -> str:
+        observed.update(kwargs)
+        return str(local_root)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download=snapshot_download),
+    )
+    monkeypatch.setattr(worker, "validate_map_upload_package", lambda root: reference)
+
+    downloaded, returned, identity = worker._download_map(
+        REQUEST["base_map"],
+        tmp_path,
+        "hf-token",
+    )
+
+    assert downloaded == source_root.resolve()
+    assert returned is reference
+    assert identity == {"source_manifest_sha256": "e" * 64}
+    assert observed["repo_id"] == "fireviewer/simple-measured-scenes-v1"
+    assert observed["revision"] == "d" * 40
+    assert observed["allow_patterns"] == [f"{MAP_SOURCE_ROOT}/**"]
+    assert not list(tmp_path.rglob("*.zip"))
+
+
+def test_worker_publishes_timeline_and_cleans_scratch_without_map_zip(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _environment(monkeypatch, tmp_path)
@@ -84,11 +131,11 @@ def test_worker_publishes_timeline_and_cleans_scratch_without_blocking_result(
     callback = FakeCallback()
     package_root = tmp_path / "layer"
     package_root.mkdir()
-    archive = tmp_path / "perimeter.zip"
-    archive.write_bytes(b"perimeter-zip")
-    map_archive = tmp_path / "map.zip"
-    map_archive.write_bytes(b"map-zip")
-    map_reference = SimpleNamespace(zone_id="GPS-TEST", map_build_id="c" * 64)
+    perimeter_archive = tmp_path / "perimeter.zip"
+    perimeter_archive.write_bytes(b"perimeter-zip")
+    map_folder = tmp_path / "map-folder"
+    map_folder.mkdir()
+    map_reference = SimpleNamespace(zone_id="GPS-TEST", map_build_id=MAP_BUILD_ID)
     viewer = SimpleNamespace(root=tmp_path / "viewer", frames=(), manifest={})
 
     monkeypatch.setattr(worker, "CallbackClient", lambda: callback)
@@ -100,19 +147,26 @@ def test_worker_publishes_timeline_and_cleans_scratch_without_blocking_result(
             manifest={"build_id": "1" * 64},
         ),
     )
-    monkeypatch.setattr(worker, "_download_map", lambda *_args: map_archive)
     monkeypatch.setattr(
-        worker, "read_map_reference_from_archive", lambda _archive: map_reference
+        worker,
+        "_download_map",
+        lambda *_args: (
+            map_folder,
+            map_reference,
+            {"source_manifest_sha256": "e" * 64},
+        ),
     )
     monkeypatch.setattr(
-        worker, "build_perimeter_timeline_viewer", lambda *_args: viewer
+        worker,
+        "build_perimeter_timeline_viewer_for_map",
+        lambda *_args: viewer,
     )
     monkeypatch.setattr(
         worker,
         "materialize_perimeter_upload_package",
         lambda *_args, **_kwargs: (
             tmp_path / "upload",
-            archive,
+            perimeter_archive,
             {"timeline": {"state_count": 1}},
         ),
     )
@@ -122,7 +176,7 @@ def test_worker_publishes_timeline_and_cleans_scratch_without_blocking_result(
         "_publish",
         lambda **_kwargs: (
             "2" * 40,
-            f"perimeters/{'1' * 64}/{'c' * 64}",
+            f"perimeters/{'1' * 64}/{MAP_BUILD_ID}",
             [
                 {
                     "index": 0,
@@ -140,6 +194,9 @@ def test_worker_publishes_timeline_and_cleans_scratch_without_blocking_result(
 
     assert result["schema"] == worker.RESULT_SCHEMA
     assert result["state_count"] == 1
+    assert result["base_map"]["source_manifest_sha256"] == "e" * 64
+    assert "archive_sha256" not in result["base_map"]
+    assert result["dataset"]["visibility"] == "public"
     assert callback.result_record == result
     assert callback.progress_records[-1]["state"] == "completed"
     assert not (tmp_path / "work" / "jobs" / JOB_ID).exists()
@@ -163,31 +220,39 @@ def test_cleanup_failure_does_not_invalidate_published_result(
         def result(self, _payload: dict[str, Any]) -> None:
             return None
 
-    archive = tmp_path / "perimeter.zip"
-    archive.write_bytes(b"perimeter-zip")
-    map_archive = tmp_path / "map.zip"
-    map_archive.write_bytes(b"map-zip")
+    perimeter_archive = tmp_path / "perimeter.zip"
+    perimeter_archive.write_bytes(b"perimeter-zip")
+    map_folder = tmp_path / "map-folder"
+    map_folder.mkdir()
     layer = tmp_path / "layer"
     layer.mkdir()
+    map_reference = SimpleNamespace(zone_id="GPS-TEST", map_build_id=MAP_BUILD_ID)
+
     monkeypatch.setattr(worker, "CallbackClient", FakeCallback)
     monkeypatch.setattr(
         worker,
         "produce_perimeter_layer",
         lambda *_args: SimpleNamespace(
-            package_root=layer, manifest={"build_id": "1" * 64}
+            package_root=layer,
+            manifest={"build_id": "1" * 64},
         ),
     )
-    monkeypatch.setattr(worker, "_download_map", lambda *_args: map_archive)
     monkeypatch.setattr(
         worker,
-        "read_map_reference_from_archive",
-        lambda _archive: SimpleNamespace(zone_id="GPS-TEST", map_build_id="c" * 64),
+        "_download_map",
+        lambda *_args: (
+            map_folder,
+            map_reference,
+            {"source_manifest_sha256": "e" * 64},
+        ),
     )
     monkeypatch.setattr(
         worker,
-        "build_perimeter_timeline_viewer",
+        "build_perimeter_timeline_viewer_for_map",
         lambda *_args: SimpleNamespace(
-            root=tmp_path / "viewer", frames=(), manifest={}
+            root=tmp_path / "viewer",
+            frames=(),
+            manifest={},
         ),
     )
     monkeypatch.setattr(
@@ -195,7 +260,7 @@ def test_cleanup_failure_does_not_invalidate_published_result(
         "materialize_perimeter_upload_package",
         lambda *_args, **_kwargs: (
             tmp_path / "upload",
-            archive,
+            perimeter_archive,
             {"timeline": {"state_count": 0}},
         ),
     )
