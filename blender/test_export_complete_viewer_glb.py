@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import export_complete_viewer_glb as viewer
@@ -62,3 +64,93 @@ def test_complete_viewer_rejects_external_or_missing_textures() -> None:
             source_images=2,
             source_meshes=4,
         )
+
+
+def test_snapshot_instances_does_not_retain_ephemeral_depsgraph_handles() -> None:
+    class Matrix:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def copy(self) -> tuple[str, int]:
+            return ("matrix", self.value)
+
+    class EphemeralInstance:
+        def __init__(self, family: str, source: object, matrix: int) -> None:
+            self.valid = True
+            self._parent = SimpleNamespace(name=viewer.FAMILY_MARKERS[family])
+            self._object = SimpleNamespace(
+                name=f"{viewer.FAMILY_MARKERS[family]}Instance",
+                original=source,
+            )
+            self._matrix = Matrix(matrix)
+
+        def _require_valid(self) -> None:
+            if not self.valid:
+                raise ReferenceError("StructRNA of type DepsgraphObjectInstance has been removed")
+
+        @property
+        def is_instance(self) -> bool:
+            self._require_valid()
+            return True
+
+        @property
+        def parent(self):
+            self._require_valid()
+            return self._parent
+
+        @property
+        def object(self):
+            self._require_valid()
+            return self._object
+
+        @property
+        def matrix_world(self):
+            self._require_valid()
+            return self._matrix
+
+    class EphemeralInstances:
+        def __init__(self, items: list[EphemeralInstance]) -> None:
+            self.items = items
+
+        def __iter__(self):
+            previous: EphemeralInstance | None = None
+            for item in self.items:
+                if previous is not None:
+                    previous.valid = False
+                previous = item
+                yield item
+            if previous is not None:
+                previous.valid = False
+
+    sources = [
+        SimpleNamespace(name="Douglas", type="MESH"),
+        SimpleNamespace(name="House", type="MESH"),
+    ]
+
+    stale = [
+        EphemeralInstance("trees", sources[0], 10),
+        EphemeralInstance("buildings", sources[1], 20),
+    ]
+    retained = list(EphemeralInstances(stale))
+    with pytest.raises(ReferenceError, match="StructRNA"):
+        _ = retained[0].is_instance
+
+    fresh = [
+        EphemeralInstance("trees", sources[0], 10),
+        EphemeralInstance("buildings", sources[1], 20),
+    ]
+    bpy = SimpleNamespace(
+        context=SimpleNamespace(
+            evaluated_depsgraph_get=lambda: SimpleNamespace(
+                object_instances=EphemeralInstances(fresh)
+            )
+        )
+    )
+
+    snapshots = viewer._snapshot_instances(bpy)
+
+    assert [(family, source.name, matrix) for family, source, matrix in snapshots] == [
+        ("trees", "Douglas", ("matrix", 10)),
+        ("buildings", "House", ("matrix", 20)),
+    ]
+    assert all(not instance.valid for instance in fresh)
