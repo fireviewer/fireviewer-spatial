@@ -1,16 +1,17 @@
 """Provider-neutral one-shot FireViewer 9-tile validation job.
 
-This is deliberately separate from the stable Lightning production entrypoint.
-It can run the current placement profile (for the comparison Lightning image)
-or the factual v2 profile (for the RunPod image), creates a compact validation
-pack before any large viewer upload, then exports the exact-count GLB.
+This entrypoint is separate from the stable Lightning and legacy RunPod images.
+It runs either the current placement profile or factual v2, publishes compact
+validation evidence as ordinary Hugging Face folders, exports the complete
+non-simplified viewer map, and publishes that viewer under the canonical
+``maps/<zone>/<build>/runtime`` path.
 
-The job never publishes the full scientific folder and never creates a final
-zone ZIP. Its only purpose is the low-cost 9-tile A/B validation.
+No validation archive and no final zone archive are created.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -26,12 +27,12 @@ from fixed_asset_placement import (
     EMPTY_REQUEST,
     normalize_request as normalize_fixed_assets,
 )
-from map_validation_pack import create_and_publish_validation_pack
+from map_validation_folder import create_and_publish_validation_folder
 from portable_scene_package import validate_map_upload_package
 from runpod_map_production import normalize_map_request, request_sha256
 from simple_production_engine import ProductionConfig, ProductionEngine, plan_zone
 
-SCHEMA = "fireviewer.map-validation-job.v1"
+SCHEMA = "fireviewer.map-validation-job.v2"
 RESULT_NAME = "validation-result.json"
 VIEWER_RECEIPT_NAME = "viewer-scene.v1.json"
 VIEWER_GLB_NAME = "viewer.glb"
@@ -60,6 +61,14 @@ def _required_env(name: str) -> str:
     if not value:
         raise MapValidationJobError(f"missing required environment variable: {name}")
     return value
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _load_request() -> dict[str, Any]:
@@ -100,7 +109,7 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 def _skip_archive_budget(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
     return {
         "schema": "fireviewer.map-folder-publication.v1",
-        "status": "zip_disabled",
+        "status": "archive_disabled",
     }
 
 
@@ -122,10 +131,69 @@ def _sealed_folder_mode() -> Iterator[None]:
         production_engine.seal_map_upload_package = original_seal
 
 
+def _validate_no_placeholders(zone_receipt: Mapping[str, Any]) -> None:
+    placeholder_count = zone_receipt.get("placeholder_instance_count", 0)
+    if placeholder_count != 0:
+        raise MapValidationJobError(
+            "real-assets-only contract violated: "
+            f"{placeholder_count} placeholder instances"
+        )
+
+
+def _validate_complete_viewer(
+    job_root: Path,
+    zone_receipt: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    glb_path = job_root / VIEWER_GLB_NAME
+    viewer = receipt.get("viewer")
+    completeness = receipt.get("completeness")
+    if not glb_path.is_file() or not isinstance(viewer, Mapping):
+        raise MapValidationJobError("complete viewer GLB is missing")
+    if not isinstance(completeness, Mapping):
+        raise MapValidationJobError("viewer completeness receipt is missing")
+    if (
+        completeness.get("policy") != "fail_closed_exact_visual_scene"
+        or completeness.get("mesh_coverage") != "complete"
+    ):
+        raise MapValidationJobError(
+            "viewer is not declared as the complete non-simplified map"
+        )
+    expected_counts = {
+        "buildings": zone_receipt.get("building_count"),
+        "trees": zone_receipt.get("tree_count"),
+        "context_assets": zone_receipt.get("context_asset_count", 0),
+    }
+    observed_counts = completeness.get("family_instance_counts")
+    if (
+        not isinstance(observed_counts, Mapping)
+        or any(
+            observed_counts.get(family) != count
+            for family, count in expected_counts.items()
+        )
+    ):
+        raise MapValidationJobError(
+            "viewer instance counts differ from the canonical map"
+        )
+    if viewer.get("sha256") != _sha256_file(glb_path):
+        raise MapValidationJobError("viewer SHA-256 differs from the exported GLB")
+    if viewer.get("byte_count") != glb_path.stat().st_size:
+        raise MapValidationJobError("viewer byte count differs from the exported GLB")
+    return {
+        "path": VIEWER_GLB_NAME,
+        "receipt_path": VIEWER_RECEIPT_NAME,
+        "sha256": viewer["sha256"],
+        "byte_count": viewer["byte_count"],
+        "representation": "complete_non_simplified_map",
+        "completeness": dict(completeness),
+    }
+
+
 def _run_viewer_export(
     config: ProductionConfig,
     job_root: Path,
-) -> dict[str, Any]:
+    zone_receipt: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     script_name = os.environ.get(
         "FIREVIEWER_VALIDATION_VIEWER_SCRIPT",
         "export_complete_viewer_glb.py",
@@ -164,22 +232,25 @@ def _run_viewer_export(
             + (result.stdout + "\n" + result.stderr)[-5000:]
         )
     receipt_path = job_root / VIEWER_RECEIPT_NAME
-    glb_path = job_root / VIEWER_GLB_NAME
-    if not receipt_path.is_file() or not glb_path.is_file():
-        raise MapValidationJobError("viewer export completed without GLB/receipt")
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if not receipt_path.is_file():
+        raise MapValidationJobError("viewer export completed without its receipt")
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise MapValidationJobError("viewer receipt is invalid") from error
     if not isinstance(receipt, dict):
         raise MapValidationJobError("viewer receipt is invalid")
-    return receipt
+    viewer = _validate_complete_viewer(job_root, zone_receipt, receipt)
+    return receipt, viewer
 
 
-def _publish_viewer_best_effort(
+def _publish_complete_viewer_public(
     job_root: Path,
     *,
     dataset_id: str,
-    provider: str,
     zone_id: str,
     build_id: str,
+    viewer: Mapping[str, Any],
 ) -> dict[str, Any]:
     from huggingface_hub import HfApi
 
@@ -187,26 +258,50 @@ def _publish_viewer_best_effort(
     api = HfApi(token=token)
     info = api.repo_info(repo_id=dataset_id, repo_type="dataset")
     if getattr(info, "private", None) is not False:
-        raise MapValidationJobError("validation dataset must be public")
-    remote_root = f"validation-viewers/{zone_id}/{build_id}/{provider}"
+        raise MapValidationJobError("map dataset must be public")
+    remote_root = f"maps/{zone_id}/{build_id}/runtime"
+    names = (VIEWER_GLB_NAME, VIEWER_RECEIPT_NAME)
     commit = api.upload_folder(
         repo_id=dataset_id,
         repo_type="dataset",
         folder_path=str(job_root),
         path_in_repo=remote_root,
-        allow_patterns=[VIEWER_GLB_NAME, VIEWER_RECEIPT_NAME],
-        commit_message=f"Publish FireViewer validation viewer {provider}",
+        allow_patterns=list(names),
+        commit_message=f"Publish complete FireViewer runtime {zone_id}",
     )
     oid = getattr(commit, "oid", None)
     if not isinstance(oid, str) or not oid:
         raise MapValidationJobError("viewer publication revision is missing")
+    missing = [
+        name
+        for name in names
+        if not api.file_exists(
+            repo_id=dataset_id,
+            filename=f"{remote_root}/{name}",
+            repo_type="dataset",
+            revision=oid,
+        )
+    ]
+    if missing:
+        raise MapValidationJobError(
+            "public viewer files missing after HF commit: " + ", ".join(missing)
+        )
     return {
         "status": "published_public",
-        "dataset_id": dataset_id,
-        "revision": oid,
-        "root": remote_root,
-        "viewer": f"{remote_root}/{VIEWER_GLB_NAME}",
-        "receipt": f"{remote_root}/{VIEWER_RECEIPT_NAME}",
+        "dataset": {
+            "repo_id": dataset_id,
+            "revision": oid,
+            "root": remote_root,
+            "visibility": "public",
+        },
+        "viewer": {
+            "path": f"{remote_root}/{VIEWER_GLB_NAME}",
+            "receipt_path": f"{remote_root}/{VIEWER_RECEIPT_NAME}",
+            "sha256": viewer["sha256"],
+            "byte_count": viewer["byte_count"],
+            "representation": "complete_non_simplified_map",
+            "completeness": dict(viewer["completeness"]),
+        },
     }
 
 
@@ -291,7 +386,7 @@ def run() -> dict[str, Any]:
             ):
                 if archive is not None:
                     raise MapValidationJobError(
-                        "folder-native validation unexpectedly produced a final ZIP"
+                        "folder-native validation unexpectedly produced an archive"
                     )
     except _SealedFolderReady as ready:
         job_root = ready.root
@@ -304,60 +399,81 @@ def run() -> dict[str, Any]:
     )
     if not isinstance(zone_receipt, dict) or zone_receipt.get("tile_count") != 9:
         raise MapValidationJobError("sealed zone receipt does not contain 9 tiles")
+    _validate_no_placeholders(zone_receipt)
     zone_id = str(zone_receipt["zone_id"])
     build_id = str(zone_receipt["build_id"])
 
     placement_finished = time.perf_counter()
-    placement_pack = create_and_publish_validation_pack(
+    placement_evidence = create_and_publish_validation_folder(
         job_root,
         provider=provider,
         stage="placement",
         require_nine_tiles=True,
     )
     if (
-        _bool_env("FIREVIEWER_VALIDATION_REQUIRE_PACK_UPLOAD", True)
-        and not placement_pack.get("publication")
+        _bool_env("FIREVIEWER_VALIDATION_REQUIRE_EVIDENCE_UPLOAD", True)
+        and not placement_evidence.get("publication")
     ):
         raise MapValidationJobError(
-            "placement validation pack was created but not published; "
+            "placement evidence was created but not published; "
             "refusing expensive viewer export"
         )
-    placement_pack_finished = time.perf_counter()
+    placement_evidence_finished = time.perf_counter()
 
-    viewer_receipt = _run_viewer_export(config, job_root)
+    viewer_receipt, viewer = _run_viewer_export(
+        config,
+        job_root,
+        zone_receipt,
+    )
     viewer_finished = time.perf_counter()
-    viewer_pack = create_and_publish_validation_pack(
+
+    viewer_evidence = create_and_publish_validation_folder(
         job_root,
         provider=provider,
         stage="viewer",
         require_nine_tiles=True,
     )
     if (
-        _bool_env("FIREVIEWER_VALIDATION_REQUIRE_PACK_UPLOAD", True)
-        and not viewer_pack.get("publication")
+        _bool_env("FIREVIEWER_VALIDATION_REQUIRE_EVIDENCE_UPLOAD", True)
+        and not viewer_evidence.get("publication")
     ):
-        raise MapValidationJobError("viewer validation pack was not published")
-    viewer_pack_finished = time.perf_counter()
+        raise MapValidationJobError("viewer validation evidence was not published")
+    viewer_evidence_finished = time.perf_counter()
 
     viewer_publication: dict[str, Any] | None = None
     viewer_publication_error: str | None = None
     if _bool_env("FIREVIEWER_VALIDATION_PUBLISH_VIEWER", True):
         dataset_id = _required_env("FIREVIEWER_HF_DATASET_ID")
         try:
-            viewer_publication = _publish_viewer_best_effort(
+            viewer_publication = _publish_complete_viewer_public(
                 job_root,
                 dataset_id=dataset_id,
-                provider=provider,
                 zone_id=zone_id,
                 build_id=build_id,
+                viewer=viewer,
             )
         except Exception as error:
-            # The small validation packs are already durable. A large GLB
-            # transfer failure is evidence to record, not a reason to lose the
-            # comparison result again.
             viewer_publication_error = f"{type(error).__name__}: {error}"
-    completed = time.perf_counter()
+            if _bool_env("FIREVIEWER_VALIDATION_REQUIRE_VIEWER_PUBLICATION", True):
+                raise MapValidationJobError(
+                    "complete viewer could not be published publicly"
+                ) from error
+    elif _bool_env("FIREVIEWER_VALIDATION_REQUIRE_VIEWER_PUBLICATION", True):
+        raise MapValidationJobError(
+            "viewer publication is required but FIREVIEWER_VALIDATION_PUBLISH_VIEWER is disabled"
+        )
 
+    completed = time.perf_counter()
+    dataset = (
+        dict(viewer_publication["dataset"])
+        if isinstance(viewer_publication, Mapping)
+        else None
+    )
+    public_viewer = (
+        dict(viewer_publication["viewer"])
+        if isinstance(viewer_publication, Mapping)
+        else None
+    )
     result: dict[str, Any] = {
         "schema": SCHEMA,
         "status": "completed",
@@ -375,29 +491,38 @@ def run() -> dict[str, Any]:
             "buildings": zone_receipt.get("building_count"),
             "trees": zone_receipt.get("tree_count"),
             "context_assets": zone_receipt.get("context_asset_count", 0),
-            "degraded_mns_tiles": zone_receipt.get("degraded_mns_tile_count", 0),
+            "placeholder_instances": zone_receipt.get(
+                "placeholder_instance_count", 0
+            ),
+            "degraded_mns_tiles": zone_receipt.get(
+                "degraded_mns_tile_count", 0
+            ),
         },
-        "placement_validation_pack": placement_pack,
-        "viewer_validation_pack": viewer_pack,
+        "validation_artifact_role": "evidence_only_not_a_map",
+        "placement_validation_folder": placement_evidence,
+        "viewer_validation_folder": viewer_evidence,
         "viewer_receipt": viewer_receipt,
+        "viewer_representation": "complete_non_simplified_map",
         "viewer_publication": viewer_publication,
         "viewer_publication_error": viewer_publication_error,
+        "dataset": dataset,
+        "viewer": public_viewer,
         "timings_seconds": {
             "sealed_map": round(placement_finished - started, 3),
-            "placement_pack": round(
-                placement_pack_finished - placement_finished,
+            "placement_evidence": round(
+                placement_evidence_finished - placement_finished,
                 3,
             ),
             "viewer_export": round(
-                viewer_finished - placement_pack_finished,
+                viewer_finished - placement_evidence_finished,
                 3,
             ),
-            "viewer_pack": round(
-                viewer_pack_finished - viewer_finished,
+            "viewer_evidence": round(
+                viewer_evidence_finished - viewer_finished,
                 3,
             ),
             "viewer_publication": round(
-                completed - viewer_pack_finished,
+                completed - viewer_evidence_finished,
                 3,
             ),
             "total": round(completed - started, 3),
