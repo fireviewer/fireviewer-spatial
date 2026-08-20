@@ -479,6 +479,32 @@ def test_prototype_checkpoint_sync_does_not_rehash_unchanged_files(
     assert len(hashed) == 2
 
 
+def test_prototype_checkpoint_sync_never_enters_live_part_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "scratch" / "bundle"
+    destination = tmp_path / "network" / "bundle"
+    published = source / "tree" / "prototype.usda"
+    published.parent.mkdir(parents=True)
+    published.write_bytes(b"published")
+    staging = source / ".tree.part"
+    staging.mkdir()
+    (staging / "partial.usda").write_bytes(b"partial")
+    original_scandir = production.os.scandir
+
+    def guarded_scandir(path: object):
+        if Path(path).name == staging.name:
+            raise AssertionError("live staging directory was traversed")
+        return original_scandir(path)
+
+    monkeypatch.setattr(production.os, "scandir", guarded_scandir)
+
+    production._sync_prototype_bundle(source, destination)
+
+    assert (destination / "tree" / "prototype.usda").read_bytes() == b"published"
+    assert not (destination / staging.name).exists()
+
+
 def test_prototype_bundle_namespace_rejects_an_unsealed_catalog_identity(
     tmp_path: Path,
 ) -> None:

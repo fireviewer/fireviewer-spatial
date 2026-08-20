@@ -637,6 +637,35 @@ def _regular_file_signature(path: Path) -> tuple[int, int, int, int]:
     return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
 
 
+def _prototype_bundle_items(source: Path) -> list[Path]:
+    """Snapshot published bundle entries without entering live staging trees."""
+
+    items: list[Path] = []
+
+    def fail_walk(error: OSError) -> None:
+        raise SimpleProductionError(
+            "Parcours du lot de prototypes publié impossible"
+        ) from error
+
+    for current, directories, files in os.walk(
+        source, topdown=True, followlinks=False, onerror=fail_walk
+    ):
+        parent = Path(current)
+        directories[:] = sorted(
+            name
+            for name in directories
+            if not (name.startswith(".") and name.endswith(".part"))
+        )
+        files = sorted(
+            name
+            for name in files
+            if not (name.startswith(".") and name.endswith(".part"))
+        )
+        items.extend(parent / name for name in directories)
+        items.extend(parent / name for name in files)
+    return sorted(items, key=lambda path: path.relative_to(source).as_posix())
+
+
 def _sync_prototype_bundle(
     source_root: Path,
     destination_root: Path,
@@ -658,14 +687,8 @@ def _sync_prototype_bundle(
     destination.mkdir(parents=True, exist_ok=True)
     if destination.is_symlink():
         raise SimpleProductionError("Lot de prototypes destination symbolique refusé")
-    for item in sorted(
-        source.rglob("*"), key=lambda path: path.relative_to(source).as_posix()
-    ):
+    for item in _prototype_bundle_items(source):
         relative = item.relative_to(source)
-        if any(
-            part.startswith(".") and part.endswith(".part") for part in relative.parts
-        ):
-            continue
         target = destination / relative
         _inside(destination, target, "synchronisation des prototypes")
         if item.is_dir() and not item.is_symlink():

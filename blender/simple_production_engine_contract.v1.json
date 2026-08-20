@@ -30,6 +30,7 @@
     "placement": "MNT-MNS measured",
     "prototype_assets": 294,
     "shared_prototype_bundle": "catalog_and_builder_namespaced_link_index_to_immutable_embedded_assets",
+    "shared_prototype_sync": "top_down_snapshot_prunes_live_dot_part_directories_before_descent_and_copies_only_atomically_published_entries",
     "embedded_asset_validation": "once_per_worker_process_at_start",
     "database": "forbidden"
   },
