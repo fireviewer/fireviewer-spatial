@@ -1,0 +1,40 @@
+FROM fireviewer-map-base:pilot-v1-20260811-r12
+
+# Comparison-only Lightning image.  It intentionally runs the current legacy
+# placement profile while producing the same compact validation evidence as the
+# RunPod v2 image.  Dockerfile.lightning-map-production remains untouched.
+ENV FIREVIEWER_TILE_WORKERS=6 \
+    FIREVIEWER_SOURCE_WORKERS=12 \
+    FIREVIEWER_TILE_STALL_TIMEOUT_SECONDS=480 \
+    FIREVIEWER_PROTOTYPE_WORKERS=8 \
+    FIREVIEWER_PROTOTYPE_BUNDLE_MODE=linked \
+    FIREVIEWER_WORK_ROOT=/lightning-work/fireviewer-map-validation \
+    FIREVIEWER_SCRATCH_ROOT=/lightning-scratch/fireviewer-map-validation \
+    FIREVIEWER_VALIDATION_PROVIDER=lightning \
+    FIREVIEWER_VALIDATION_PROFILE=legacy-v1 \
+    FIREVIEWER_VALIDATION_REQUIRE_PACK_UPLOAD=1 \
+    FIREVIEWER_VALIDATION_PUBLISH_VIEWER=1 \
+    FIREVIEWER_VALIDATION_VIEWER_SCRIPT=export_complete_viewer_glb.py \
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v2-20260820-r1-lightning-compare \
+    HF_XET_CACHE=/lightning-scratch/hf-xet
+
+COPY fireviewer-spatial/requirements.map-validation-job.txt /opt/fireviewer/requirements.map-validation-job.txt
+RUN pip install --no-cache-dir --requirement /opt/fireviewer/requirements.map-validation-job.txt
+
+COPY fireviewer-spatial/blender/ /opt/fireviewer/fireviewer-spatial/blender/
+COPY fireviewer-spatial/omniverse/ /opt/fireviewer/fireviewer-spatial/omniverse/
+
+RUN cp /opt/fireviewer/fireviewer-spatial/blender/export_complete_viewer_glb.py \
+       /opt/fireviewer/fireviewer-spatial/blender/export_complete_viewer_glb_legacy.py \
+    && cp /opt/fireviewer/fireviewer-spatial/blender/export_complete_viewer_glb_gpu.py \
+          /opt/fireviewer/fireviewer-spatial/blender/export_complete_viewer_glb.py \
+    && mkdir -p \
+       /lightning-work/fireviewer-map-validation \
+       /lightning-scratch/fireviewer-map-validation \
+       /lightning-scratch/hf-xet \
+    && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-assets-only \
+    && python /opt/fireviewer/fireviewer-spatial/blender/simple_production_api.py --verify-runtime-only
+
+HEALTHCHECK NONE
+
+CMD ["python", "/opt/fireviewer/fireviewer-spatial/blender/map_validation_job.py"]
