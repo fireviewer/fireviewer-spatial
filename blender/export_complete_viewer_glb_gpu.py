@@ -15,6 +15,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+# Blender's ``--python`` execution does not guarantee that the directory of the
+# executed script is present on ``sys.path``.  The packaged image renames this
+# module to ``export_complete_viewer_glb.py`` and keeps the previous exporter as
+# a sibling named ``export_complete_viewer_glb_legacy.py``.  Resolve that sibling
+# deterministically instead of depending on Blender's process-level PYTHONPATH.
+_SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+if str(_SCRIPT_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIRECTORY))
+
 try:  # In the Lightning image the known-good previous exporter is retained.
     import export_complete_viewer_glb_legacy as base
 except ImportError:  # Local/CI import before image packaging.

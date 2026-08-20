@@ -1,10 +1,39 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import export_complete_viewer_glb_gpu as viewer
+
+
+def test_gpu_exporter_resolves_sibling_base_without_process_pythonpath(
+    tmp_path: Path,
+) -> None:
+    script = Path(viewer.__file__).resolve()
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import runpy,sys; sys.path[:]=[p for p in sys.path if p != sys.argv[1]]; "
+            "runpy.run_path(sys.argv[2], run_name='fireviewer_gpu_import_smoke')",
+            str(script.parent),
+            str(script),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _gpu_payload(*, buildings: int = 2, trees: int = 3, context: int = 1):
