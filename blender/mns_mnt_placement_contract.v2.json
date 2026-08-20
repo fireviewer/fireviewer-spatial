@@ -1,0 +1,56 @@
+{
+  "schema": "fireviewer.mns-mnt-placement-contract.v2",
+  "status": "experimental_locked_for_9_tile_validation",
+  "compatibility_inventory_schema": "fireviewer.mns-mnt-placement-inventory.v1",
+  "algorithm": "fireviewer.mns-mnt-placement-algorithm.v3",
+  "crs": "EPSG:2154",
+  "grid": {
+    "canonical_hag_resolution_m": 1,
+    "native_elevation_resolution_m": 0.5,
+    "processing_halo_m": 10,
+    "tile_size_m": 500,
+    "ownership": "half_open"
+  },
+  "buildings": {
+    "existence_authority": "stable_bdtopo_footprint_confirmed_by_measured_mns_minus_mnt",
+    "xy_geometry_authority": "bdtopo_footprint",
+    "ground_authority": "mnt",
+    "height_authority": "mns_minus_mnt_p95_inside_footprint",
+    "minimum_measured_height_m": 2,
+    "morphology_only_buildings": "never_instantiated",
+    "asset_may_change_geometry": false
+  },
+  "trees": {
+    "quantity_authority": "measured_hag_crown_candidates_without_quota_or_thinning",
+    "candidate_generation": "legacy_1m_peak_preserving_hag_watershed",
+    "native_refinement": "same_1m_peak_cell_selects_highest_native_0.5m_hag_sample",
+    "native_refinement_may_change_candidate_count": false,
+    "native_refinement_may_cross_1m_peak_cell": false,
+    "ground_authority": "native_0.5m_mnt_when_available_else_1m_mnt",
+    "height_authority": "native_0.5m_mns_minus_mnt_when_available_else_1m_hag",
+    "viewer_thinning": "forbidden",
+    "viewer_quota": "forbidden",
+    "count_semantics": "estimated_individual_crowns_not_certified_tree_stems"
+  },
+  "context_assets": {
+    "automatic_asset_from_road_rail_or_hydro_feature": "forbidden",
+    "fixed_validated_user_coordinate": "allowed",
+    "future_explicit_equipment_source": "allowed_when_source_identity_and_geometry_are_recorded"
+  },
+  "infrastructure": {
+    "roads": "source_geometry_only_not_equipment_proxy",
+    "rail": "source_geometry_only_not_equipment_proxy",
+    "hydro": "source_geometry_only_not_equipment_proxy"
+  },
+  "viewer": {
+    "quantity_authority": "none",
+    "missing_canonical_instance_count": 0,
+    "extra_canonical_instance_count": 0,
+    "lod_may_remove_logical_objects": false,
+    "compression_may_change_logical_objects": false
+  },
+  "fallback": {
+    "lightning_r46": "untouched",
+    "runpod_v2": "experimental_until_9_tile_validation_passes"
+  }
+}
