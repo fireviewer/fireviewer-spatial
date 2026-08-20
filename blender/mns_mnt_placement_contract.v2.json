@@ -55,11 +55,23 @@
     "rule": "procedural_geometry_is_allowed_only_for_continuous_geographic_surfaces_or_lines_never_for_discrete_objects"
   },
   "viewer": {
+    "role": "complete_non_simplified_map_representation",
+    "publication_root": "maps/<zone_id>/<build_id>/runtime",
     "quantity_authority": "none",
+    "mesh_coverage": "complete",
+    "completeness_policy": "fail_closed_exact_visual_scene",
     "missing_canonical_instance_count": 0,
     "extra_canonical_instance_count": 0,
+    "placeholder_instance_count": 0,
+    "simplified_primary_viewer": "forbidden",
     "lod_may_remove_logical_objects": false,
     "compression_may_change_logical_objects": false
+  },
+  "validation_publication": {
+    "format": "folder_native",
+    "zip": "forbidden",
+    "role": "evidence_only_not_a_map",
+    "root": "validation/<zone_id>/<build_id>/<provider>"
   },
   "fallback": {
     "lightning_r46": "untouched",
