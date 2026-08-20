@@ -268,7 +268,12 @@ def _gpu_count(node: Mapping[str, Any], accessors: Sequence[Any]) -> int:
         else None
     )
     if not isinstance(extension, Mapping):
-        return 0
+        # Blender serializes a Geometry Nodes batch containing exactly one
+        # logical instance as a regular mesh node.  That node still represents
+        # one complete source instance even though the GPU-instancing extension
+        # is unnecessary.  Counting it as zero produces a false completeness
+        # failure for every singleton prototype group.
+        return 1 if isinstance(node.get("mesh"), int) else 0
     attributes = extension.get("attributes")
     if not isinstance(attributes, Mapping) or not attributes:
         raise CompleteViewerExportError("Extension GPU instancing invalide")

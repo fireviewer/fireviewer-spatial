@@ -2,7 +2,7 @@
   "schema": "fireviewer.mns-mnt-placement-contract.v2",
   "status": "experimental_locked_for_9_tile_validation",
   "compatibility_inventory_schema": "fireviewer.mns-mnt-placement-inventory.v1",
-  "algorithm": "fireviewer.mns-mnt-placement-algorithm.v3",
+  "algorithm": "fireviewer.mns-mnt-placement-algorithm.v4",
   "crs": "EPSG:2154",
   "grid": {
     "canonical_hag_resolution_m": 1,
@@ -28,6 +28,7 @@
     "quantity_authority": "measured_hag_crown_candidates_without_quota_or_thinning",
     "candidate_generation": "legacy_1m_peak_preserving_hag_watershed",
     "native_refinement": "same_1m_peak_cell_selects_highest_native_0.5m_hag_sample",
+    "native_refinement_integrity_failure": "reject_native_refinement_and_keep_canonical_1m_candidates_with_recorded_status",
     "native_refinement_may_change_candidate_count": false,
     "native_refinement_may_cross_1m_peak_cell": false,
     "ground_authority": "native_0.5m_mnt_when_available_else_1m_mnt",

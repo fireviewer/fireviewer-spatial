@@ -37,10 +37,14 @@ from fixed_asset_placement import (
 from fixed_asset_placement import canonical_json_bytes as canonical_fixed_asset_bytes
 
 CONTRACT_SCHEMA = "fireviewer.mns-mnt-placement-contract.v2"
-ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v3"
+ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v4"
 PLACEMENT_PROFILE = "fireviewer.factual-placement-profile.v2"
 NATIVE_RESOLUTION_M = 0.5
 NATIVE_SOURCE_SIZE = 1040
+
+
+class NativeGridMisalignmentError(v1.PlacementInventoryError):
+    """The optional native pair cannot safely refine canonical 1 m candidates."""
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -100,7 +104,7 @@ def _refine_tree_candidates_native_05m(
 
     delta_mm = mns_mm_05m.astype("int64") - mnt_mm_05m.astype("int64")
     if int(delta_mm.min()) < -(v1.NEGATIVE_HAG_HARD_LIMIT_CM * 10):
-        raise v1.PlacementInventoryError(
+        raise NativeGridMisalignmentError(
             "native MNS lies more than 100 cm below MNT; grids are misaligned"
         )
     hag_mm = np.maximum(delta_mm, 0)
@@ -313,16 +317,10 @@ def build_placement_inventory_v2(
     trees["native_refinement_may_change_candidate_count"] = False
     native = _native_pair_mm(native_mnt_05m, native_mns_05m)
     native_refined = 0
+    native_status = "not_available"
     native_hashes: dict[str, str] = {}
     if native is not None:
         native_mnt_mm, native_mns_mm = native
-        native_refined = _refine_tree_candidates_native_05m(
-            trees,
-            mnt_mm_05m=native_mnt_mm,
-            mns_mm_05m=native_mns_mm,
-            west=west,
-            south=south,
-        )
         native_hashes = {
             "native_mnt_05m_mm_sha256": _sha256(
                 np.asarray(native_mnt_mm, dtype="<i4").tobytes(order="C")
@@ -331,10 +329,30 @@ def build_placement_inventory_v2(
                 np.asarray(native_mns_mm, dtype="<i4").tobytes(order="C")
             ),
         }
+        try:
+            native_refined = _refine_tree_candidates_native_05m(
+                trees,
+                mnt_mm_05m=native_mnt_mm,
+                mns_mm_05m=native_mns_mm,
+                west=west,
+                south=south,
+            )
+        except NativeGridMisalignmentError:
+            # The canonical 1 m MNS/MNT pair has already passed the strict v1
+            # integrity checks and authored the candidate set above.  A broken
+            # optional 0.5 m pair must not invalidate that measured placement;
+            # reject only the sub-metre refinement and record the decision.
+            native_status = "rejected_misaligned_below_mnt"
+        else:
+            native_status = "applied"
     trees["native_05m_refinement_count"] = native_refined
     trees["native_05m_refinement_resolution_m"] = (
+        NATIVE_RESOLUTION_M if native_status == "applied" else None
+    )
+    trees["native_05m_source_resolution_m"] = (
         NATIVE_RESOLUTION_M if native is not None else None
     )
+    trees["native_05m_refinement_status"] = native_status
 
     context_assets = _fixed_only_context_assets(
         mnt_mm=mnt_mm,
@@ -462,11 +480,26 @@ def validate_inventory_v2(inventory: Mapping[str, Any]) -> None:
             )
     if not isinstance(trees.get("native_05m_refinement_count"), int):
         raise v1.PlacementInventoryError("v2 native tree refinement count is invalid")
+    native_status = trees.get("native_05m_refinement_status")
+    if native_status not in {
+        "not_available",
+        "applied",
+        "rejected_misaligned_below_mnt",
+    }:
+        raise v1.PlacementInventoryError("v2 native tree refinement status is invalid")
+    if (
+        native_status != "applied"
+        and trees.get("native_05m_refinement_count") != 0
+    ):
+        raise v1.PlacementInventoryError(
+            "v2 rejected native refinement changed canonical candidates"
+        )
 
 
 __all__ = [
     "ALGORITHM",
     "CONTRACT_SCHEMA",
+    "NativeGridMisalignmentError",
     "PLACEMENT_PROFILE",
     "build_placement_inventory_v2",
     "validate_inventory_v2",

@@ -71,6 +71,22 @@ def test_gpu_counts_are_exact() -> None:
     ) == {"buildings": 2, "trees": 3, "context_assets": 1}
 
 
+def test_gpu_counts_include_singleton_batches_serialized_as_regular_meshes() -> None:
+    payload = _gpu_payload(trees=3)
+    tree_root = payload["nodes"][1]
+    tree_root["children"] = [4, 6, 7]
+    payload["nodes"].extend(
+        [
+            {"mesh": 1},
+            {"mesh": 2},
+        ]
+    )
+    assert viewer._validate_exact_gpu_counts(
+        payload,
+        {"buildings": 2, "trees": 5, "context_assets": 1},
+    ) == {"buildings": 2, "trees": 5, "context_assets": 1}
+
+
 def test_gpu_counts_reject_one_missing_tree() -> None:
     with pytest.raises(viewer.CompleteViewerExportError, match="trees"):
         viewer._validate_exact_gpu_counts(
