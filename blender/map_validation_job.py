@@ -6,7 +6,7 @@ or the factual v2 profile (for the RunPod image), creates a compact validation
 pack before any large viewer upload, then exports the exact-count GLB.
 
 The job never publishes the full scientific folder and never creates a final
-zone ZIP.  Its only purpose is the low-cost 9-tile A/B validation.
+zone ZIP. Its only purpose is the low-cost 9-tile A/B validation.
 """
 
 from __future__ import annotations
@@ -22,10 +22,12 @@ from pathlib import Path
 from typing import Any
 
 import simple_production_engine as production_engine
-from fixed_asset_placement import EMPTY_REQUEST, normalize_request as normalize_fixed_assets
+from fixed_asset_placement import (
+    EMPTY_REQUEST,
+    normalize_request as normalize_fixed_assets,
+)
 from map_validation_pack import create_and_publish_validation_pack
 from portable_scene_package import validate_map_upload_package
-from produce_simple_measured_tile_v2 import produce_simple_measured_tile_v2
 from runpod_map_production import normalize_map_request, request_sha256
 from simple_production_engine import ProductionConfig, ProductionEngine, plan_zone
 
@@ -69,7 +71,11 @@ def _load_request() -> dict[str, Any]:
             "FIREVIEWER_VALIDATION_REQUEST_FILE"
         )
     try:
-        payload = json.loads(raw) if raw else json.loads(Path(path).read_text(encoding="utf-8"))
+        payload = (
+            json.loads(raw)
+            if raw
+            else json.loads(Path(path).read_text(encoding="utf-8"))
+        )
     except (OSError, json.JSONDecodeError) as error:
         raise MapValidationJobError("validation request JSON is invalid") from error
     return normalize_map_request(payload)
@@ -92,7 +98,10 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _skip_archive_budget(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-    return {"schema": "fireviewer.map-folder-publication.v1", "status": "zip_disabled"}
+    return {
+        "schema": "fireviewer.map-folder-publication.v1",
+        "status": "zip_disabled",
+    }
 
 
 @contextmanager
@@ -113,9 +122,13 @@ def _sealed_folder_mode() -> Iterator[None]:
         production_engine.seal_map_upload_package = original_seal
 
 
-def _run_viewer_export(config: ProductionConfig, job_root: Path) -> dict[str, Any]:
+def _run_viewer_export(
+    config: ProductionConfig,
+    job_root: Path,
+) -> dict[str, Any]:
     script_name = os.environ.get(
-        "FIREVIEWER_VALIDATION_VIEWER_SCRIPT", "export_complete_viewer_glb.py"
+        "FIREVIEWER_VALIDATION_VIEWER_SCRIPT",
+        "export_complete_viewer_glb.py",
     ).strip()
     if not script_name or "/" in script_name or "\\" in script_name:
         raise MapValidationJobError("viewer script name is invalid")
@@ -133,7 +146,9 @@ def _run_viewer_export(config: ProductionConfig, job_root: Path) -> dict[str, An
         "--job-root",
         str(job_root),
     )
-    timeout = int(os.environ.get("FIREVIEWER_VALIDATION_VIEWER_TIMEOUT_SECONDS", "1800"))
+    timeout = int(
+        os.environ.get("FIREVIEWER_VALIDATION_VIEWER_TIMEOUT_SECONDS", "1800")
+    )
     result = subprocess.run(
         command,
         capture_output=True,
@@ -145,7 +160,8 @@ def _run_viewer_export(config: ProductionConfig, job_root: Path) -> dict[str, An
     )
     if result.returncode != 0:
         raise MapValidationJobError(
-            "viewer export failed:\n" + (result.stdout + "\n" + result.stderr)[-5000:]
+            "viewer export failed:\n"
+            + (result.stdout + "\n" + result.stderr)[-5000:]
         )
     receipt_path = job_root / VIEWER_RECEIPT_NAME
     glb_path = job_root / VIEWER_GLB_NAME
@@ -194,11 +210,28 @@ def _publish_viewer_best_effort(
     }
 
 
+def _producer_for_profile(profile: str) -> Any:
+    """Load v2 only when requested so legacy-v1 cannot be monkey-patched."""
+
+    if profile == "legacy-v1":
+        return production_engine.produce_simple_measured_tile
+    if profile == "factual-v2":
+        from produce_simple_measured_tile_v2 import (
+            produce_simple_measured_tile_v2,
+        )
+
+        return produce_simple_measured_tile_v2
+    raise MapValidationJobError(f"unsupported validation profile: {profile}")
+
+
 def run() -> dict[str, Any]:
     started = time.perf_counter()
     request = _load_request()
     provider = _required_env("FIREVIEWER_VALIDATION_PROVIDER").strip().lower()
-    profile = os.environ.get("FIREVIEWER_VALIDATION_PROFILE", "legacy-v1").strip()
+    profile = os.environ.get(
+        "FIREVIEWER_VALIDATION_PROFILE",
+        "legacy-v1",
+    ).strip()
     if profile not in PROFILES:
         raise MapValidationJobError(f"unsupported validation profile: {profile}")
     config = ProductionConfig.from_environment()
@@ -211,9 +244,11 @@ def run() -> dict[str, Any]:
     )
     if len(plan.tiles) != 9:
         raise MapValidationJobError(
-            f"hard stop: validation request must resolve to exactly 9 tiles, got {len(plan.tiles)}"
+            "hard stop: validation request must resolve to exactly 9 tiles, "
+            f"got {len(plan.tiles)}"
         )
 
+    selected_producer = _producer_for_profile(profile)
     engine_config = replace(
         config,
         dataset_id=None,
@@ -221,11 +256,7 @@ def run() -> dict[str, Any]:
     )
     engine = ProductionEngine(
         engine_config,
-        produce_tile_fn=(
-            produce_simple_measured_tile_v2
-            if profile == "factual-v2"
-            else production_engine.produce_simple_measured_tile
-        ),
+        produce_tile_fn=selected_producer,
     )
     fixed = normalize_fixed_assets(
         request["fixed_asset_placements"] or dict(EMPTY_REQUEST),
@@ -242,7 +273,11 @@ def run() -> dict[str, Any]:
             "message": str(message),
         }
         progress_events.append(event)
-        print("FIREVIEWER_VALIDATION_PROGRESS " + json.dumps(event, ensure_ascii=False), flush=True)
+        print(
+            "FIREVIEWER_VALIDATION_PROGRESS "
+            + json.dumps(event, ensure_ascii=False),
+            flush=True,
+        )
 
     try:
         with _sealed_folder_mode():
@@ -264,7 +299,9 @@ def run() -> dict[str, Any]:
     if job_root is None:
         raise MapValidationJobError("engine did not return a sealed map folder")
     validate_map_upload_package(job_root)
-    zone_receipt = json.loads((job_root / "zone.done.json").read_text(encoding="utf-8"))
+    zone_receipt = json.loads(
+        (job_root / "zone.done.json").read_text(encoding="utf-8")
+    )
     if not isinstance(zone_receipt, dict) or zone_receipt.get("tile_count") != 9:
         raise MapValidationJobError("sealed zone receipt does not contain 9 tiles")
     zone_id = str(zone_receipt["zone_id"])
@@ -277,11 +314,13 @@ def run() -> dict[str, Any]:
         stage="placement",
         require_nine_tiles=True,
     )
-    if _bool_env("FIREVIEWER_VALIDATION_REQUIRE_PACK_UPLOAD", True) and not placement_pack.get(
-        "publication"
+    if (
+        _bool_env("FIREVIEWER_VALIDATION_REQUIRE_PACK_UPLOAD", True)
+        and not placement_pack.get("publication")
     ):
         raise MapValidationJobError(
-            "placement validation pack was created but not published; refusing expensive viewer export"
+            "placement validation pack was created but not published; "
+            "refusing expensive viewer export"
         )
     placement_pack_finished = time.perf_counter()
 
@@ -293,8 +332,9 @@ def run() -> dict[str, Any]:
         stage="viewer",
         require_nine_tiles=True,
     )
-    if _bool_env("FIREVIEWER_VALIDATION_REQUIRE_PACK_UPLOAD", True) and not viewer_pack.get(
-        "publication"
+    if (
+        _bool_env("FIREVIEWER_VALIDATION_REQUIRE_PACK_UPLOAD", True)
+        and not viewer_pack.get("publication")
     ):
         raise MapValidationJobError("viewer validation pack was not published")
     viewer_pack_finished = time.perf_counter()
@@ -312,7 +352,7 @@ def run() -> dict[str, Any]:
                 build_id=build_id,
             )
         except Exception as error:
-            # The small validation packs are already durable.  A large GLB
+            # The small validation packs are already durable. A large GLB
             # transfer failure is evidence to record, not a reason to lose the
             # comparison result again.
             viewer_publication_error = f"{type(error).__name__}: {error}"
@@ -328,7 +368,9 @@ def run() -> dict[str, Any]:
         "zone_id": zone_id,
         "build_id": build_id,
         "tile_count": 9,
-        "tile_origins_l93_m": [list(tile.origin_l93_m) for tile in plan.tiles],
+        "tile_origins_l93_m": [
+            list(tile.origin_l93_m) for tile in plan.tiles
+        ],
         "counts": {
             "buildings": zone_receipt.get("building_count"),
             "trees": zone_receipt.get("tree_count"),
@@ -342,21 +384,40 @@ def run() -> dict[str, Any]:
         "viewer_publication_error": viewer_publication_error,
         "timings_seconds": {
             "sealed_map": round(placement_finished - started, 3),
-            "placement_pack": round(placement_pack_finished - placement_finished, 3),
-            "viewer_export": round(viewer_finished - placement_pack_finished, 3),
-            "viewer_pack": round(viewer_pack_finished - viewer_finished, 3),
-            "viewer_publication": round(completed - viewer_pack_finished, 3),
+            "placement_pack": round(
+                placement_pack_finished - placement_finished,
+                3,
+            ),
+            "viewer_export": round(
+                viewer_finished - placement_pack_finished,
+                3,
+            ),
+            "viewer_pack": round(
+                viewer_pack_finished - viewer_finished,
+                3,
+            ),
+            "viewer_publication": round(
+                completed - viewer_pack_finished,
+                3,
+            ),
             "total": round(completed - started, 3),
         },
         "progress_events": progress_events,
     }
     _write_json(job_root / RESULT_NAME, result)
-    print("FIREVIEWER_VALIDATION_RESULT " + json.dumps(result, ensure_ascii=False), flush=True)
+    print(
+        "FIREVIEWER_VALIDATION_RESULT "
+        + json.dumps(result, ensure_ascii=False),
+        flush=True,
+    )
     return result
 
 
 def main() -> None:
-    print(json.dumps(run(), ensure_ascii=False, separators=(",", ":")), flush=True)
+    print(
+        json.dumps(run(), ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
