@@ -18,7 +18,11 @@
     "height_authority": "mns_minus_mnt_p95_inside_footprint",
     "minimum_measured_height_m": 2,
     "morphology_only_buildings": "never_instantiated",
-    "asset_may_change_geometry": false
+    "representation": "real_reviewed_catalog_usd_asset_only",
+    "procedural_building_asset": "forbidden",
+    "primitive_placeholder": "forbidden",
+    "asset_selection": "closest_compatible_real_asset_by_semantics_and_measured_dimensions",
+    "asset_may_change_measured_position": false
   },
   "trees": {
     "quantity_authority": "measured_hag_crown_candidates_without_quota_or_thinning",
@@ -28,19 +32,27 @@
     "native_refinement_may_cross_1m_peak_cell": false,
     "ground_authority": "native_0.5m_mnt_when_available_else_1m_mnt",
     "height_authority": "native_0.5m_mns_minus_mnt_when_available_else_1m_hag",
+    "representation": "real_reviewed_catalog_usd_asset_only",
+    "procedural_tree_asset": "forbidden",
+    "primitive_placeholder": "forbidden",
     "viewer_thinning": "forbidden",
     "viewer_quota": "forbidden",
     "count_semantics": "estimated_individual_crowns_not_certified_tree_stems"
   },
   "context_assets": {
+    "meaning": "discrete_real_world_objects_such_as_barriers_signals_boxes_furniture_or_other_catalogued_equipment",
     "automatic_asset_from_road_rail_or_hydro_feature": "forbidden",
     "fixed_validated_user_coordinate": "allowed",
-    "future_explicit_equipment_source": "allowed_when_source_identity_and_geometry_are_recorded"
+    "future_explicit_equipment_source": "allowed_when_source_identity_and_geometry_are_recorded",
+    "representation": "real_reviewed_catalog_usd_asset_only",
+    "procedural_equipment_asset": "forbidden",
+    "primitive_placeholder": "forbidden"
   },
   "infrastructure": {
-    "roads": "source_geometry_only_not_equipment_proxy",
-    "rail": "source_geometry_only_not_equipment_proxy",
-    "hydro": "source_geometry_only_not_equipment_proxy"
+    "roads": "measured_or_sig_surface_geometry_not_a_discrete_equipment_asset",
+    "rail": "measured_or_sig_linear_surface_geometry_not_a_discrete_equipment_asset",
+    "hydro": "measured_or_sig_surface_or_line_geometry_not_a_discrete_equipment_asset",
+    "rule": "procedural_geometry_is_allowed_only_for_continuous_geographic_surfaces_or_lines_never_for_discrete_objects"
   },
   "viewer": {
     "quantity_authority": "none",
