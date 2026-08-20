@@ -31,6 +31,11 @@ from export_complete_viewer_glb import (
     SCHEMA as VIEWER_SCHEMA,
     STATUS as VIEWER_STATUS,
 )
+from build_tiled_viewer_package import (
+    OUTPUT_DIRECTORY as TILED_OUTPUT_DIRECTORY,
+    build_tiled_viewer_package,
+    validate_tiled_viewer_package,
+)
 from fixed_asset_placement import (
     EMPTY_REQUEST,
     normalize_request as normalize_fixed_assets,
@@ -317,7 +322,7 @@ def _export_viewer(
     *,
     callback: CallbackClient,
     tile_count: int,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     def heartbeat(elapsed: float) -> None:
         callback.progress(
             0.967,
@@ -350,7 +355,14 @@ def _export_viewer(
         or completeness.get("mesh_coverage") != "complete"
     ):
         raise LightningMapContractError("Reçu de complétude viewer invalide")
-    return receipt
+    try:
+        build_tiled_viewer_package(job_root)
+        tiled_receipt, tiled_viewer = validate_tiled_viewer_package(job_root)
+    except Exception as error:
+        raise LightningMapContractError(
+            "Paquet viewer canonique tuilé invalide"
+        ) from error
+    return tiled_receipt, tiled_viewer
 
 
 def _verify_remote_files(
@@ -425,6 +437,8 @@ def _upload_hf_folder(
                 file_names=verify_names,
             )
             return oid
+        except LightningMapContractError:
+            raise
         except Exception as error:
             last_error = error
             if attempt >= HF_UPLOAD_MAX_ATTEMPTS or _is_authentication_error(error):
@@ -567,14 +581,14 @@ def _viewer_payload(
     callback: CallbackClient,
     request: Mapping[str, Any],
     zone_receipt: Mapping[str, Any],
-    viewer_receipt: Mapping[str, Any],
+    viewer: Mapping[str, Any],
     dataset_id: str,
     runtime_root: str,
     revision: str,
 ) -> dict[str, Any]:
-    viewer = viewer_receipt.get("viewer")
-    completeness = viewer_receipt.get("completeness")
-    if not isinstance(viewer, Mapping) or not isinstance(completeness, Mapping):
+    completeness = viewer.get("completeness")
+    bootstrap_asset = viewer.get("bootstrap_asset")
+    if not isinstance(completeness, Mapping) or not isinstance(bootstrap_asset, Mapping):
         raise LightningMapContractError("Reçu viewer incomplet")
     return {
         "schema": VIEWER_READY_SCHEMA,
@@ -592,10 +606,17 @@ def _viewer_payload(
             "visibility": "public",
         },
         "viewer": {
-            "path": f"{runtime_root}/{GLB_NAME}",
-            "receipt_path": f"{runtime_root}/{RECEIPT_NAME}",
-            "sha256": viewer["sha256"],
-            "byte_count": viewer["byte_count"],
+            "catalog_path": f"{runtime_root}/{viewer['catalog_path']}",
+            "receipt_path": f"{runtime_root}/{viewer['receipt_path']}",
+            "catalog_sha256": viewer["catalog_sha256"],
+            "catalog_byte_count": viewer["catalog_byte_count"],
+            "payload_file_count": viewer["payload_file_count"],
+            "payload_byte_count": viewer["payload_byte_count"],
+            "bootstrap_asset": {
+                **dict(bootstrap_asset),
+                "path": f"{runtime_root}/{bootstrap_asset['path']}",
+            },
+            "representation": "complete_tiled_non_simplified_map",
             "completeness": dict(completeness),
         },
         "captures": [],
@@ -704,7 +725,7 @@ def run() -> dict[str, Any]:
             tile_count=tile_count,
             force=True,
         )
-        viewer_receipt = _export_viewer(
+        _tiled_viewer_receipt, tiled_viewer = _export_viewer(
             config,
             job_root,
             callback=callback,
@@ -728,15 +749,19 @@ def run() -> dict[str, Any]:
             job_root,
             dataset_id=config.dataset_id,
             remote_root=runtime_root,
-            file_names=(GLB_NAME, RECEIPT_NAME),
-            verify_names=(GLB_NAME, RECEIPT_NAME),
+            file_names=(f"{TILED_OUTPUT_DIRECTORY}/**",),
+            verify_names=(
+                str(tiled_viewer["catalog_path"]),
+                str(tiled_viewer["receipt_path"]),
+                str(tiled_viewer["bootstrap_asset"]["path"]),
+            ),
             commit_message=f"Publish FireViewer runtime {zone_id}",
         )
         viewer_ready = _viewer_payload(
             callback=callback,
             request=request,
             zone_receipt=zone_receipt,
-            viewer_receipt=viewer_receipt,
+            viewer=tiled_viewer,
             dataset_id=config.dataset_id,
             runtime_root=runtime_root,
             revision=viewer_revision,

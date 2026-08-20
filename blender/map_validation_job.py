@@ -27,6 +27,11 @@ from fixed_asset_placement import (
     EMPTY_REQUEST,
     normalize_request as normalize_fixed_assets,
 )
+from build_tiled_viewer_package import (
+    OUTPUT_DIRECTORY as TILED_OUTPUT_DIRECTORY,
+    build_tiled_viewer_package,
+    validate_tiled_viewer_package,
+)
 from map_validation_folder import create_and_publish_validation_folder
 from portable_scene_package import validate_map_upload_package
 from runpod_map_production import normalize_map_request, request_sha256
@@ -193,7 +198,7 @@ def _run_viewer_export(
     config: ProductionConfig,
     job_root: Path,
     zone_receipt: Mapping[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     script_name = os.environ.get(
         "FIREVIEWER_VALIDATION_VIEWER_SCRIPT",
         "export_complete_viewer_glb.py",
@@ -241,7 +246,12 @@ def _run_viewer_export(
     if not isinstance(receipt, dict):
         raise MapValidationJobError("viewer receipt is invalid")
     viewer = _validate_complete_viewer(job_root, zone_receipt, receipt)
-    return receipt, viewer
+    build_tiled_viewer_package(job_root)
+    try:
+        tiled_receipt, tiled_viewer = validate_tiled_viewer_package(job_root)
+    except Exception as error:
+        raise MapValidationJobError("tiled viewer package is invalid") from error
+    return receipt, viewer, tiled_receipt, tiled_viewer
 
 
 def _publish_complete_viewer_public(
@@ -260,7 +270,7 @@ def _publish_complete_viewer_public(
     if getattr(info, "private", None) is not False:
         raise MapValidationJobError("map dataset must be public")
     remote_root = f"maps/{zone_id}/{build_id}/runtime"
-    names = (VIEWER_GLB_NAME, VIEWER_RECEIPT_NAME)
+    names = (VIEWER_RECEIPT_NAME, f"{TILED_OUTPUT_DIRECTORY}/**")
     commit = api.upload_folder(
         repo_id=dataset_id,
         repo_type="dataset",
@@ -272,9 +282,15 @@ def _publish_complete_viewer_public(
     oid = getattr(commit, "oid", None)
     if not isinstance(oid, str) or not oid:
         raise MapValidationJobError("viewer publication revision is missing")
+    required = (
+        VIEWER_RECEIPT_NAME,
+        str(viewer["catalog_path"]),
+        str(viewer["receipt_path"]),
+        str(viewer["bootstrap_asset"]["path"]),
+    )
     missing = [
         name
-        for name in names
+        for name in required
         if not api.file_exists(
             repo_id=dataset_id,
             filename=f"{remote_root}/{name}",
@@ -295,11 +311,17 @@ def _publish_complete_viewer_public(
             "visibility": "public",
         },
         "viewer": {
-            "path": f"{remote_root}/{VIEWER_GLB_NAME}",
-            "receipt_path": f"{remote_root}/{VIEWER_RECEIPT_NAME}",
-            "sha256": viewer["sha256"],
-            "byte_count": viewer["byte_count"],
-            "representation": "complete_non_simplified_map",
+            "catalog_path": f"{remote_root}/{viewer['catalog_path']}",
+            "receipt_path": f"{remote_root}/{viewer['receipt_path']}",
+            "catalog_sha256": viewer["catalog_sha256"],
+            "catalog_byte_count": viewer["catalog_byte_count"],
+            "payload_file_count": viewer["payload_file_count"],
+            "payload_byte_count": viewer["payload_byte_count"],
+            "bootstrap_asset": {
+                **dict(viewer["bootstrap_asset"]),
+                "path": f"{remote_root}/{viewer['bootstrap_asset']['path']}",
+            },
+            "representation": "complete_tiled_non_simplified_map",
             "completeness": dict(viewer["completeness"]),
         },
     }
@@ -420,7 +442,7 @@ def run() -> dict[str, Any]:
         )
     placement_evidence_finished = time.perf_counter()
 
-    viewer_receipt, viewer = _run_viewer_export(
+    viewer_receipt, monolithic_viewer, tiled_viewer_receipt, viewer = _run_viewer_export(
         config,
         job_root,
         zone_receipt,
@@ -502,7 +524,9 @@ def run() -> dict[str, Any]:
         "placement_validation_folder": placement_evidence,
         "viewer_validation_folder": viewer_evidence,
         "viewer_receipt": viewer_receipt,
-        "viewer_representation": "complete_non_simplified_map",
+        "tiled_viewer_receipt": tiled_viewer_receipt,
+        "monolithic_viewer_build_oracle": monolithic_viewer,
+        "viewer_representation": "complete_tiled_non_simplified_map",
         "viewer_publication": viewer_publication,
         "viewer_publication_error": viewer_publication_error,
         "dataset": dataset,

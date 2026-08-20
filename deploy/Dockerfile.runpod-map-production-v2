@@ -2,10 +2,10 @@ FROM fireviewer-map-base:pilot-v1-20260811-r12
 
 # Experimental side-by-side map builder. The stable RunPod r23 and Lightning
 # r46 Dockerfiles are deliberately not modified by this image.
-ENV FIREVIEWER_TILE_WORKERS=6 \
-    FIREVIEWER_SOURCE_WORKERS=12 \
+ENV FIREVIEWER_TILE_WORKERS=8 \
+    FIREVIEWER_SOURCE_WORKERS=16 \
     FIREVIEWER_TILE_STALL_TIMEOUT_SECONDS=480 \
-    FIREVIEWER_PROTOTYPE_WORKERS=8 \
+    FIREVIEWER_PROTOTYPE_WORKERS=16 \
     FIREVIEWER_PROTOTYPE_BUNDLE_MODE=linked \
     FIREVIEWER_WORK_ROOT=/work/fireviewer-map-validation \
     FIREVIEWER_SCRATCH_ROOT=/tmp/fireviewer-map-validation \

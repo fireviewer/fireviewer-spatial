@@ -333,19 +333,33 @@ def _install_fake_job(
     monkeypatch.setattr(
         worker,
         "_export_viewer",
-        lambda *_args, **_kwargs: {
-            "zone_id": "GPS-TEST",
-            "viewer": {"sha256": "d" * 64, "byte_count": 123},
-            "completeness": {
-                "mesh_coverage": "complete",
-                "policy": "fail_closed_exact_visual_scene",
-                "family_instance_counts": {
-                    "buildings": 1,
-                    "trees": 1,
-                    "context_assets": 0,
+        lambda *_args, **_kwargs: (
+            {"schema": "fireviewer.canonical-tiled-viewer-scene.v1"},
+            {
+                "catalog_path": "viewer-tiled/catalog.json",
+                "receipt_path": "viewer-tiled/viewer-tiled-scene.v1.json",
+                "catalog_sha256": "d" * 64,
+                "catalog_byte_count": 456,
+                "payload_file_count": 4,
+                "payload_byte_count": 12_345,
+                "bootstrap_asset": {
+                    "path": "viewer-tiled/far.glb",
+                    "sha256": "a" * 64,
+                    "byte_count": 123,
+                    "media_type": "model/gltf-binary",
+                },
+                "representation": "complete_tiled_non_simplified_map",
+                "completeness": {
+                    "mesh_coverage": "complete",
+                    "policy": "fail_closed_exact_visual_scene",
+                    "family_instance_counts": {
+                        "buildings": 1,
+                        "trees": 1,
+                        "context_assets": 0,
+                    },
                 },
             },
-        },
+        ),
     )
     monkeypatch.setattr(
         worker,
@@ -416,6 +430,7 @@ def test_source_upload_failure_keeps_viewer_publishable(
 
     assert callback.events == ["viewer_ready", "result"]
     assert result["source"]["status"] == "failed_pending_retry"
-    assert result["viewer"]["sha256"] == "d" * 64
+    assert result["viewer"]["catalog_sha256"] == "d" * 64
+    assert result["viewer"]["bootstrap_asset"]["byte_count"] == 123
     assert callback.progress_records[-1]["state"] == "completed"
     assert callback.progress_records[-1]["phase"] == "completed_source_pending"
