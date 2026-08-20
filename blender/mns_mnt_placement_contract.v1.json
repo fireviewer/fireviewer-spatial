@@ -21,6 +21,9 @@
     "maximum_negative_outlier_count_per_520x520_window": 32,
     "maximum_negative_outlier_fraction": 0.000125,
     "negative_hag_policy": "clamp_negative_to_zero; allow at most 32 sparse samples and fraction at most 0.000125 between -50cm and -100cm with explicit diagnostics; reject any sample below -100cm or a larger outlier population",
+    "maximum_positive_uint16_outlier_count_per_520x520_window": 32,
+    "maximum_positive_uint16_outlier_fraction": 0.000125,
+    "positive_uint16_outlier_policy": "replace at most 32 sparse samples and fraction at most 0.000125 above 65534cm with local MNT ground and explicit diagnostics; reject a larger outlier population as corrupt or misaligned",
     "maximum_hag_cm": 65534
   },
   "hag": {
@@ -30,11 +33,14 @@
     "unit": "centimetre",
     "nodata": 65535,
     "source": "core_MNS_minus_MNT_clamped_to_zero",
-    "negative_source_diagnostics": [
+    "source_quality_diagnostics": [
       "minimum_source_delta_mm",
+      "maximum_source_delta_mm_before_repair",
       "negative_source_sample_count_clamped",
       "negative_outlier_below_tolerance_count",
-      "negative_outlier_fraction"
+      "negative_outlier_fraction",
+      "positive_uint16_outlier_count_repaired_to_ground",
+      "positive_uint16_outlier_fraction"
     ],
     "compression": "DEFLATE"
   },

@@ -51,7 +51,7 @@ from shapely.ops import unary_union
 
 SCHEMA = "fireviewer.mns-mnt-placement-inventory.v1"
 CONTRACT_SCHEMA = "fireviewer.mns-mnt-placement-contract.v1"
-ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v2"
+ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v3"
 HAG_SCHEMA = "fireviewer.placement-hag-1m.v1"
 CRS = "EPSG:2154"
 RESOLUTION_M = 1
@@ -67,6 +67,8 @@ NEGATIVE_HAG_TOLERANCE_CM = 50
 NEGATIVE_HAG_HARD_LIMIT_CM = 100
 NEGATIVE_HAG_MAX_OUTLIER_COUNT = 32
 NEGATIVE_HAG_MAX_OUTLIER_FRACTION = 0.000125
+POSITIVE_HAG_MAX_OUTLIER_COUNT = 32
+POSITIVE_HAG_MAX_OUTLIER_FRACTION = 0.000125
 MIN_HEIGHT_CM = 200
 WOODY_CONTEXT_MIN_HEIGHT_CM = 100
 MIN_CROWN_AREA_M2 = 4
@@ -216,13 +218,33 @@ def _source_grid(
         )
     negative_sample_count = int(np.count_nonzero(delta_mm < 0))
     delta_cm = (np.maximum(delta_mm, 0) + 5) // 10
-    if int(delta_cm.max()) > MAX_HAG_CM:
-        raise PlacementInventoryError("MNS-MNT exceeds the uint16 centimetre contract")
+    maximum_delta_mm = int(delta_mm.max())
+    positive_outliers = delta_cm > MAX_HAG_CM
+    positive_outlier_count = int(np.count_nonzero(positive_outliers))
+    positive_outlier_fraction = positive_outlier_count / int(delta_mm.size)
+    if (
+        positive_outlier_count > POSITIVE_HAG_MAX_OUTLIER_COUNT
+        or positive_outlier_fraction > POSITIVE_HAG_MAX_OUTLIER_FRACTION
+    ):
+        raise PlacementInventoryError(
+            "MNS-MNT has too many samples above the uint16 centimetre contract; "
+            "grids are corrupt or misaligned"
+        )
+    if positive_outlier_count:
+        mns_mm = mns_mm.copy()
+        delta_mm = delta_mm.copy()
+        delta_cm = delta_cm.copy()
+        mns_mm[positive_outliers] = mnt_mm[positive_outliers]
+        delta_mm[positive_outliers] = 0
+        delta_cm[positive_outliers] = 0
     diagnostics = {
         "minimum_source_delta_mm": minimum_delta_mm,
+        "maximum_source_delta_mm_before_repair": maximum_delta_mm,
         "negative_source_sample_count_clamped": negative_sample_count,
         "negative_outlier_below_tolerance_count": negative_outlier_count,
         "negative_outlier_fraction": round(negative_outlier_fraction, 12),
+        "positive_uint16_outlier_count_repaired_to_ground": positive_outlier_count,
+        "positive_uint16_outlier_fraction": round(positive_outlier_fraction, 12),
     }
     return mnt_mm, mns_mm, delta_cm.astype("uint16"), diagnostics
 

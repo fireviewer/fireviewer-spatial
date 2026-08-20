@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from shapely.geometry import LineString, box, mapping
 
+import mns_mnt_placement_inventory as inventory
 from mns_mnt_placement_inventory import (
     CONTRACT_SCHEMA,
     GeoPackageUnavailableError,
@@ -1007,6 +1008,27 @@ def test_rejects_corrupt_grids_masks_and_duplicate_source_ids() -> None:
                 {"source_id": "duplicate", "geometry": footprint},
             ],
         )
+
+
+def test_sparse_positive_uint16_outlier_is_repaired_to_local_ground() -> None:
+    mnt, mns = _base_pair()
+    mns[12, 34] = mnt[12, 34] + 700.0
+
+    mnt_mm, mns_mm, hag_cm, diagnostics = inventory._source_grid(mnt, mns)
+
+    assert mns_mm[12, 34] == mnt_mm[12, 34]
+    assert hag_cm[12, 34] == 0
+    assert diagnostics["maximum_source_delta_mm_before_repair"] == 700_000
+    assert diagnostics["positive_uint16_outlier_count_repaired_to_ground"] == 1
+    assert diagnostics["positive_uint16_outlier_fraction"] == round(1 / (520 * 520), 12)
+
+
+def test_dense_positive_uint16_outliers_are_rejected_as_corrupt() -> None:
+    mnt, mns = _base_pair()
+    mns[0, :33] = mnt[0, :33] + 700.0
+
+    with pytest.raises(PlacementInventoryError, match="corrupt or misaligned"):
+        inventory._source_grid(mnt, mns)
 
 
 def test_inventory_hash_detects_tampering() -> None:

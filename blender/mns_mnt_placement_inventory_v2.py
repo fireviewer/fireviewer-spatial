@@ -37,7 +37,7 @@ from fixed_asset_placement import (
 from fixed_asset_placement import canonical_json_bytes as canonical_fixed_asset_bytes
 
 CONTRACT_SCHEMA = "fireviewer.mns-mnt-placement-contract.v2"
-ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v4"
+ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v5"
 PLACEMENT_PROFILE = "fireviewer.factual-placement-profile.v2"
 NATIVE_RESOLUTION_M = 0.5
 NATIVE_SOURCE_SIZE = 1040
