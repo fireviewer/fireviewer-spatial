@@ -27,6 +27,7 @@ jobs:
           blender/build_asset_library_53.py
           blender/build_reference_usd_asset_library.py
           blender/compact_zone_stage.py
+          blender/compare_validation_folders.py
           blender/export_complete_viewer_glb.py
           blender/export_complete_viewer_glb_gpu.py
           blender/fixed_asset_placement.py
@@ -37,13 +38,18 @@ jobs:
           blender/inspect_reference_usd_candidates.py
           blender/lightning_map_production.py
           blender/lightning_perimeter_production.py
+          blender/map_validation_folder.py
+          blender/map_validation_job.py
           blender/mid_distance_roads.py
           blender/mns_mnt_placement_inventory.py
+          blender/mns_mnt_placement_inventory_v2.py
           blender/orthophoto_ground_texture.py
+          blender/plan_9_tile_validation.py
           blender/portable_scene_package.py
           blender/prepare_simple_measured_tile_sources.py
           blender/prepare_simple_measured_zone_context.py
           blender/produce_simple_measured_tile.py
+          blender/produce_simple_measured_tile_v2.py
           blender/render_simple_zone_gallery.py
           blender/run_simple_measured_tile_qa.py
           blender/simple_production_api.py
@@ -63,6 +69,7 @@ jobs:
           blender/test_build_asset_library_53.py
           blender/test_build_reference_usd_asset_library.py
           blender/test_compact_zone_stage.py
+          blender/test_compare_validation_folders.py
           blender/test_export_complete_viewer_glb.py
           blender/test_export_complete_viewer_gpu.py
           blender/test_fixed_asset_placement.py
@@ -71,6 +78,7 @@ jobs:
           blender/test_geographic_perimeter_viewer.py
           blender/test_lightning_map_production.py
           blender/test_lightning_perimeter_production.py
+          blender/test_map_validation_folder.py
           blender/test_mid_distance_roads.py
           blender/test_mns_mnt_placement_inventory.py
           blender/test_orthophoto_ground_texture.py
