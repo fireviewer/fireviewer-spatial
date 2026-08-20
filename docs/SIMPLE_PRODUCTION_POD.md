@@ -1,135 +1,145 @@
-# Déploiement Lightning Batch Job de la production simple
+# Déploiement de la production spatiale FireViewer
 
-La production de cartes est un Batch Job Lightning asynchrone. Elle ne crée ni
-Deployment, ni replica, ni worker permanent. Le backend lance une machine CPU
-8 cœurs / 32 Go uniquement pour la durée du calcul et l'arrête explicitement
-sur demande de l'administrateur. Le premier contrôle réel utilise une machine
-non interruptible.
+Ce document décrit l’état actuel du déploiement du builder de cartes sans exposer de secrets, d’identifiants d’infrastructure ou de valeurs temporaires de test.
 
-À l'intérieur du job, le moteur maintient au maximum douze acquisitions de
-sources et six compilations de tuiles de 500 m en parallèle. Les 294 assets
-immuables sont présents dans l'image et validés une fois au démarrage. Les
-tuiles utilisent un bundle partagé versionné : elles ne recopient et ne
-re-hashent pas la bibliothèque entière.
+## Principe
 
-Les acquisitions sont regroupées par blocs de 4 × 4 tuiles. Une zone de
-25 × 25 tuiles utilise ainsi 49 blocs et 147 requêtes WMS au lieu de 1 875.
-Chaque bloc est découpé localement en tuiles logiques de 500 m, avec les mêmes
-résolutions et halos qu'avant.
-
-L'administration appelle uniquement le backend FireViewer :
+La production de cartes reste un calcul **batch et éphémère** derrière une frontière de job pilotée par le backend FireViewer.
 
 ```text
-POST /api/v1/admin/map-jobs
-GET  /api/v1/admin/map-jobs/{job_id}
-POST /api/v1/admin/map-jobs/{job_id}/cancel
-GET  /api/v1/admin/map-jobs/{job_id}/captures
-GET  /api/v1/admin/map-jobs/{job_id}/download
+administration FireViewer
+        ↓
+backend / état du job
+        ↓
+worker de production spatiale
+        ↓
+dossier spatial scellé
+        ├── preuves de validation
+        └── viewer public complet
 ```
 
-Le backend crée un nom de job déterministe à partir de la requête et de la clé
-d'idempotence, puis lance le Batch Job via `lightning-sdk`. La requête, les
-petits événements de progression et le résultat final sont stockés dans le
-Blob privé déjà utilisé par FireViewer. Un jeton HMAC propre au job autorise
-uniquement ses callbacks. Le navigateur ne reçoit ni les identifiants
-Lightning, ni le jeton Hugging Face, ni le jeton de callback.
+Le navigateur ne reçoit jamais les identifiants du provider, les jetons Hugging Face ni les secrets de callback.
 
-## Image et stockage
+## Chemins actuellement conservés
 
-Le module déployable est
-[`lightning_map_production.py`](../blender/lightning_map_production.py), embarqué
-par
-[`Dockerfile.lightning-map-production`](../deploy/Dockerfile.lightning-map-production).
-L'image runtime contient Blender 4.5.3, OpenUSD, le générateur et les assets
-validés. Elle ne télécharge aucune donnée géographique pendant sa construction.
+Deux générations de worker coexistent volontairement.
 
-Le job utilise :
+### Chemin stable
 
-- l'image déployée `pilot-v1-20260816-r37-lightning`, qui embarque
-  `fireviewer.mns-mnt-placement-algorithm.v2` ;
-- `Machine.CPU_X_8`, non interruptible, avec une durée maximale bornée ;
-- `/lightning-work/fireviewer-map-production` pour les checkpoints compressés
-  de reprise et les petits reçus ;
-- le SSD éphémère `/lightning-scratch/fireviewer-map-production` pour les
-  métatuiles sources, les packages complets, l'assemblage, `zone.blend` et le
-  ZIP ;
-- le jeton `HF_TOKEN` injecté uniquement au job ;
-- douze workers d'acquisition de sources, six workers de compilation de
-  tuiles et huit workers légers de prototypes.
+Le worker Lightning historique reste disponible comme fallback tant que la nouvelle voie n’a pas passé sa validation représentative.
 
-Les gros packages ne sont jamais assemblés sur un montage réseau. Chaque tuile
-est validée, compressée et hashée une fois sur le SSD. Sa publication vers le
-volume persistant est ensuite sérialisée, atomique et bornée à 180 secondes.
-La compression finale publie toutes les dix secondes le nombre de fichiers et
-d'octets traités afin de distinguer un gros ZIP actif d'un worker bloqué.
-Les téléchargements raster et l'attente d'une métatuile sont également bornés ;
-une tuile sans activité pendant 8 minutes fait échouer le job au lieu de le
-laisser facturer indéfiniment. Une reprise sur le même volume re-hashe et
-restaure uniquement les checkpoints déjà publiés.
-Les rares cellules IGN `-9999`, masquées ou non finies sont réparées de manière
-déterministe depuis l'échantillon mesuré le plus proche. Le nombre de cellules
-réparées et la distance maximale sont conservés dans le reçu de source ; une
-tuile n'arrête donc plus toute la zone pour un trou raster ponctuel.
-Sans volume persistant configuré, les checkpoints restent limités à la durée du
-Batch Job ; la requête et la progression restent néanmoins persistées côté
-backend. Le ZIP final est d'abord envoyé vers le stockage privé Vercel afin de
-rester téléchargeable depuis l'administration même si Hugging Face est
-indisponible. La publication Hugging Face est ensuite facultative et ne bloque
-plus la livraison du ZIP. Lorsqu'elle est active, Xet utilise le mode haut débit
-et reprend automatiquement les chunks déjà envoyés après un timeout transitoire,
-avec une tentative bornée ; un échec est enregistré pour reprise sans retirer
-le téléchargement admin.
+Fichiers principaux :
 
-`r37` reste la dernière image publiée et configurée côté backend. La candidate
-source `r38`, non publiée tant qu'elle n'a pas reçu son autorisation dédiée,
-ajoute l'assemblage compact : prototypes définis une seule fois dans la zone,
-payloads de 4 × 4 tuiles, PointInstancers conservés dans `zone.blend`,
-compression Blender interne et refus de tout pack dépassant 12 Gio avant
-upload.
+- `deploy/Dockerfile.lightning-map-production`;
+- `blender/lightning_map_production.py`.
 
-Le backend Vercel reçoit exclusivement des variables serveur :
+### Voie de comparaison / factual-v2
+
+Une voie parallèle est maintenant disponible pour comparer le comportement historique avec un profil de placement plus strict.
+
+Fichiers principaux :
+
+- `deploy/Dockerfile.lightning-map-production-compare`;
+- `deploy/Dockerfile.runpod-map-production-v2`;
+- `blender/map_validation_job.py`;
+- `blender/map_validation_folder.py`;
+- `blender/compare_validation_folders.py`;
+- `blender/mns_mnt_placement_inventory_v2.py`;
+- `blender/produce_simple_measured_tile_v2.py`.
+
+Cette voie est **implémentée mais pas encore promue comme chemin de production canonique**. La décision dépend d’une comparaison live contrôlée.
+
+## Validation bornée
+
+La première comparaison est volontairement limitée à **exactement 9 tuiles de 500 m**.
+
+Le helper `blender/plan_9_tile_validation.py` fabrique une requête qui résout vers une grille 3 × 3. La même requête doit être utilisée sur les deux providers afin que la comparaison porte sur les mêmes tuiles.
+
+Le job refuse de démarrer la campagne de validation si le plan ne contient pas exactement 9 tuiles.
+
+## Publication folder-native
+
+Les nouveaux chemins de validation **ne produisent pas d’archive ZIP**.
+
+Les preuves de comparaison sont publiées comme fichiers ordinaires dans le dataset public FireViewer :
 
 ```text
-FV_MAP_PRODUCTION_PROVIDER=lightning
-FV_MAP_LIGHTNING_USER_ID=<identifiant programme Lightning>
-FV_MAP_LIGHTNING_API_KEY=<clé programme Lightning>
-FV_MAP_LIGHTNING_TEAMSPACE=<teamspace>
-FV_MAP_LIGHTNING_IMAGE=charlibillabert/fireviewer-simple-production-ui:pilot-v1-20260816-r37-lightning
-FV_MAP_LIGHTNING_MAX_RUNTIME_SECONDS=86400
-FV_MAP_CALLBACK_BASE_URL=https://fireviewer-api.vercel.app
-FV_MAP_CALLBACK_SIGNING_SECRET=<secret serveur aléatoire>
-FV_MAP_HF_DATASET_ID=fireviewer/simple-measured-scenes-v1
-FV_MAP_HF_TOKEN=<secret serveur>
+validation/<zone_id>/<build_id>/<provider>/
 ```
 
-## Contrat de sortie
+Elles contiennent uniquement les éléments nécessaires à la comparaison : plan, reçu de zone, inventaires de placement, reçus de source et reçu du viewer lorsqu’il existe.
 
-La production active rend zéro capture et expose toujours `captures: []`. Le
-ZIP contient au minimum :
+Ce dossier de validation n’est pas une map supplémentaire et ne doit jamais être présenté comme telle.
 
-- `zone.usda`, scène OpenUSD unifiée ;
-- `payloads/*.usda`, assemblages OpenUSD regroupant jusqu'à 16 tuiles sans
-  redéfinir leurs prototypes ;
-- `zone.blend`, scène Blender autonome compressée avec textures emballées et
-  arbres/bâtiments conservés comme instances ;
-- `packages/<tile>/`, chaque terrain de 500 m ;
-- `shared/prototype-bundles/v1-<sha256>/`, les assets réellement utilisés,
-  incorporés une seule fois dans le ZIP ;
-- `provenance/<tile>/`, les reçus source compacts ;
-- `zone-context.json`, `zone-plan.json`, `zone-stage-layout.v1.json`,
-  `archive-budget.v1.json` et `zone.done.json`.
+## Viewer public
 
-Les MNT, MNS et orthophotos bruts sont supprimés après validation des tuiles et
-n'entrent jamais dans l'archive. Les contrats actifs sont
-`fireviewer.simple-measured-map-package.v2` et
-`fireviewer.simple-measured-map-upload-contract.v2`.
+Le viewer navigateur est publié séparément sous :
 
-## Publication
+```text
+maps/<zone_id>/<build_id>/runtime/
+  viewer.glb
+  viewer-scene.v1.json
+```
 
-Le job publie dans la dataset privée `fireviewer/simple-measured-scenes-v1`
-uniquement le ZIP final et ses petits reçus. Le backend délivre ensuite une URL
-Hugging Face signée à l'administrateur authentifié. La publication sur une
-fiche incident reste une action admin séparée.
+Le viewer est la **représentation complète de la map**, pas une variante simplifiée.
 
-Les périmètres observés restent un flux distinct. Ils peuvent référencer le ZIP
-de carte et produire leur timeline sans reconstruire la carte.
+Le job échoue si les invariants suivants ne sont pas respectés :
+
+- couverture mesh complète ;
+- politique `fail_closed_exact_visual_scene` ;
+- mêmes quantités logiques de bâtiments, arbres et context assets que le build canonique ;
+- aucun placeholder ;
+- SHA-256 et taille cohérents avec le GLB exporté.
+
+L’optimisation par instancing, partage de meshes/textures et organisation du GLB est permise tant qu’elle ne retire aucun objet logique et ne modifie pas son placement factuel.
+
+## Profil factual-v2
+
+Le profil v2 corrige plusieurs ambiguïtés du chemin historique sans modifier le fallback stable.
+
+### Bâtiments
+
+- footprint BD TOPO comme autorité XY pour les bâtiments instanciés ;
+- MNT comme autorité de sol ;
+- MNS−MNT comme autorité de hauteur ;
+- aucun bâtiment issu uniquement d’une morphologie HAG sans footprint confirmé ;
+- représentation discrète par assets USD réels et revus ;
+- primitives de remplacement interdites.
+
+### Arbres
+
+Pour garder la première comparaison contrôlée, le nombre/statut des candidats reste basé sur le détecteur historique 1 m. La position et la hauteur peuvent toutefois être raffinées depuis le MNT/MNS natif 0,5 m à l’intérieur de la même cellule de pic.
+
+Ce nombre reste une estimation de couronnes individuelles et non un comptage certifié de troncs.
+
+### Context assets
+
+Une route, une voie ferrée ou une géométrie hydrographique ne crée plus automatiquement un objet d’équipement générique. Les objets ponctuels doivent être explicitement justifiés et utiliser un asset réel du catalogue.
+
+Les géométries continues de route, rail ou hydro peuvent rester construites à partir des données géographiques source : elles ne sont pas assimilées à des équipements ponctuels.
+
+## Données et publication
+
+Le dataset public de référence pour les productions spatiales est :
+
+`fireviewer/simple-measured-scenes-v1`
+
+Le backend conserve l’identité immuable des viewers publiés (repository, révision, chemin, hash, taille et reçu de complétude). La simple présence d’un `viewer.glb` sur Hugging Face ne le rend pas automatiquement actif sur un incident : le rattachement/publication reste une action versionnée du backend.
+
+## Ce qui n’est pas encore validé
+
+À ce stade, il ne faut pas présenter comme acquis :
+
+- que RunPod remplace Lightning en production ;
+- qu’un GPU accélère significativement ce pipeline ;
+- que factual-v2 améliore la précision terrain sur toutes les zones ;
+- que le nouveau chemin a déjà passé une campagne live représentative ;
+- que la publication scientifique/source complète du futur provider final est qualifiée.
+
+Ces points restent des gates de validation, pas des caractéristiques marketing.
+
+## Après la comparaison
+
+Si factual-v2 est retenu, les travaux suivants restent distincts : callbacks backend provider-neutral, publication complète du dossier scientifique/source, récupération/annulation, métriques coût/runtime, validation du matching dimensionnel des assets et complétion des géométries continues route/rail/hydro.
+
+Le statut de ces éléments doit être reflété dans la documentation canonique `fireviewer/Fireviewer_doc` sans promouvoir un niveau de maturité supérieur aux preuves réellement obtenues.
