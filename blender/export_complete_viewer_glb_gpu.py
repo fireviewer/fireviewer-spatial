@@ -462,6 +462,7 @@ def export_complete_viewer(job_root: Path | str) -> Path:
             "source_unique_mesh_count": source_unique_meshes,
             "mesh_coverage": "complete",
             "source_image_count": source_images,
+            "source_image_count_basis": "blender_material_node_image_datablocks",
             **summary,
         },
     }

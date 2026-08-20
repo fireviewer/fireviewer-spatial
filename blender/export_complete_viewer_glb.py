@@ -365,12 +365,28 @@ def _validate_gltf_payload(
     accessors = gltf.get("accessors", [])
     images = gltf.get("images", [])
     buffers = gltf.get("buffers", [])
+    buffer_views = gltf.get("bufferViews", [])
+    textures = gltf.get("textures", [])
+    materials = gltf.get("materials", [])
     if (
         not all(
             isinstance(value, list)
-            for value in (nodes, meshes, accessors, images, buffers)
+            for value in (
+                nodes,
+                meshes,
+                accessors,
+                images,
+                buffers,
+                buffer_views,
+                textures,
+                materials,
+            )
         )
         or not meshes
+        or not buffers
+        or isinstance(source_images, bool)
+        or not isinstance(source_images, int)
+        or source_images < 0
         or source_meshes < 1
     ):
         raise CompleteViewerExportError("Tables GLB viewer invalides")
@@ -381,15 +397,93 @@ def _validate_gltf_payload(
         raise CompleteViewerExportError("Le GLB viewer référence un buffer externe")
     if any(
         not isinstance(item, Mapping)
+        or isinstance(item.get("buffer"), bool)
+        or not isinstance(item.get("buffer"), int)
+        or not 0 <= item["buffer"] < len(buffers)
+        for item in buffer_views
+    ):
+        raise CompleteViewerExportError("Le GLB viewer contient un bufferView invalide")
+    if any(
+        not isinstance(item, Mapping)
         or item.get("uri") is not None
+        or isinstance(item.get("bufferView"), bool)
         or not isinstance(item.get("bufferView"), int)
+        or not 0 <= item["bufferView"] < len(buffer_views)
         for item in images
     ):
         raise CompleteViewerExportError("Le GLB viewer contient une texture externe")
-    if len(images) < source_images:
+    if source_images > 0 and not images:
         raise CompleteViewerExportError(
-            f"Textures viewer incomplètes: {len(images)} < {source_images}"
+            "Le GLB viewer ne contient aucune image embarquée malgré les images source"
         )
+    referenced_images: set[int] = set()
+    for texture in textures:
+        if not isinstance(texture, Mapping):
+            raise CompleteViewerExportError("Table de textures GLB invalide")
+        candidates: list[Any] = []
+        if "source" in texture:
+            candidates.append(texture.get("source"))
+        extensions = texture.get("extensions")
+        if isinstance(extensions, Mapping):
+            for extension_name in (
+                "KHR_texture_basisu",
+                "EXT_texture_webp",
+                "MSFT_texture_dds",
+            ):
+                extension = extensions.get(extension_name)
+                if isinstance(extension, Mapping) and "source" in extension:
+                    candidates.append(extension.get("source"))
+        if not candidates:
+            raise CompleteViewerExportError(
+                "Une texture GLB ne référence aucune image embarquée"
+            )
+        for image_index in candidates:
+            if (
+                isinstance(image_index, bool)
+                or not isinstance(image_index, int)
+                or not 0 <= image_index < len(images)
+            ):
+                raise CompleteViewerExportError(
+                    "Une texture GLB référence une image invalide"
+                )
+            referenced_images.add(image_index)
+    if source_images > 0 and not textures:
+        raise CompleteViewerExportError(
+            "Le GLB viewer ne contient aucune texture malgré les images source"
+        )
+
+    material_texture_references = 0
+
+    def validate_texture_info(value: Any, label: str) -> None:
+        nonlocal material_texture_references
+        if not isinstance(value, Mapping):
+            raise CompleteViewerExportError(f"Référence de texture {label} invalide")
+        texture_index = value.get("index")
+        if (
+            isinstance(texture_index, bool)
+            or not isinstance(texture_index, int)
+            or not 0 <= texture_index < len(textures)
+        ):
+            raise CompleteViewerExportError(f"Index de texture {label} invalide")
+        material_texture_references += 1
+
+    for material_index, material in enumerate(materials):
+        if not isinstance(material, Mapping):
+            raise CompleteViewerExportError("Table de matériaux GLB invalide")
+        pbr = material.get("pbrMetallicRoughness")
+        if pbr is not None:
+            if not isinstance(pbr, Mapping):
+                raise CompleteViewerExportError("Matériau PBR GLB invalide")
+            for key in ("baseColorTexture", "metallicRoughnessTexture"):
+                if key in pbr:
+                    validate_texture_info(
+                        pbr[key], f"materials[{material_index}].{key}"
+                    )
+        for key in ("normalTexture", "occlusionTexture", "emissiveTexture"):
+            if key in material:
+                validate_texture_info(
+                    material[key], f"materials[{material_index}].{key}"
+                )
     names = {
         item.get("name"): index
         for index, item in enumerate(nodes)
@@ -420,11 +514,12 @@ def _validate_gltf_payload(
         "mesh_count": len(meshes),
         "node_count": len(nodes),
         "image_count": len(images),
-        "material_count": (
-            len(gltf.get("materials", []))
-            if isinstance(gltf.get("materials"), list)
-            else 0
-        ),
+        "texture_count": len(textures),
+        "referenced_image_count": len(referenced_images),
+        "material_texture_reference_count": material_texture_references,
+        "source_image_datablock_count": source_images,
+        "source_to_exported_image_delta": source_images - len(images),
+        "material_count": len(materials),
         "extensions_used": (
             sorted(
                 item
@@ -511,6 +606,7 @@ def export_complete_viewer(job_root: Path | str) -> Path:
             "viewer_mesh_count": int(summary["mesh_count"]),
             "mesh_coverage": "complete",
             "source_image_count": source_images,
+            "source_image_count_basis": "blender_material_node_image_datablocks",
             **summary,
         },
     }

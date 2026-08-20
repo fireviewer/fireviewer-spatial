@@ -19,8 +19,20 @@ def _payload(*, buildings: int = 2, trees: int = 3, context: int = 1, images: in
         "meshes": [{}],
         "accessors": [],
         "buffers": [{"byteLength": 16}],
-        "images": [{"bufferView": index} for index in range(images)],
-        "materials": [{}],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": index, "byteLength": 1}
+            for index in range(images)
+        ],
+        "images": [
+            {"bufferView": index, "mimeType": "image/png"}
+            for index in range(images)
+        ],
+        "textures": [{"source": index} for index in range(images)],
+        "materials": (
+            [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}]
+            if images
+            else [{}]
+        ),
         "extensionsUsed": [],
     }
 
@@ -34,6 +46,9 @@ def test_complete_viewer_requires_exact_family_counts_and_embedded_images() -> N
     )
     assert summary["family_instance_counts"] == {"buildings": 2, "trees": 3, "context_assets": 1}
     assert summary["image_count"] == 2
+    assert summary["texture_count"] == 2
+    assert summary["material_texture_reference_count"] == 1
+    assert summary["source_to_exported_image_delta"] == 0
 
 
 def test_complete_viewer_rejects_missing_context_assets() -> None:
@@ -46,11 +61,22 @@ def test_complete_viewer_rejects_missing_context_assets() -> None:
         )
 
 
-def test_complete_viewer_rejects_external_or_missing_textures() -> None:
+def test_complete_viewer_allows_exporter_image_deduplication() -> None:
     payload = _payload(images=1)
-    with pytest.raises(viewer.CompleteViewerExportError, match="Textures viewer incomplètes"):
+    summary = viewer._validate_gltf_payload(
+        payload,
+        expected_counts={"buildings": 2, "trees": 3, "context_assets": 1},
+        source_images=2,
+        source_meshes=4,
+    )
+    assert summary["image_count"] == 1
+    assert summary["source_to_exported_image_delta"] == 1
+
+
+def test_complete_viewer_rejects_external_or_missing_textures() -> None:
+    with pytest.raises(viewer.CompleteViewerExportError, match="aucune image embarquée"):
         viewer._validate_gltf_payload(
-            payload,
+            _payload(images=0),
             expected_counts={"buildings": 2, "trees": 3, "context_assets": 1},
             source_images=2,
             source_meshes=4,
@@ -58,6 +84,30 @@ def test_complete_viewer_rejects_external_or_missing_textures() -> None:
     payload = _payload()
     payload["images"][0] = {"uri": "texture.png"}
     with pytest.raises(viewer.CompleteViewerExportError, match="texture externe"):
+        viewer._validate_gltf_payload(
+            payload,
+            expected_counts={"buildings": 2, "trees": 3, "context_assets": 1},
+            source_images=2,
+            source_meshes=4,
+        )
+
+
+def test_complete_viewer_rejects_broken_texture_references() -> None:
+    payload = _payload()
+    payload["textures"][0]["source"] = 99
+    with pytest.raises(viewer.CompleteViewerExportError, match="image invalide"):
+        viewer._validate_gltf_payload(
+            payload,
+            expected_counts={"buildings": 2, "trees": 3, "context_assets": 1},
+            source_images=2,
+            source_meshes=4,
+        )
+
+    payload = _payload()
+    payload["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"][
+        "index"
+    ] = 99
+    with pytest.raises(viewer.CompleteViewerExportError, match="Index de texture"):
         viewer._validate_gltf_payload(
             payload,
             expected_counts={"buildings": 2, "trees": 3, "context_assets": 1},

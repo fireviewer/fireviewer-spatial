@@ -15,7 +15,7 @@ ENV FIREVIEWER_TILE_WORKERS=6 \
     FIREVIEWER_VALIDATION_PUBLISH_VIEWER=1 \
     FIREVIEWER_VALIDATION_REQUIRE_VIEWER_PUBLICATION=1 \
     FIREVIEWER_VALIDATION_VIEWER_SCRIPT=export_complete_viewer_glb.py \
-    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v2-20260820-r5-runpod-validation \
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v2-20260820-r6-runpod-validation \
     HF_XET_CACHE=/tmp/fireviewer-hf-xet
 
 COPY fireviewer-spatial/requirements.map-validation-job.txt /opt/fireviewer/requirements.map-validation-job.txt
