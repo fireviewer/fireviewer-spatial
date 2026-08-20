@@ -2,7 +2,7 @@
 
 **Headless map production, portable spatial packages and temporal fire layers for reproducible FireViewer incidents.**
 
-This repository owns the spatial-production side of FireViewer: building a measured geographic reference, validating and sealing its artifacts, and producing time-indexed perimeter layers that can later be replayed without rebuilding the terrain.
+This repository owns the spatial-production side of FireViewer: building measured geographic references, validating and sealing spatial artifacts, producing complete browser viewers and generating time-indexed perimeter layers that can later be replayed without rebuilding the terrain.
 
 The cross-project architecture and project positioning are maintained in [`fireviewer/Fireviewer_doc`](https://github.com/fireviewer/Fireviewer_doc).
 
@@ -15,12 +15,12 @@ map request
    ↓
 headless spatial production
    ↓
-sealed map folder
-   ├── browser viewer publication
-   ├── scientific/source publication
-   ├── observed/reviewed temporal layers
-   ├── replay / post-event studies
-   └── datasets / benchmarks
+sealed map build
+   ├── complete browser viewer
+   ├── validation / provenance evidence
+   ├── scientific/source artifacts
+   ├── temporal layers
+   └── replay / datasets / benchmarks
 ```
 
 The browser is a consumer of derived artifacts. It is not responsible for reconstructing the terrain.
@@ -29,23 +29,35 @@ The browser is a consumer of derived artifacts. It is not responsible for recons
 
 The active engine [`simple_production_api.py`](./blender/simple_production_api.py) exposes a headless production path from a geographic centre and requested square side length.
 
-The build is planned on a **Lambert-93 / EPSG:2154 grid of 500 m tiles**. For each tile, the pipeline can temporarily acquire:
+The build is planned on a **Lambert-93 / EPSG:2154 grid of 500 m tiles**. Per-tile processing can temporarily acquire MNT, MNS, orthophotography and geographic context required by the active placement profile.
 
-- MNT / terrain elevation;
-- MNS / surface elevation;
-- orthophotography;
-- geographic context required by the active placement rules.
-
-It then produces, among other artifacts:
+The builder produces, among other artifacts:
 
 - deterministic terrain geometry with multiple LODs;
 - a baked local ground texture;
-- context/object placement derived from measured `MNS − MNT` information and validated rules;
-- references to the exact assets actually used;
+- measured/contextual object placement;
+- references to the exact reviewed assets actually used;
 - compact provenance receipts;
-- integrity hashes.
+- integrity hashes;
+- portable OpenUSD/Blender scene artifacts.
 
-Raw geographic rasters are temporary processing inputs and are not required in the sealed publication folder once their derived artifacts have passed validation.
+Raw geographic rasters are temporary processing inputs and do not need to remain in the sealed publication folder once their derived artifacts have passed validation.
+
+## Current production transition
+
+The stable Lightning production path remains available as a fallback.
+
+A parallel **factual-v2** path has been implemented for controlled provider comparison. It tightens several placement rules without modifying the stable fallback. It is not yet promoted as the canonical production provider; representative live validation remains a gate.
+
+The current deployment/validation boundary is documented in [`docs/SIMPLE_PRODUCTION_POD.md`](./docs/SIMPLE_PRODUCTION_POD.md).
+
+### factual-v2 in brief
+
+- buildings require the expected BD TOPO footprint authority, with MNT/MNS providing measured ground/height;
+- morphology-only building candidates are not instantiated;
+- tree quantity/status remains compatible with the historical 1 m detector for the first controlled comparison, while final position/height can be refined from native 0.5 m elevation inside the same source cell;
+- road/rail/hydro features no longer imply generic discrete equipment objects;
+- discrete buildings, trees and context equipment must use reviewed real catalog assets rather than placeholder primitives.
 
 ## Zone package
 
@@ -59,41 +71,75 @@ zone-plan.json
 zone-context.json
 packages/<tile>/
 payloads/
-shared/prototype-bundles/v1-<sha256>/
+shared/prototype-bundles/
 provenance/<tile>/
 ```
 
-`zone.usda` defines shared prototypes once and references grouped payloads instead of duplicating them per tile. `zone.blend` preserves the accepted Blender representation, including instanced trees and buildings where the active production path uses them. Both are portable scene representations of the accepted build.
+`zone.usda` and `zone.blend` are portable scene representations of the accepted build. The production artifact is the validated spatial package itself with its provenance and integrity metadata, not a screenshot gallery.
 
-The active production path does not require a PNG capture gallery. The production artifact is the validated spatial package itself, with its provenance and integrity metadata.
-
-Active contracts include:
+Active map package contracts include:
 
 - `fireviewer.simple-measured-map-package.v2`;
 - `fireviewer.simple-measured-map-upload-contract.v2`.
 
-## Folder-native publication
+## Folder-native validation
 
-The current Lightning batch entrypoint is [`lightning_map_production.py`](./blender/lightning_map_production.py).
+New validation evidence is **folder-native**. Validation ZIPs are not part of the current comparison contract.
 
-New map jobs **do not create a final ZIP**. Publication is intentionally split into two stages:
+The bounded comparison runner publishes compact evidence under:
 
-1. the complete browser viewer is published first to the public Hugging Face dataset and can become eligible for incident publication;
-2. the sealed scientific/source folder is uploaded independently through Hugging Face/Xet as a resumable publication.
+```text
+validation/<zone_id>/<build_id>/<provider>/
+```
 
-A later source-folder upload failure does not invalidate a viewer that was already published successfully. The scientific publication nevertheless remains a separate reproducibility artifact and its status must be tracked explicitly.
+This evidence can include zone plans/receipts, per-tile placement inventories, source receipts/hashes and a viewer receipt.
 
-This separation keeps browser availability independent from long-running publication of the complete source folder without collapsing the two artifacts into one status.
+A validation folder is **not another map**. It exists only to compare two builds without duplicating large runtime/scientific artifacts.
+
+The comparison helpers are:
+
+- [`map_validation_job.py`](./blender/map_validation_job.py);
+- [`map_validation_folder.py`](./blender/map_validation_folder.py);
+- [`compare_validation_folders.py`](./blender/compare_validation_folders.py);
+- [`plan_9_tile_validation.py`](./blender/plan_9_tile_validation.py).
+
+The first provider comparison is deliberately limited to exactly 9 tiles and requires the same request on both workers.
+
+## Complete browser viewer
+
+The public browser viewer is a **complete representation of the corresponding map build**, not a simplified second map.
+
+Canonical runtime layout:
+
+```text
+maps/<zone_id>/<build_id>/runtime/
+  viewer.glb
+  viewer-scene.v1.json
+```
+
+The validation path fails closed unless the viewer reports complete mesh coverage, exact logical family counts and no placeholder instances. Its SHA-256 and byte count must also match the exported GLB.
+
+Runtime optimisation may share meshes, textures and instances, but must not remove canonical logical objects or alter factual placement.
+
+## Public artifact repository
+
+Measured spatial builds and their validation evidence are published in the public Hugging Face dataset:
+
+[`fireviewer/simple-measured-scenes-v1`](https://huggingface.co/datasets/fireviewer/simple-measured-scenes-v1)
+
+The backend records immutable viewer identity using repository, revision, path, hash, size and completeness metadata.
+
+Publishing a GLB to Hugging Face does not automatically make it the active map of an incident. Incident attachment/replacement remains an explicit, versioned backend action.
 
 ## Endpoint-driven execution
 
-Map production is designed to run behind a provider-independent job boundary.
+Map production runs behind a provider-independent job boundary.
 
-The FireViewer administration calls the backend, which can submit an asynchronous map job to the current compute provider. Provider credentials remain server-side.
+The FireViewer administration calls the backend, which dispatches a bounded asynchronous spatial job to the currently selected compute provider. Provider credentials remain server-side.
 
-The current Lightning-oriented deployment path is documented in [`docs/SIMPLE_PRODUCTION_POD.md`](./docs/SIMPLE_PRODUCTION_POD.md) and uses an ephemeral batch workload rather than keeping heavy compute online permanently.
+The heavy map-production environment is intended to be ephemeral rather than permanently online.
 
-The HTTP/job contract is described by [`simple_production_api_contract.v1.json`](./blender/simple_production_api_contract.v1.json).
+Provider choice is an implementation detail below the map-job contract and should not change incident identity, provenance or publication semantics.
 
 ## Observed perimeter layers
 
@@ -114,16 +160,11 @@ No interpolation, propagation speed or future perimeter is silently invented.
 
 The OpenUSD layer, normalised geometry and timeline are reference artifacts. Browser-oriented GLB files are derived views.
 
-Active contracts include:
-
-- `fireviewer.observed-perimeter-package.v1`;
-- `fireviewer.observed-perimeter-upload-contract.v1`.
-
 ## Retrospective reconstruction
 
-Historical FireViewer reconstruction packs are a separate artifact family.
+Historical reconstruction packs are a separate artifact family.
 
-A geometry marked `reconstructed` can be derived from historical maps, area reports, sectors, remote-sensing information and reviewed evidence, but it must not be published under the observed-perimeter contract.
+A geometry marked `reconstructed` may be derived from historical maps, reports, sectors, remote-sensing information and reviewed evidence, but it must not be published under the observed-perimeter contract.
 
 ```text
 observed ≠ reconstructed ≠ interpolated ≠ simulated ≠ predicted
@@ -131,21 +172,19 @@ observed ≠ reconstructed ≠ interpolated ≠ simulated ≠ predicted
 
 ## Replay and downstream consumers
 
-[`scene-consumer-input.schema.json`](./contracts/spatial/v1/scene-consumer-input.schema.json) allows a replay, dataset or optional simulation workflow to reference an accepted map build and temporal package without silently reconstructing them.
+[`scene-consumer-input.schema.json`](./contracts/spatial/v1/scene-consumer-input.schema.json) allows replay, dataset and optional simulation workflows to reference accepted map builds and temporal packages without silently reconstructing them.
 
-A consumer can create a **new derived study or simulation artifact**, but it must preserve the identity of the exact inputs it consumed.
-
-The sealed map folder, its source/publication receipts and the exact viewer artifact together provide the reproducible spatial identity of a published build. A derived browser representation must not silently replace those canonical inputs.
+A consumer can create a new derived study or simulation artifact, but it must preserve the identity of the exact inputs it consumed.
 
 ## No Unity / Omniverse dependency in the core path
 
 The canonical FireViewer map builder does **not** depend on Unity or NVIDIA Omniverse.
 
-Older experiments may remain in repository history or specialised directories. Omniverse can also remain useful inside optional synthetic-data research in `fireviewer-sdg`, but it is not a dependency of this repository's canonical production contract.
+Older experiments may remain in repository history or specialised directories. Omniverse may remain useful inside optional synthetic-data research in `fireviewer-sdg`, but it is not a runtime dependency of this repository's canonical production contract.
 
 ## Coordinate systems
 
-- request coordinates: `EPSG:4326`, longitude/latitude order in JSON;
+- request coordinates: `EPSG:4326`;
 - production CRS: `EPSG:2154` / Lambert-93;
 - current vertical reference: `NGF-IGN69` where required by the active contract;
 - OpenUSD units: metres, Z-up.
@@ -154,33 +193,30 @@ Older experiments may remain in repository history or specialised directories. O
 
 [`portable_scene_package.py`](./blender/portable_scene_package.py) inventories and hashes accepted package content before publication.
 
-A reproducible package should preserve enough information to identify:
-
-- exact build/contract revision;
-- source receipts;
-- CRS and transformations;
-- used prototype/asset bundle;
-- integrity hashes;
-- exceptional repairs or source gaps.
+A reproducible package should preserve enough information to identify the exact build/contract revision, source receipts, CRS/transforms, used asset bundle, integrity hashes and exceptional repairs/source gaps.
 
 The canonical doctrine is documented in [FireViewer Provenance and Reproducibility](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/PROVENANCE_AND_REPRODUCIBILITY.md).
+
+## Validation status
+
+A successful image build or local unit test does not prove live provider reliability or spatial accuracy.
+
+The factual-v2/provider comparison remains a live-validation gate. Until it is completed, the stable fallback remains retained and no README should present the candidate path as fully promoted production.
+
+Project-wide evidence levels are maintained in the canonical [Status Matrix](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/STATUS_MATRIX.md).
 
 ## Local validation
 
 ```powershell
-$env:TEMP = 'C:\FireViewerWorkspace\temp'
-$env:TMP = $env:TEMP
-$env:PYTHONPYCACHEPREFIX = 'C:\FireViewerWorkspace\cache\pycache'
-
 python -m pytest -q
 python -m ruff check .
 ```
 
-A green local suite does not prove live geographic-source availability, deployed provider reliability or field accuracy. Those gates are tracked separately in the canonical [Status Matrix](https://github.com/fireviewer/Fireviewer_doc/blob/main/docs/STATUS_MATRIX.md).
+A green local suite does not prove live geographic-source availability, deployed provider reliability or field accuracy.
 
 ## Data and licences
 
-This Git repository does not contain production maps, orthophotos, generated scene archives, model weights, tokens or production datasets.
+This Git repository does not contain production maps, raw orthophotos, model weights, provider credentials or runtime secrets.
 
 The code is licensed under **AGPL-3.0-or-later** through [`LICENSE`](LICENSE). Repository documentation is licensed under **CC BY 4.0** through [`LICENSE-DOCS.md`](LICENSE-DOCS.md). External geographic sources and assets retain their own licences and attribution requirements.
 
