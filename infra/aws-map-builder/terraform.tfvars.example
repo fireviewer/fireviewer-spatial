@@ -23,7 +23,7 @@ github_oidc_provider_arn  = null
 
 # Batch executes only the immutable image digest produced by the validated
 # local build and smoke-test release path.
-batch_image_digest = "sha256:3c3aef7fd7a0439971f0952cf65a8b2fdae67300f1526dcba4809d2816f88b37"
+batch_image_digest = "sha256:9eaae2209e425508faa3fb54d83e98b6d4b54260c086eac5083c541928a3a4bb"
 
 # Required only when Batch and the admin backend are activated. Use the exact
 # path segment from the Vercel team URL; it is not the internal team ID.

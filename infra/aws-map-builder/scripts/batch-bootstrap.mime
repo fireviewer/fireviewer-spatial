@@ -59,7 +59,11 @@ cat >/etc/docker/daemon.json <<'JSON'
 JSON
 
 systemctl enable --now docker
-systemctl enable --now ecs
+# ECS_AL2023 orders ecs.service after cloud-final.service. Starting it
+# synchronously from cloud-init deadlocks both units, so enable it and queue the
+# start without waiting for cloud-final to finish.
+systemctl enable ecs
+systemctl start --no-block ecs
 touch /scratch/.fireviewer-ready
 
 --==FIREVIEWER_BATCH_BOUNDARY==--
