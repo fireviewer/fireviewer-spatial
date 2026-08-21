@@ -100,6 +100,7 @@ def publish_viewer(
     *,
     repo_id: str,
     remote_root: str,
+    build_id: str,
     job_id: str,
     exporter_image_digest: str,
     output_receipt: Path | str,
@@ -118,21 +119,23 @@ def publish_viewer(
 
     zone = _load_json(root / "zone.done.json", "zone receipt")
     zone_id = zone.get("zone_id")
-    build_id = zone.get("build_id")
+    scientific_build_id = zone.get("build_id")
     tile_count = zone.get("tile_count")
     if (
         zone.get("schema") != ZONE_RECEIPT_SCHEMA
         or zone.get("status") != "technical_scene_produced"
         or not isinstance(zone_id, str)
         or _ZONE_RE.fullmatch(zone_id) is None
-        or not isinstance(build_id, str)
-        or _SHA256_RE.fullmatch(build_id) is None
+        or not isinstance(scientific_build_id, str)
+        or _SHA256_RE.fullmatch(scientific_build_id) is None
         or isinstance(tile_count, bool)
         or not isinstance(tile_count, int)
         or tile_count <= 0
         or zone.get("placeholder_instance_count") != 0
     ):
         raise HfViewerExportError("invalid sealed zone receipt")
+    if _SHA256_RE.fullmatch(build_id) is None:
+        raise HfViewerExportError("invalid Map Job build id")
     runtime_root = _safe_remote_root(
         remote_root,
         zone_id=zone_id,
@@ -189,6 +192,7 @@ def publish_viewer(
         "job_id": job_id,
         "zone_id": zone_id,
         "build_id": build_id,
+        "scientific_build_id": scientific_build_id,
         "tile_count": tile_count,
         "degraded_mns_tile_count": zone.get("degraded_mns_tile_count", 0),
         "dataset": {
@@ -231,6 +235,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True)
     parser.add_argument("--repo-id", required=True)
     parser.add_argument("--remote-root", required=True)
+    parser.add_argument("--build-id", required=True)
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--image-digest", required=True)
     parser.add_argument("--output-receipt", required=True)
@@ -243,6 +248,7 @@ def main() -> int:
         args.input,
         repo_id=args.repo_id,
         remote_root=args.remote_root,
+        build_id=args.build_id,
         job_id=args.job_id,
         exporter_image_digest=args.image_digest,
         output_receipt=args.output_receipt,

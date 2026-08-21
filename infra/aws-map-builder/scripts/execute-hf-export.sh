@@ -81,11 +81,17 @@ fi
 
 source_without_scheme="${source_s3_uri#s3://}"
 source_prefix="${source_without_scheme#*/}"
+map_build_id="${source_prefix##*/}"
+if [[ ! "${map_build_id}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "source URI does not contain a valid Map Job build id" >&2
+  exit 20
+fi
 remote_root="${source_prefix%/}/runtime"
 python /opt/fireviewer/runtime/hf_viewer_exporter.py \
   --input "${run_root}" \
   --repo-id "${repo_id}" \
   --remote-root "${remote_root}" \
+  --build-id "${map_build_id}" \
   --job-id "${map_job_id}" \
   --image-digest "${expected_image_digest}" \
   --output-receipt "${output_receipt}"

@@ -85,6 +85,7 @@ def test_publish_viewer_writes_verified_publication_receipt(
         root,
         repo_id="fireviewer/simple-measured-scenes-v1",
         remote_root=f"maps/GPS-TEST/{'b' * 64}/runtime",
+        build_id="b" * 64,
         job_id="map-test-job",
         exporter_image_digest="sha256:" + "f" * 64,
         output_receipt=destination,
@@ -92,6 +93,8 @@ def test_publish_viewer_writes_verified_publication_receipt(
     )
 
     assert receipt["schema"] == "fireviewer.hf-viewer-publication.v1"
+    assert receipt["build_id"] == "b" * 64
+    assert receipt["scientific_build_id"] == "b" * 64
     assert receipt["dataset"]["revision"] == "e" * 40
     assert receipt["viewer"]["catalog_path"].endswith(
         "/runtime/viewer-tiled/catalog.json"
@@ -103,3 +106,76 @@ def test_publish_viewer_writes_verified_publication_receipt(
     assert observed["upload"]["path_in_repo"].endswith("/runtime/viewer-tiled")
     assert len(observed["verified"]) == 3
     assert json.loads(destination.read_text(encoding="utf-8")) == receipt
+
+
+def test_publish_viewer_separates_map_job_and_scientific_build_ids(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    root = tmp_path / "build"
+    (root / "viewer-tiled").mkdir(parents=True)
+    scientific_build_id = "a" * 64
+    map_job_build_id = "b" * 64
+    (root / "zone.done.json").write_text(
+        json.dumps(
+            {
+                "schema": "fireviewer.simple-measured-zone-production.v1",
+                "status": "technical_scene_produced",
+                "zone_id": "GPS-TEST",
+                "build_id": scientific_build_id,
+                "tile_count": 9,
+                "degraded_mns_tile_count": 0,
+                "placeholder_instance_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    viewer = {
+        "catalog_path": "viewer-tiled/catalog.json",
+        "receipt_path": "viewer-tiled/viewer-tiled-scene.v1.json",
+        "catalog_sha256": "c" * 64,
+        "catalog_byte_count": 1,
+        "payload_file_count": 3,
+        "payload_byte_count": 3,
+        "bootstrap_asset": {
+            "path": "viewer-tiled/far.glb",
+            "sha256": "d" * 64,
+            "byte_count": 1,
+            "media_type": "model/gltf-binary",
+        },
+        "completeness": {},
+    }
+
+    class FakeApi:
+        def __init__(self, *, token: str) -> None:
+            pass
+
+        def repo_info(self, **kwargs: object) -> object:
+            return SimpleNamespace(private=False)
+
+        def upload_folder(self, **kwargs: object) -> object:
+            return SimpleNamespace(oid="e" * 40)
+
+        def file_exists(self, **kwargs: object) -> bool:
+            return True
+
+    monkeypatch.setattr(
+        hf_viewer_exporter,
+        "validate_tiled_viewer_package",
+        lambda *_args, **_kwargs: ({"status": "complete"}, viewer),
+    )
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi=FakeApi))
+    receipt = hf_viewer_exporter.publish_viewer(
+        root,
+        repo_id="fireviewer/simple-measured-scenes-v1",
+        remote_root=f"maps/GPS-TEST/{map_job_build_id}/runtime",
+        build_id=map_job_build_id,
+        job_id="map-test-job",
+        exporter_image_digest="sha256:" + "f" * 64,
+        output_receipt=tmp_path / "publication.json",
+        token="test-token-not-a-secret-123456",
+    )
+
+    assert receipt["build_id"] == map_job_build_id
+    assert receipt["scientific_build_id"] == scientific_build_id
+    assert receipt["dataset"]["root"] == f"maps/GPS-TEST/{map_job_build_id}/runtime"
