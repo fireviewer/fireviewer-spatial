@@ -36,11 +36,11 @@ variable "instance_type" {
 variable "root_volume_size_gib" {
   description = "Small operating-system volume; builder work belongs on /scratch."
   type        = number
-  default     = 20
+  default     = 30
 
   validation {
-    condition     = var.root_volume_size_gib >= 16 && var.root_volume_size_gib <= 30
-    error_message = "The root volume must remain between 16 and 30 GiB."
+    condition     = var.root_volume_size_gib == 30
+    error_message = "The Amazon Linux 2023 root volume must remain fixed at 30 GiB."
   }
 }
 

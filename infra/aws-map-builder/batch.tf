@@ -71,7 +71,7 @@ resource "aws_launch_template" "batch" {
 resource "aws_batch_compute_environment" "map_builder" {
   count = local.batch_activation_requested ? 1 : 0
 
-  name         = var.name_prefix
+  name_prefix  = "${var.name_prefix}-"
   service_role = aws_iam_role.batch_service[0].arn
   state        = "ENABLED"
   type         = "MANAGED"

@@ -5,6 +5,8 @@
 !infra/aws-map-builder/
 !infra/aws-map-builder/scripts/
 !infra/aws-map-builder/scripts/execute-batch.sh
+!deploy/
+!deploy/aws-map-builder-entrypoint.sh
 **/__pycache__/**
 **/*.pyc
 **/.pytest_cache/**

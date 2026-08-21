@@ -56,6 +56,21 @@ data "aws_iam_policy_document" "vercel_backend" {
   count = local.vercel_backend_oidc_enabled ? 1 : 0
 
   statement {
+    sid     = "ListMapRequestObjects"
+    effect  = "Allow"
+    actions = ["s3:ListBucket"]
+    resources = [
+      aws_s3_bucket.work.arn,
+    ]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["requests/*"]
+    }
+  }
+
+  statement {
     sid     = "WriteImmutableMapRequests"
     effect  = "Allow"
     actions = ["s3:GetObject", "s3:PutObject"]
@@ -78,6 +93,30 @@ data "aws_iam_policy_document" "vercel_backend" {
     effect  = "Allow"
     actions = ["batch:SubmitJob"]
     resources = [
+      "arn:${local.partition}:batch:${local.region}:${local.account_id}:job/*",
+      "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-queue/${var.name_prefix}",
+      "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}:*",
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Application"
+      values   = ["FireViewer"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Component"
+      values   = ["MapBuilder"]
+    }
+  }
+
+  statement {
+    sid     = "TagOnlySubmittedMapJobs"
+    effect  = "Allow"
+    actions = ["batch:TagResource"]
+    resources = [
+      "arn:${local.partition}:batch:${local.region}:${local.account_id}:job/*",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-queue/${var.name_prefix}",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}:*",
     ]
