@@ -88,6 +88,28 @@ data "aws_iam_policy_document" "vercel_backend" {
     ]
   }
 
+  # S3 deliberately returns AccessDenied instead of NoSuchKey when a caller
+  # cannot list the bucket. The admin must distinguish an optional receipt
+  # that has not been written yet from an authorization failure so it can
+  # submit the exporter exactly once. Limit listing to validation artifacts.
+  statement {
+    sid       = "DetectMissingMapValidationArtifacts"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.builds.arn]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values = [
+        "maps/*/manifests/request.json",
+        "maps/*/provenance/hf-viewer-publication.json",
+        "maps/*/runtime/viewer-tiled/*",
+        "maps/*/zone.done.json",
+      ]
+    }
+  }
+
   statement {
     sid     = "SubmitOnlyFrozenMapBuilder"
     effect  = "Allow"
