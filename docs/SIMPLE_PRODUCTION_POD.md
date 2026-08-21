@@ -77,8 +77,13 @@ Le viewer navigateur est publié séparément sous :
 
 ```text
 maps/<zone_id>/<build_id>/runtime/
-  viewer.glb
-  viewer-scene.v1.json
+  viewer-tiled/
+    far.glb
+    catalog.json
+    viewer-tiled-scene.v1.json
+    prototypes/*.glb
+    tiles/<tile_id>/terrain.glb
+    tiles/<tile_id>/instances.fvi
 ```
 
 Le viewer est la **représentation complète de la map**, pas une variante simplifiée.
@@ -89,9 +94,10 @@ Le job échoue si les invariants suivants ne sont pas respectés :
 - politique `fail_closed_exact_visual_scene` ;
 - mêmes quantités logiques de bâtiments, arbres et context assets que le build canonique ;
 - aucun placeholder ;
-- SHA-256 et taille cohérents avec le GLB exporté.
+- SHA-256 et taille cohérents pour chaque payload catalogué ;
+- aucun buffer ou texture GLB externe.
 
-L’optimisation par instancing, partage de meshes/textures et organisation du GLB est permise tant qu’elle ne retire aucun objet logique et ne modifie pas son placement factuel.
+Le viewer tuilé est construit directement depuis la zone et les paquets de tuiles scellés. Le `viewer.glb` monolithique est désactivé en production et reste uniquement un oracle facultatif pour les petites cartes. L’instancing et le partage de meshes/textures ne doivent retirer aucun objet logique ni modifier son placement factuel.
 
 ## Profil factual-v2
 
@@ -124,7 +130,7 @@ Le dataset public de référence pour les productions spatiales est :
 
 `fireviewer/simple-measured-scenes-v1`
 
-Le backend conserve l’identité immuable des viewers publiés (repository, révision, chemin, hash, taille et reçu de complétude). La simple présence d’un `viewer.glb` sur Hugging Face ne le rend pas automatiquement actif sur un incident : le rattachement/publication reste une action versionnée du backend.
+Le backend conserve l’identité immuable des viewers publiés (repository, révision, catalogue, hashes, tailles et reçu de complétude). La simple présence d’un paquet viewer sur Hugging Face ne le rend pas automatiquement actif sur un incident : le rattachement/publication reste une action versionnée du backend.
 
 ## Ce qui n’est pas encore validé
 

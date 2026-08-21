@@ -25,6 +25,7 @@ captures/
 renders/
 uploads/
 .tmp-placement-tests/
+.tmp-*/
 bin/
 omniverse/assets/environments/*.hdr
 *.blend

@@ -1,6 +1,12 @@
 **
 !runtime/
 !runtime/**
+!blender/
+!blender/build_tiled_viewer_package.py
+!blender/build_tiled_viewer_from_sealed.py
+!blender/export_tiled_viewer_prototypes.py
+!blender/map_validation_folder.py
+!blender/map_validation_job.py
 !infra/
 !infra/aws-map-builder/
 !infra/aws-map-builder/scripts/

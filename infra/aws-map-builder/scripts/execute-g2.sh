@@ -230,7 +230,9 @@ verify_critical_size() {
 }
 
 for critical_path in \
-  "runtime/viewer.glb" \
+  "runtime/viewer-tiled/catalog.json" \
+  "runtime/viewer-tiled/viewer-tiled-scene.v1.json" \
+  "runtime/viewer-tiled/far.glb" \
   "scientific/zone.usda" \
   "scientific/zone.blend" \
   "manifests/hashes.json" \

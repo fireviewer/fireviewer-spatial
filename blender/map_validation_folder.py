@@ -2,8 +2,8 @@
 
 Validation evidence is deliberately not a map package and is never archived.
 It is a small directory containing the plan, receipts, placement inventories and
-(optional) complete-viewer receipt needed to compare the Lightning and RunPod
-9-tile runs. Hugging Face publication preserves this directory structure.
+the tiled-viewer catalogue receipt needed to compare production runs.  An
+optional monolithic oracle receipt may also be included for small maps.
 """
 
 from __future__ import annotations
@@ -30,6 +30,9 @@ _PROVENANCE_FILES = (
     "orthophoto-source.json",
 )
 _VIEWER_RECEIPT = "viewer-scene.v1.json"
+_TILED_VIEWER_ROOT = "viewer-tiled"
+_TILED_VIEWER_RECEIPT = "viewer-tiled-scene.v1.json"
+_TILED_VIEWER_CATALOG = "catalog.json"
 
 
 class MapValidationFolderError(RuntimeError):
@@ -238,15 +241,46 @@ def build_validation_folder(
             )
 
         viewer_record: dict[str, Any] | None = None
+        monolithic_viewer_record: dict[str, Any] | None = None
+        tiled_receipt_path = (
+            root / _TILED_VIEWER_ROOT / _TILED_VIEWER_RECEIPT
+        )
+        tiled_catalog_path = root / _TILED_VIEWER_ROOT / _TILED_VIEWER_CATALOG
+        if tiled_receipt_path.is_file() and tiled_catalog_path.is_file():
+            from build_tiled_viewer_package import validate_tiled_viewer_package
+
+            try:
+                tiled_receipt, tiled_viewer = validate_tiled_viewer_package(root)
+            except Exception as error:
+                raise MapValidationFolderError(
+                    "tiled viewer package is invalid"
+                ) from error
+            viewer_record = {
+                "representation": "complete_tiled_non_simplified_map",
+                "status": tiled_receipt.get("status"),
+                "viewer": tiled_viewer,
+                "source": tiled_receipt.get("source"),
+            }
+            _copy_file(
+                tiled_receipt_path,
+                staging / _TILED_VIEWER_ROOT / _TILED_VIEWER_RECEIPT,
+            )
+            _copy_file(
+                tiled_catalog_path,
+                staging / _TILED_VIEWER_ROOT / _TILED_VIEWER_CATALOG,
+            )
+        elif stage == "viewer":
+            raise MapValidationFolderError(
+                "viewer-stage evidence requires a valid tiled viewer package"
+            )
+
         viewer_receipt_path = root / _VIEWER_RECEIPT
         if viewer_receipt_path.is_file():
             viewer_receipt = _load_json(viewer_receipt_path, "viewer receipt")
-            viewer_record = _viewer_summary(viewer_receipt, zone_receipt)
-            _copy_file(viewer_receipt_path, staging / _VIEWER_RECEIPT)
-        elif stage == "viewer":
-            raise MapValidationFolderError(
-                "viewer-stage evidence requires viewer-scene.v1.json"
+            monolithic_viewer_record = _viewer_summary(
+                viewer_receipt, zone_receipt
             )
+            _copy_file(viewer_receipt_path, staging / _VIEWER_RECEIPT)
 
         source_revisions = plan.get("source_revisions")
         summary: dict[str, Any] = {
@@ -275,6 +309,7 @@ def build_validation_folder(
             "viewer_role": "complete_non_simplified_map_representation",
             "tiles": tile_summaries,
             "viewer_receipt": viewer_record,
+            "monolithic_viewer_oracle_receipt": monolithic_viewer_record,
         }
         summary["summary_sha256"] = hashlib.sha256(
             _canonical_bytes(summary)

@@ -103,8 +103,28 @@ def test_folder_native_evidence_contains_no_zip(tmp_path: Path) -> None:
     assert len(list((folder / "tiles").iterdir())) == 9
 
 
-def test_viewer_evidence_requires_complete_exact_scene(tmp_path: Path) -> None:
+def test_viewer_evidence_requires_complete_tiled_scene(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = _job_root(tmp_path)
+    _write_json(
+        root / "viewer-tiled" / "viewer-tiled-scene.v1.json",
+        {"status": "complete", "source": {"kind": "sealed"}},
+    )
+    _write_json(root / "viewer-tiled" / "catalog.json", {"schema": "test"})
+    import build_tiled_viewer_package
+
+    monkeypatch.setattr(
+        build_tiled_viewer_package,
+        "validate_tiled_viewer_package",
+        lambda _root: (
+            {"status": "complete", "source": {"kind": "sealed"}},
+            {
+                "catalog_path": "viewer-tiled/catalog.json",
+                "completeness": {"mesh_coverage": "complete"},
+            },
+        ),
+    )
     _write_json(
         root / "viewer-scene.v1.json",
         {
@@ -128,7 +148,12 @@ def test_viewer_evidence_requires_complete_exact_scene(tmp_path: Path) -> None:
         require_nine_tiles=True,
     )
     assert summary["viewer_role"] == "complete_non_simplified_map_representation"
-    assert summary["viewer_receipt"]["representation"] == "complete_non_simplified_map"
+    assert (
+        summary["viewer_receipt"]["representation"]
+        == "complete_tiled_non_simplified_map"
+    )
+    assert summary["monolithic_viewer_oracle_receipt"] is not None
+    assert (folder / "viewer-tiled" / "catalog.json").is_file()
     assert (folder / "viewer-scene.v1.json").is_file()
 
 

@@ -113,11 +113,16 @@ Canonical runtime layout:
 
 ```text
 maps/<zone_id>/<build_id>/runtime/
-  viewer.glb
-  viewer-scene.v1.json
+  viewer-tiled/
+    far.glb
+    catalog.json
+    viewer-tiled-scene.v1.json
+    prototypes/*.glb
+    tiles/<tile_id>/terrain.glb
+    tiles/<tile_id>/instances.fvi
 ```
 
-The validation path fails closed unless the viewer reports complete mesh coverage, exact logical family counts and no placeholder instances. Its SHA-256 and byte count must also match the exported GLB.
+The validation path fails closed unless every catalogued payload matches its SHA-256 and byte count, every GLB is self-contained, and tile/prototype counts exactly match the sealed zone. The tiled viewer is built directly from sealed tile packages and `zone.blend`; a monolithic `viewer.glb` is optional test evidence for small maps only.
 
 Runtime optimisation may share meshes, textures and instances, but must not remove canonical logical objects or alter factual placement.
 
@@ -129,7 +134,7 @@ Measured spatial builds and their validation evidence are published in the publi
 
 The backend records immutable viewer identity using repository, revision, path, hash, size and completeness metadata.
 
-Publishing a GLB to Hugging Face does not automatically make it the active map of an incident. Incident attachment/replacement remains an explicit, versioned backend action.
+Publishing a tiled package to Hugging Face does not automatically make it the active map of an incident. Incident attachment/replacement remains an explicit, versioned backend action.
 
 ## Endpoint-driven execution
 

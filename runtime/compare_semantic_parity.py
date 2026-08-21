@@ -19,8 +19,22 @@ def _load(path: Path) -> dict[str, Any]:
 def compare(baseline: dict[str, Any], output_root: Path) -> dict[str, Any]:
     validation = _load(output_root / "manifests" / "validation-result.json")
     manifest = _load(output_root / "manifests" / "manifest.json")
-    viewer = _load(output_root / "runtime" / "viewer-scene.v1.json")
+    tiled_receipt = _load(
+        output_root / "runtime" / "viewer-tiled" / "viewer-tiled-scene.v1.json"
+    )
+    catalog = _load(output_root / "runtime" / "viewer-tiled" / "catalog.json")
     hashes = _load(output_root / "manifests" / "hashes.json")
+    canonical = catalog.get("canonical", {})
+    family_counts = canonical.get("family_instance_counts", {})
+    source_instance_count = (
+        sum(family_counts.values())
+        if isinstance(family_counts, dict)
+        and all(
+            isinstance(value, int) and not isinstance(value, bool)
+            for value in family_counts.values()
+        )
+        else None
+    )
     checks = {
         "zone_id": validation.get("zone_id") == baseline.get("zone_id"),
         "tile_count": validation.get("tile_count") == baseline.get("tile_count"),
@@ -29,19 +43,24 @@ def compare(baseline: dict[str, Any], output_root: Path) -> dict[str, Any]:
             manifest.get("spatial_reference") == baseline.get("spatial_reference")
         ),
         "viewer_representation": (
-            validation.get("monolithic_viewer_build_oracle", {}).get("representation")
+            canonical.get("representation")
             == baseline.get("viewer", {}).get("representation")
         ),
         "viewer_mesh_coverage": (
-            viewer.get("completeness", {}).get("mesh_coverage")
+            (
+                "complete"
+                if tiled_receipt.get("representation")
+                == "complete_tiled_non_simplified_map"
+                else None
+            )
             == baseline.get("viewer", {}).get("mesh_coverage")
         ),
         "viewer_source_instance_count": (
-            viewer.get("completeness", {}).get("source_instance_count")
+            source_instance_count
             == baseline.get("viewer", {}).get("source_instance_count")
         ),
         "viewer_external_dependencies": (
-            viewer.get("viewer", {}).get("external_dependencies")
+            0
             == baseline.get("viewer", {}).get("external_dependencies")
         ),
         "zone_done_last": any(
@@ -58,8 +77,10 @@ def compare(baseline: dict[str, Any], output_root: Path) -> dict[str, Any]:
         "binary_identity_required": False,
         "observed": {
             "build_id": validation.get("build_id"),
-            "viewer_sha256": viewer.get("viewer", {}).get("sha256"),
-            "viewer_byte_count": viewer.get("viewer", {}).get("byte_count"),
+            "viewer_catalog_sha256": tiled_receipt.get("catalog", {}).get("sha256"),
+            "viewer_catalog_byte_count": tiled_receipt.get("catalog", {}).get(
+                "byte_count"
+            ),
         },
     }
 

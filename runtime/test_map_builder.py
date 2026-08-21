@@ -49,8 +49,6 @@ def test_publish_output_writes_zone_done_last(tmp_path: Path) -> None:
         (source / directory).mkdir(parents=True)
         (source / directory / "payload.bin").write_bytes(b"payload")
     for name in (
-        "viewer.glb",
-        "viewer-scene.v1.json",
         "zone.usda",
         "zone.blend",
         "zone.done.json",
@@ -74,6 +72,8 @@ def test_publish_output_writes_zone_done_last(tmp_path: Path) -> None:
     zone = next(item for item in hashes["artifacts"] if item["path"] == "zone.done.json")
     assert zone["publication_order"] == "last"
     assert not list(output.rglob("*.part"))
+    assert not (output / "runtime" / "viewer.glb").exists()
+    assert not (output / "runtime" / "viewer-scene.v1.json").exists()
 
 
 def test_semantic_comparator_rejects_count_drift(tmp_path: Path) -> None:
@@ -119,14 +119,28 @@ def test_semantic_comparator_rejects_count_drift(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    (output / "runtime" / "viewer-scene.v1.json").write_text(
+    (output / "runtime" / "viewer-tiled").mkdir()
+    (output / "runtime" / "viewer-tiled" / "catalog.json").write_text(
         json.dumps(
             {
-                "completeness": {
-                    "mesh_coverage": "complete",
-                    "source_instance_count": 10,
-                },
-                "viewer": {"external_dependencies": 0},
+                "canonical": {
+                    "representation": "complete_non_simplified_map",
+                    "family_instance_counts": {"trees": 10},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (
+        output
+        / "runtime"
+        / "viewer-tiled"
+        / "viewer-tiled-scene.v1.json"
+    ).write_text(
+        json.dumps(
+            {
+                "representation": "complete_tiled_non_simplified_map",
+                "catalog": {"sha256": "a" * 64, "byte_count": 1},
             }
         ),
         encoding="utf-8",

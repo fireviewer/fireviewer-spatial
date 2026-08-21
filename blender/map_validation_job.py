@@ -198,7 +198,60 @@ def _run_viewer_export(
     config: ProductionConfig,
     job_root: Path,
     zone_receipt: Mapping[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[
+    dict[str, Any] | None,
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+]:
+    tiled_timeout = int(
+        os.environ.get(
+            "FIREVIEWER_VALIDATION_TILED_PROTOTYPE_TIMEOUT_SECONDS", "1800"
+        )
+    )
+    build_tiled_viewer_package(
+        job_root,
+        blender=config.blender,
+        timeout_seconds=tiled_timeout,
+    )
+    try:
+        tiled_receipt, tiled_viewer = validate_tiled_viewer_package(job_root)
+    except Exception as error:
+        raise MapValidationJobError("tiled viewer package is invalid") from error
+
+    policy = os.environ.get(
+        "FIREVIEWER_VALIDATION_MONOLITHIC_VIEWER", "off"
+    ).strip().lower()
+    if policy not in {"off", "auto", "required"}:
+        raise MapValidationJobError(
+            "FIREVIEWER_VALIDATION_MONOLITHIC_VIEWER must be off, auto, or required"
+        )
+    tile_count = zone_receipt.get("tile_count")
+    maximum_tiles = int(
+        os.environ.get("FIREVIEWER_VALIDATION_MONOLITHIC_MAX_TILES", "9")
+    )
+    should_export = policy == "required" or (
+        policy == "auto"
+        and isinstance(tile_count, int)
+        and not isinstance(tile_count, bool)
+        and tile_count <= maximum_tiles
+    )
+    if not should_export:
+        return (
+            None,
+            {
+                "status": "skipped",
+                "policy": policy,
+                "reason": (
+                    "disabled"
+                    if policy == "off"
+                    else f"tile_count_exceeds_{maximum_tiles}"
+                ),
+            },
+            tiled_receipt,
+            tiled_viewer,
+        )
+
     script_name = os.environ.get(
         "FIREVIEWER_VALIDATION_VIEWER_SCRIPT",
         "export_complete_viewer_glb.py",
@@ -222,36 +275,119 @@ def _run_viewer_export(
     timeout = int(
         os.environ.get("FIREVIEWER_VALIDATION_VIEWER_TIMEOUT_SECONDS", "1800")
     )
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        if policy == "required":
+            raise MapValidationJobError("monolithic viewer oracle timed out") from error
+        return (
+            None,
+            {
+                "status": "failed_non_blocking",
+                "policy": policy,
+                "reason": "timeout",
+                "timeout_seconds": timeout,
+            },
+            tiled_receipt,
+            tiled_viewer,
+        )
     if result.returncode != 0:
-        raise MapValidationJobError(
-            "viewer export failed:\n"
-            + (result.stdout + "\n" + result.stderr)[-5000:]
+        details = (result.stdout + "\n" + result.stderr)[-5000:]
+        if policy == "required":
+            raise MapValidationJobError(
+                "monolithic viewer oracle failed:\n" + details
+            )
+        return (
+            None,
+            {
+                "status": "failed_non_blocking",
+                "policy": policy,
+                "reason": "export_failed",
+                "returncode": result.returncode,
+                "log_tail": details,
+            },
+            tiled_receipt,
+            tiled_viewer,
         )
     receipt_path = job_root / VIEWER_RECEIPT_NAME
     if not receipt_path.is_file():
-        raise MapValidationJobError("viewer export completed without its receipt")
+        if policy == "required":
+            raise MapValidationJobError(
+                "monolithic viewer oracle completed without its receipt"
+            )
+        return (
+            None,
+            {
+                "status": "failed_non_blocking",
+                "policy": policy,
+                "reason": "receipt_missing",
+            },
+            tiled_receipt,
+            tiled_viewer,
+        )
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise MapValidationJobError("viewer receipt is invalid") from error
+        if policy == "required":
+            raise MapValidationJobError(
+                "monolithic viewer oracle receipt is invalid"
+            ) from error
+        return (
+            None,
+            {
+                "status": "failed_non_blocking",
+                "policy": policy,
+                "reason": "receipt_invalid",
+            },
+            tiled_receipt,
+            tiled_viewer,
+        )
     if not isinstance(receipt, dict):
-        raise MapValidationJobError("viewer receipt is invalid")
-    viewer = _validate_complete_viewer(job_root, zone_receipt, receipt)
-    build_tiled_viewer_package(job_root)
+        if policy == "required":
+            raise MapValidationJobError(
+                "monolithic viewer oracle receipt is invalid"
+            )
+        return (
+            None,
+            {
+                "status": "failed_non_blocking",
+                "policy": policy,
+                "reason": "receipt_invalid",
+            },
+            tiled_receipt,
+            tiled_viewer,
+        )
     try:
-        tiled_receipt, tiled_viewer = validate_tiled_viewer_package(job_root)
+        viewer = _validate_complete_viewer(job_root, zone_receipt, receipt)
     except Exception as error:
-        raise MapValidationJobError("tiled viewer package is invalid") from error
-    return receipt, viewer, tiled_receipt, tiled_viewer
+        if policy == "required":
+            raise MapValidationJobError(
+                "monolithic viewer oracle is incomplete"
+            ) from error
+        return (
+            receipt,
+            {
+                "status": "failed_non_blocking",
+                "policy": policy,
+                "reason": "validation_failed",
+            },
+            tiled_receipt,
+            tiled_viewer,
+        )
+    return (
+        receipt,
+        {"status": "complete", "policy": policy, "viewer": viewer},
+        tiled_receipt,
+        tiled_viewer,
+    )
 
 
 def _publish_complete_viewer_public(
@@ -270,20 +406,21 @@ def _publish_complete_viewer_public(
     if getattr(info, "private", None) is not False:
         raise MapValidationJobError("map dataset must be public")
     remote_root = f"maps/{zone_id}/{build_id}/runtime"
-    names = (VIEWER_RECEIPT_NAME, f"{TILED_OUTPUT_DIRECTORY}/**")
+    names = [f"{TILED_OUTPUT_DIRECTORY}/**"]
+    if (job_root / VIEWER_RECEIPT_NAME).is_file():
+        names.append(VIEWER_RECEIPT_NAME)
     commit = api.upload_folder(
         repo_id=dataset_id,
         repo_type="dataset",
         folder_path=str(job_root),
         path_in_repo=remote_root,
-        allow_patterns=list(names),
+        allow_patterns=names,
         commit_message=f"Publish complete FireViewer runtime {zone_id}",
     )
     oid = getattr(commit, "oid", None)
     if not isinstance(oid, str) or not oid:
         raise MapValidationJobError("viewer publication revision is missing")
     required = (
-        VIEWER_RECEIPT_NAME,
         str(viewer["catalog_path"]),
         str(viewer["receipt_path"]),
         str(viewer["bootstrap_asset"]["path"]),

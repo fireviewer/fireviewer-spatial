@@ -25,12 +25,6 @@ from typing import Any
 import httpx
 import simple_production_engine as production_engine
 
-from export_complete_viewer_glb import (
-    GLB_NAME,
-    RECEIPT_NAME,
-    SCHEMA as VIEWER_SCHEMA,
-    STATUS as VIEWER_STATUS,
-)
 from build_tiled_viewer_package import (
     OUTPUT_DIRECTORY as TILED_OUTPUT_DIRECTORY,
     build_tiled_viewer_package,
@@ -323,40 +317,20 @@ def _export_viewer(
     callback: CallbackClient,
     tile_count: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    def heartbeat(elapsed: float) -> None:
-        callback.progress(
-            0.967,
-            f"Export viewer Blender en cours · {int(elapsed)} s",
-            phase="viewer_export_blender",
-            current_tile=tile_count,
-            tile_count=tile_count,
-            force=True,
-        )
-
-    _run_blender_script(
-        config,
-        job_root,
-        "export_complete_viewer_glb.py",
-        heartbeat=heartbeat,
+    callback.progress(
+        0.967,
+        "Construction directe du viewer tuilé depuis la zone scellée",
+        phase="viewer_export_tiled",
+        current_tile=tile_count,
+        tile_count=tile_count,
+        force=True,
     )
-    receipt_path = job_root / RECEIPT_NAME
-    glb_path = job_root / GLB_NAME
-    if not receipt_path.is_file() or not glb_path.is_file():
-        raise LightningMapContractError("Artefacts viewer complets absents")
-    receipt = _load_json(receipt_path, "Reçu viewer")
-    completeness = receipt.get("completeness")
-    viewer = receipt.get("viewer")
-    if (
-        receipt.get("schema") != VIEWER_SCHEMA
-        or receipt.get("status") != VIEWER_STATUS
-        or not isinstance(viewer, Mapping)
-        or viewer.get("sha256") != _sha256_file(glb_path)
-        or not isinstance(completeness, Mapping)
-        or completeness.get("mesh_coverage") != "complete"
-    ):
-        raise LightningMapContractError("Reçu de complétude viewer invalide")
     try:
-        build_tiled_viewer_package(job_root)
+        build_tiled_viewer_package(
+            job_root,
+            blender=config.blender,
+            timeout_seconds=BLENDER_SCRIPT_TIMEOUT_SECONDS,
+        )
         tiled_receipt, tiled_viewer = validate_tiled_viewer_package(job_root)
     except Exception as error:
         raise LightningMapContractError(

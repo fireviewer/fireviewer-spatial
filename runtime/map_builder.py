@@ -178,12 +178,19 @@ def publish_output(
         raise MapBuilderContractError(f"output directory is not empty: {output_root}")
     output_root.mkdir(parents=True, exist_ok=True)
 
-    _copy_file(job_root / "viewer.glb", output_root / "runtime" / "viewer.glb")
-    _copy_file(
-        job_root / "viewer-scene.v1.json",
-        output_root / "runtime" / "viewer-scene.v1.json",
-    )
     _copy_directory(job_root / "viewer-tiled", output_root / "runtime" / "viewer-tiled")
+    monolithic_viewer = job_root / "viewer.glb"
+    monolithic_receipt = job_root / "viewer-scene.v1.json"
+    if monolithic_viewer.is_file() != monolithic_receipt.is_file():
+        raise MapBuilderContractError(
+            "monolithic viewer oracle and receipt must either both exist or both be absent"
+        )
+    if monolithic_viewer.is_file():
+        _copy_file(monolithic_viewer, output_root / "runtime" / "viewer.glb")
+        _copy_file(
+            monolithic_receipt,
+            output_root / "runtime" / "viewer-scene.v1.json",
+        )
     _copy_file(job_root / "zone.usda", output_root / "scientific" / "zone.usda")
     _copy_file(job_root / "zone.blend", output_root / "scientific" / "zone.blend")
     _copy_directory(job_root / "packages", output_root / "packages")

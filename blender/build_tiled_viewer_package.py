@@ -1,9 +1,10 @@
-"""Split the exact canonical viewer GLB into streamable, lossless tile assets.
+"""Build the canonical tiled viewer directly from the sealed zone package.
 
-The monolithic GLB remains the build-time completeness oracle.  This module
-extracts every terrain mesh and every real prototype without recompressing or
-decimating their geometry, materials or images.  Only instance transforms are
-partitioned by their owning 500 m tile and stored in a compact binary container.
+Terrain comes from each sealed ``terrain.fvtg`` and orthophoto, instance
+transforms come from each tile ``scene.usda``, and shared prototypes are
+extracted once from the sealed ``zone.blend``.  The monolithic ``viewer.glb``
+is supported only by the explicit legacy helper used as a small-map test
+oracle; it is not an input of the production tiled package.
 """
 
 from __future__ import annotations
@@ -30,6 +31,10 @@ INSTANCE_SCHEMA = "fireviewer.canonical-tile-instances.v1"
 OUTPUT_DIRECTORY = "viewer-tiled"
 CATALOG_NAME = "catalog.json"
 RECEIPT_NAME = "viewer-tiled-scene.v1.json"
+PROTOTYPE_PLAN_NAME = "prototype-export-plan.v1.json"
+PROTOTYPE_EXPORT_NAME = "prototype-export.v1.json"
+PROTOTYPE_PLAN_SCHEMA = "fireviewer.tiled-prototype-export-plan.v1"
+PROTOTYPE_EXPORT_SCHEMA = "fireviewer.tiled-prototype-export.v1"
 INSTANCE_MAGIC = b"FVINST1\0"
 INSTANCE_VERSION = 1
 INSTANCE_RECORD = struct.Struct("<10f")
@@ -532,10 +537,10 @@ def _extract_mesh(
 
 
 class _FarGlb:
-    def __init__(self) -> None:
+    def __init__(self, *, generator: str = "FireViewer canonical FAR LOD") -> None:
         self.binary = bytearray()
         self.gltf: dict[str, Any] = {
-            "asset": {"version": "2.0", "generator": "FireViewer canonical FAR LOD"},
+            "asset": {"version": "2.0", "generator": generator},
             "scene": 0,
             "scenes": [{"nodes": []}],
             "nodes": [],
@@ -615,6 +620,7 @@ class _FarGlb:
         texcoords: Sequence[Sequence[float]],
         indices: Sequence[int],
         image: bytes,
+        image_mime: str = "image/jpeg",
     ) -> None:
         position_accessor = self.accessor(
             positions, component_type=5126, kind="VEC3", target=34962
@@ -639,7 +645,7 @@ class _FarGlb:
         nodes = self.gltf["nodes"]
         scenes = self.gltf["scenes"]
         assert all(isinstance(value, list) for value in (images, textures, materials, meshes, nodes, scenes))
-        images.append({"name": f"FAR {tile_id}", "mimeType": "image/jpeg", "bufferView": image_view})
+        images.append({"name": f"FAR {tile_id}", "mimeType": image_mime, "bufferView": image_view})
         image_index = len(images) - 1
         textures.append({"sampler": 0, "source": image_index})
         texture_index = len(textures) - 1
@@ -1021,6 +1027,75 @@ def _expected_counts(zone_receipt: Mapping[str, Any]) -> dict[str, int]:
     return {name: int(value) for name, value in counts.items()}
 
 
+def _validate_source_asset(root: Path, raw: object, label: str) -> None:
+    if not isinstance(raw, Mapping):
+        raise TiledViewerPackageError(f"Source scellée absente: {label}")
+    relative = raw.get("path")
+    if not isinstance(relative, str) or "\\" in relative:
+        raise TiledViewerPackageError(f"Chemin de source invalide: {label}")
+    posix_path = PurePosixPath(relative)
+    if posix_path.is_absolute() or any(
+        part in {"", ".", ".."} for part in posix_path.parts
+    ):
+        raise TiledViewerPackageError(f"Source non confinée: {label}")
+    path = root.joinpath(*posix_path.parts)
+    if (
+        not path.is_file()
+        or raw.get("sha256") != _sha256_file(path)
+        or raw.get("byte_count") != path.stat().st_size
+    ):
+        raise TiledViewerPackageError(f"Source scellée divergente: {label}")
+
+
+def _read_instance_header(path: Path) -> tuple[dict[str, Any], int]:
+    with path.open("rb") as stream:
+        prefix = stream.read(len(INSTANCE_MAGIC) + 8)
+        if len(prefix) != len(INSTANCE_MAGIC) + 8 or prefix[:8] != INSTANCE_MAGIC:
+            raise TiledViewerPackageError(f"En-tête FVI invalide: {path.name}")
+        version, reserved, header_size = struct.unpack_from("<HHI", prefix, 8)
+        if version != INSTANCE_VERSION or reserved != 0 or header_size <= 0:
+            raise TiledViewerPackageError(f"Version FVI invalide: {path.name}")
+        try:
+            header = json.loads(stream.read(header_size).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise TiledViewerPackageError(f"JSON FVI invalide: {path.name}") from error
+        payload_size = path.stat().st_size - len(prefix) - header_size
+    if not isinstance(header, dict):
+        raise TiledViewerPackageError(f"En-tête FVI non objet: {path.name}")
+    record_count = header.get("record_count")
+    if (
+        header.get("schema") != INSTANCE_SCHEMA
+        or header.get("record_stride_bytes") != INSTANCE_RECORD.size
+        or isinstance(record_count, bool)
+        or not isinstance(record_count, int)
+        or record_count < 0
+        or payload_size != record_count * INSTANCE_RECORD.size
+    ):
+        raise TiledViewerPackageError(f"Payload FVI incohérent: {path.name}")
+    return header, record_count
+
+
+def _validate_self_contained_glb(path: Path) -> None:
+    gltf, _binary = _read_glb(path)
+    buffers = gltf.get("buffers")
+    images = gltf.get("images", [])
+    if (
+        not isinstance(buffers, list)
+        or any(
+            not isinstance(buffer, Mapping) or buffer.get("uri") is not None
+            for buffer in buffers
+        )
+        or not isinstance(images, list)
+        or any(
+            not isinstance(image, Mapping)
+            or image.get("uri") is not None
+            or not isinstance(image.get("bufferView"), int)
+            for image in images
+        )
+    ):
+        raise TiledViewerPackageError(f"GLB avec dépendance externe: {path.name}")
+
+
 def validate_tiled_viewer_package(
     job_root: Path | str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1028,22 +1103,15 @@ def validate_tiled_viewer_package(
 
     root = Path(job_root).resolve(strict=True)
     tiled_root = root / OUTPUT_DIRECTORY
-    viewer_path = root / "viewer.glb"
-    viewer_receipt = _load_json(root / "viewer-scene.v1.json", "reçu viewer")
     zone_receipt = _load_json(root / "zone.done.json", "reçu de zone")
     receipt = _load_json(tiled_root / RECEIPT_NAME, "reçu viewer tuilé")
     catalog_path = tiled_root / CATALOG_NAME
     catalog = _load_json(catalog_path, "catalogue viewer tuilé")
     expected = _expected_counts(zone_receipt)
-    source_viewer = viewer_receipt.get("viewer")
     catalog_reference = receipt.get("catalog")
     canonical = catalog.get("canonical")
     if (
-        not viewer_path.is_file()
-        or not isinstance(source_viewer, Mapping)
-        or source_viewer.get("sha256") != _sha256_file(viewer_path)
-        or source_viewer.get("byte_count") != viewer_path.stat().st_size
-        or receipt.get("schema") != RECEIPT_SCHEMA
+        receipt.get("schema") != RECEIPT_SCHEMA
         or receipt.get("status") != "complete"
         or receipt.get("family_instance_counts") != expected
         or not isinstance(catalog_reference, Mapping)
@@ -1055,12 +1123,38 @@ def validate_tiled_viewer_package(
         or canonical.get("representation") != "complete_non_simplified_map"
         or canonical.get("policy") != "fail_closed_exact_visual_scene"
         or canonical.get("family_instance_counts") != expected
-        or canonical.get("source_viewer_sha256") != source_viewer.get("sha256")
-        or canonical.get("source_viewer_byte_count") != source_viewer.get("byte_count")
     ):
-        raise TiledViewerPackageError(
-            "Le paquet tuilé diverge du viewer canonique complet"
-        )
+        raise TiledViewerPackageError("Le paquet viewer tuilé est incomplet")
+
+    sealed_source = canonical.get("source")
+    direct_source = isinstance(sealed_source, Mapping)
+    if direct_source:
+        if (
+            sealed_source.get("kind") != "sealed_zone_and_tile_packages"
+            or receipt.get("source") != sealed_source
+            or sealed_source.get("tile_package_count")
+            != len(_tile_records(zone_receipt))
+        ):
+            raise TiledViewerPackageError("Provenance scellée du viewer invalide")
+        _validate_source_asset(root, sealed_source.get("zone_receipt"), "zone")
+        _validate_source_asset(root, sealed_source.get("stage_layout"), "layout")
+        _validate_source_asset(root, sealed_source.get("zone_blend"), "zone.blend")
+    else:
+        viewer_path = root / "viewer.glb"
+        viewer_receipt = _load_json(root / "viewer-scene.v1.json", "reçu viewer")
+        source_viewer = viewer_receipt.get("viewer")
+        if (
+            not viewer_path.is_file()
+            or not isinstance(source_viewer, Mapping)
+            or source_viewer.get("sha256") != _sha256_file(viewer_path)
+            or source_viewer.get("byte_count") != viewer_path.stat().st_size
+            or canonical.get("source_viewer_sha256") != source_viewer.get("sha256")
+            or canonical.get("source_viewer_byte_count")
+            != source_viewer.get("byte_count")
+        ):
+            raise TiledViewerPackageError(
+                "Le paquet tuilé diverge du viewer monolithique oracle"
+            )
 
     raw_assets: list[Mapping[str, Any]] = []
     far = catalog.get("far")
@@ -1071,21 +1165,75 @@ def validate_tiled_viewer_package(
     tiles = catalog.get("tiles")
     if not isinstance(prototypes, list) or not isinstance(tiles, list):
         raise TiledViewerPackageError("L'inventaire du viewer tuilé est invalide")
+    prototype_ids: set[str] = set()
+    prototype_family_counts = {family: 0 for family in FAMILY_ROOTS}
     for prototype in prototypes:
         if not isinstance(prototype, Mapping) or not isinstance(
             prototype.get("asset"), Mapping
         ):
             raise TiledViewerPackageError("Prototype du viewer tuilé invalide")
+        prototype_id = prototype.get("id")
+        family = prototype.get("family")
+        instance_count = prototype.get("instance_count")
+        if (
+            not isinstance(prototype_id, str)
+            or prototype_id in prototype_ids
+            or family not in FAMILY_ROOTS
+            or isinstance(instance_count, bool)
+            or not isinstance(instance_count, int)
+            or instance_count < 0
+        ):
+            raise TiledViewerPackageError("Inventaire des prototypes incohérent")
+        prototype_ids.add(prototype_id)
+        prototype_family_counts[str(family)] += instance_count
         raw_assets.append(prototype["asset"])
+    if prototype_family_counts != expected:
+        raise TiledViewerPackageError("Comptages par prototype incomplets")
+    zone_tiles = _tile_records(zone_receipt)
+    seen_tiles: set[str] = set()
+    tiled_family_counts = {family: 0 for family in FAMILY_ROOTS}
     for tile in tiles:
         if not isinstance(tile, Mapping):
             raise TiledViewerPackageError("Tuile du viewer tuilé invalide")
+        tile_id = tile.get("id")
+        source_tile = zone_tiles.get(tile_id) if isinstance(tile_id, str) else None
+        if source_tile is None or tile_id in seen_tiles:
+            raise TiledViewerPackageError("Identité de tuile viewer invalide")
+        seen_tiles.add(tile_id)
+        west, south = source_tile["origin_l93_m"]
+        source_counts = {
+            "buildings": source_tile.get("building_count"),
+            "trees": source_tile.get("tree_count"),
+            "context_assets": source_tile.get("context_asset_count", 0),
+        }
+        actual_tile_counts = tile.get("family_instance_counts")
+        if (
+            tile.get("bounds_l93_m")
+            != [west, south, west + TILE_SIZE_M, south + TILE_SIZE_M]
+            or tile.get("source_family_instance_counts") != source_counts
+            or not isinstance(actual_tile_counts, Mapping)
+            or set(actual_tile_counts) != set(FAMILY_ROOTS)
+            or any(
+                isinstance(count, bool) or not isinstance(count, int) or count < 0
+                for count in actual_tile_counts.values()
+            )
+            or (direct_source and actual_tile_counts != source_counts)
+            or not isinstance(tile.get("prototype_ids"), list)
+            or not set(tile["prototype_ids"]).issubset(prototype_ids)
+        ):
+            raise TiledViewerPackageError(
+                f"Tuile viewer divergente de la source scellée: {tile_id}"
+            )
+        for family, count in actual_tile_counts.items():
+            tiled_family_counts[family] += int(count)
         for name in ("terrain", "instances"):
             if not isinstance(tile.get(name), Mapping):
                 raise TiledViewerPackageError(
                     f"Payload {name} du viewer tuilé absent"
                 )
             raw_assets.append(tile[name])
+    if seen_tiles != set(zone_tiles) or tiled_family_counts != expected:
+        raise TiledViewerPackageError("Couverture des tuiles viewer incomplète")
 
     seen: set[str] = set()
     payload_bytes = 0
@@ -1115,7 +1263,57 @@ def validate_tiled_viewer_package(
             or sha256 != _sha256_file(path)
         ):
             raise TiledViewerPackageError(f"Payload tuilé divergent: {relative}")
+        if asset.get("media_type") == "model/gltf-binary":
+            _validate_self_contained_glb(path)
         payload_bytes += byte_count
+    if direct_source:
+        for prototype in prototypes:
+            prototype_asset = prototype["asset"]
+            prototype_path = tiled_root.joinpath(
+                *PurePosixPath(prototype_asset["path"]).parts
+            )
+            gltf, _binary = _read_glb(prototype_path)
+            mesh_nodes = [
+                node
+                for node in gltf.get("nodes", [])
+                if isinstance(node, Mapping) and "mesh" in node
+            ]
+            if not mesh_nodes:
+                raise TiledViewerPackageError("Prototype viewer sans mesh")
+            identity_matrix = [
+                1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1
+            ]
+            for node in mesh_nodes:
+                if (
+                    node.get("translation", [0, 0, 0]) != [0, 0, 0]
+                    or node.get("rotation", [0, 0, 0, 1]) != [0, 0, 0, 1]
+                    or node.get("scale", [1, 1, 1]) != [1, 1, 1]
+                    or node.get("matrix", identity_matrix) != identity_matrix
+                ):
+                    raise TiledViewerPackageError(
+                        "Transform de prototype non figé avant instanciation"
+                    )
+    for tile in tiles:
+        instance_path = tiled_root.joinpath(
+            *PurePosixPath(tile["instances"]["path"]).parts
+        )
+        header, record_count = _read_instance_header(instance_path)
+        expected_tile_count = sum(tile["family_instance_counts"].values())
+        groups = header.get("groups")
+        if (
+            header.get("tile_id") != tile.get("id")
+            or header.get("family_counts") != tile.get("family_instance_counts")
+            or record_count != expected_tile_count
+            or not isinstance(groups, list)
+            or any(
+                not isinstance(group, Mapping)
+                or group.get("prototype_id") not in prototype_ids
+                for group in groups
+            )
+        ):
+            raise TiledViewerPackageError(
+                f"Instances FVI divergentes: {tile.get('id')}"
+            )
     if (
         catalog.get("prototype_count") != len(prototypes)
         or catalog.get("tile_count") != len(tiles)
@@ -1125,6 +1323,12 @@ def validate_tiled_viewer_package(
         or receipt.get("payload_byte_count") != payload_bytes
     ):
         raise TiledViewerPackageError("Totaux du paquet viewer tuilé invalides")
+    receipt_without_hash = dict(receipt)
+    observed_receipt_hash = receipt_without_hash.pop("receipt_sha256", None)
+    if observed_receipt_hash != hashlib.sha256(
+        _canonical_bytes(receipt_without_hash)
+    ).hexdigest():
+        raise TiledViewerPackageError("Hash du reçu viewer tuilé invalide")
 
     bootstrap_asset = dict(far["asset"])
     bootstrap_asset["path"] = f"{OUTPUT_DIRECTORY}/{bootstrap_asset['path']}"
@@ -1145,7 +1349,8 @@ def validate_tiled_viewer_package(
     }
 
 
-def build_tiled_viewer_package(job_root: Path | str) -> Path:
+def build_tiled_viewer_package_from_monolithic(job_root: Path | str) -> Path:
+    """Legacy small-map oracle: losslessly split an existing monolithic GLB."""
     root = Path(job_root).resolve(strict=True)
     viewer_path = root / "viewer.glb"
     viewer_receipt_path = root / "viewer-scene.v1.json"
@@ -1336,17 +1541,58 @@ def build_tiled_viewer_package(job_root: Path | str) -> Path:
     return output / RECEIPT_NAME
 
 
+def build_tiled_viewer_package(
+    job_root: Path | str,
+    *,
+    blender: Path | str,
+    timeout_seconds: int = 1_800,
+) -> Path:
+    """Build the production viewer directly from sealed zone/tile artefacts."""
+
+    from build_tiled_viewer_from_sealed import build_tiled_viewer_from_sealed
+
+    return build_tiled_viewer_from_sealed(
+        job_root, blender=blender, timeout_seconds=timeout_seconds
+    )
+
+
 def _parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     values = list(sys.argv[1:] if argv is None else argv)
     if "--" in values:
         values = values[values.index("--") + 1 :]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job-root", required=True, type=Path)
+    parser.add_argument(
+        "--blender",
+        type=Path,
+        default=os.environ.get("FIREVIEWER_BLENDER"),
+        help="Blender executable used only to export shared sealed prototypes",
+    )
+    parser.add_argument(
+        "--prototype-timeout-seconds", type=int, default=1_800
+    )
+    parser.add_argument(
+        "--from-monolithic-oracle",
+        action="store_true",
+        help="Use the legacy viewer.glb slicing path for small-map comparison only",
+    )
     return parser.parse_args(values)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    receipt = build_tiled_viewer_package(_parse_arguments(argv).job_root)
+    options = _parse_arguments(argv)
+    if options.from_monolithic_oracle:
+        receipt = build_tiled_viewer_package_from_monolithic(options.job_root)
+    else:
+        if options.blender is None:
+            raise TiledViewerPackageError(
+                "--blender ou FIREVIEWER_BLENDER est requis pour le viewer tuilé direct"
+            )
+        receipt = build_tiled_viewer_package(
+            options.job_root,
+            blender=options.blender,
+            timeout_seconds=options.prototype_timeout_seconds,
+        )
     print(json.dumps({"tiled_viewer_receipt": str(receipt)}, separators=(",", ":")))
     return 0
 
@@ -1364,5 +1610,6 @@ __all__ = [
     "SCHEMA",
     "TiledViewerPackageError",
     "build_tiled_viewer_package",
+    "build_tiled_viewer_package_from_monolithic",
     "validate_tiled_viewer_package",
 ]

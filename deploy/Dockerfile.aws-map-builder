@@ -22,6 +22,12 @@ RUN apt-get update \
     && rm -rf /tmp/aws /tmp/awscliv2.zip /var/lib/apt/lists/*
 
 COPY runtime/ /opt/fireviewer/runtime/
+COPY blender/build_tiled_viewer_package.py \
+    blender/build_tiled_viewer_from_sealed.py \
+    blender/export_tiled_viewer_prototypes.py \
+    blender/map_validation_folder.py \
+    blender/map_validation_job.py \
+    /opt/fireviewer/fireviewer-spatial/blender/
 COPY infra/aws-map-builder/scripts/execute-batch.sh /opt/fireviewer/aws/execute-batch.sh
 COPY deploy/aws-map-builder-entrypoint.sh /usr/local/bin/aws-map-builder-entrypoint
 RUN chmod 0555 /opt/fireviewer/runtime/map_builder.py \
@@ -36,6 +42,7 @@ ENV PYTHONPATH=/opt/fireviewer/runtime:/opt/fireviewer/fireviewer-spatial/blende
     FIREVIEWER_VALIDATION_REQUIRE_EVIDENCE_UPLOAD=0 \
     FIREVIEWER_VALIDATION_PUBLISH_VIEWER=0 \
     FIREVIEWER_VALIDATION_REQUIRE_VIEWER_PUBLICATION=0 \
+    FIREVIEWER_VALIDATION_MONOLITHIC_VIEWER=off \
     FIREVIEWER_VALIDATION_REQUIRE_NINE_TILES=0
 
 HEALTHCHECK NONE

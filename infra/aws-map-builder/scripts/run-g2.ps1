@@ -166,7 +166,8 @@ try {
         'manifests/manifest.json',
         'manifests/hashes.json',
         'manifests/semantic-parity.json',
-        'runtime/viewer-scene.v1.json',
+        'runtime/viewer-tiled/catalog.json',
+        'runtime/viewer-tiled/viewer-tiled-scene.v1.json',
         'metrics/build-metrics.json',
         'metrics/aws-execution-metrics.json',
         'provenance/aws-execution.json'
