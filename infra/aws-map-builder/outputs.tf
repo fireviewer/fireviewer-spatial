@@ -57,3 +57,13 @@ output "batch_job_definition_arn" {
   value       = try(aws_batch_job_definition.map_builder[0].arn, null)
   description = "Digest-pinned Map Builder job definition; null while Batch is disabled."
 }
+
+output "vercel_backend_role_arn" {
+  value       = try(aws_iam_role.vercel_backend[0].arn, null)
+  description = "Set this non-secret ARN as AWS_ROLE_ARN on the fireviewer-api Vercel project."
+}
+
+output "vercel_oidc_provider_arn" {
+  value       = local.vercel_oidc_provider_arn
+  description = "Team-scoped Vercel OIDC provider trusted by the backend role."
+}

@@ -168,6 +168,41 @@ variable "batch_image_digest" {
   }
 }
 
+variable "vercel_team_slug" {
+  description = "Vercel team slug used by the Team OIDC issuer. Null keeps the backend AWS role disabled."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.vercel_team_slug == null || can(regex("^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$", var.vercel_team_slug))
+    error_message = "vercel_team_slug must be null or the lowercase slug shown in the Vercel team URL."
+  }
+}
+
+variable "vercel_project_name" {
+  description = "Exact Vercel backend project allowed to assume the AWS map administration role."
+  type        = string
+  default     = "fireviewer-api"
+
+  validation {
+    condition     = var.vercel_project_name == "fireviewer-api"
+    error_message = "Only the fireviewer-api Vercel project is authorized for Map Builder administration."
+  }
+}
+
+variable "vercel_oidc_provider_arn" {
+  description = "Existing Team-scoped Vercel OIDC provider ARN. Leave null to create it in this stack."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.vercel_oidc_provider_arn == null || can(regex("^arn:[^:]+:iam::[0-9]{12}:oidc-provider/oidc\\.vercel\\.com/[a-z0-9-]+$", var.vercel_oidc_provider_arn))
+    error_message = "vercel_oidc_provider_arn must be a Team-scoped oidc.vercel.com provider ARN."
+  }
+}
+
 check "batch_requires_g2" {
   assert {
     condition     = !var.enable_batch || var.g2_validated

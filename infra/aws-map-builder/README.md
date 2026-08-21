@@ -25,6 +25,9 @@ AWS Batch compute environment during the initial apply.
 - monthly budget and optional percentage email notifications;
 - a launch template with encrypted, delete-on-termination volumes;
 - a GitHub OIDC role restricted to this repository and ECR publication.
+- an optional Vercel Team OIDC role restricted to the production
+  `fireviewer-api` project, immutable map requests, final S3 receipts and the
+  single Map Builder Batch queue/definition.
 
 The worker needs a short-lived public IPv4 address because it downloads public
 geospatial sources and reaches ECR/SSM. There is no Elastic IP, bastion, load
@@ -90,8 +93,39 @@ terraform plan `
   -var='aws_profile=unicorn-whodev' `
   -var='g2_validated=true' `
   -var='enable_batch=true' `
-  -var='batch_image_digest=sha256:...'
+  -var='batch_image_digest=sha256:...' `
+  -var='vercel_team_slug=charli-dev420s-projects'
 ```
+
+The Vercel team slug must come from the team URL, not from the internal
+`team_...` identifier. With the Team issuer enabled in the Vercel project,
+Terraform trusts only this exact subject:
+
+```text
+owner:<team-slug>:project:fireviewer-api:environment:production
+```
+
+The Batch worker is a generic Map Builder runtime. Incident-specific recovery
+code such as `recovery_die_v2` remains in the backend and must never be copied,
+called or configured in the worker image.
+
+After apply, configure these non-secret production variables on
+`fireviewer-api`, then redeploy the backend:
+
+```text
+AWS_ROLE_ARN                    = terraform output vercel_backend_role_arn
+FV_MAP_PRODUCTION_PROVIDER     = aws_batch
+FV_MAP_AWS_REGION              = eu-west-3
+FV_MAP_AWS_WORK_BUCKET         = terraform output work_bucket_name
+FV_MAP_AWS_BUILDS_BUCKET       = terraform output builds_bucket_name
+FV_MAP_AWS_JOB_QUEUE           = terraform output batch_job_queue_arn
+FV_MAP_AWS_JOB_DEFINITION      = terraform output batch_job_definition_arn
+FV_MAP_AWS_IMAGE_DIGEST        = sha256:3c3aef7fd7a0439971f0952cf65a8b2fdae67300f1526dcba4809d2816f88b37
+FV_MAP_AWS_BUILDER_GIT_COMMIT  = 766f157d00e15da72271ec197706c203f040fb7a
+```
+
+No AWS access key is stored in Vercel. The function exchanges its injected
+OIDC token for short-lived role credentials.
 
 The managed EC2 compute environment is locked to:
 
