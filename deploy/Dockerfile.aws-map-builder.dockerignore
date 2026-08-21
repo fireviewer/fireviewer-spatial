@@ -1,7 +1,10 @@
 **
-!fireviewer-spatial/
-!fireviewer-spatial/runtime/
-!fireviewer-spatial/runtime/**
+!runtime/
+!runtime/**
+!infra/
+!infra/aws-map-builder/
+!infra/aws-map-builder/scripts/
+!infra/aws-map-builder/scripts/execute-batch.sh
 **/__pycache__/**
 **/*.pyc
 **/.pytest_cache/**

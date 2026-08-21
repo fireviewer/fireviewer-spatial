@@ -1,0 +1,120 @@
+name: aws-map-builder-image
+
+on:
+  push:
+    tags:
+      - "map-builder-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aws-map-builder-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-3
+  ECR_REPOSITORY: fireviewer-map-builder
+  REFERENCE_IMAGE_DIGEST: sha256:64b70a0e227e68336126bf6833b2b417f34a0556685a4caf93c88d9181ae5ecf
+  BUILDER_CONTRACT_VERSION: fireviewer.map-job.v1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test provider-neutral runtime
+        run: |
+          python -m pip install --disable-pip-version-check pytest ruff
+          ruff check runtime
+          python -m pytest -q runtime/test_map_builder.py
+          python -m py_compile runtime/map_builder.py runtime/resource_monitor.py runtime/compare_semantic_parity.py
+
+  build-smoke-push:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require configured OIDC role
+        env:
+          ROLE_ARN: ${{ vars.AWS_MAP_BUILDER_ROLE_ARN }}
+        run: |
+          if [[ -z "${ROLE_ARN}" ]]; then
+            echo "Repository variable AWS_MAP_BUILDER_ROLE_ARN is required" >&2
+            exit 1
+          fi
+
+      - name: Configure temporary AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_MAP_BUILDER_ROLE_ARN }}
+          role-session-name: fireviewer-map-builder-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sign in to immutable ECR repository
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build linux/amd64 image
+        id: image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          short_sha="${GITHUB_SHA:0:12}"
+          image_tag="git-${short_sha}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          image_uri="${ECR_REGISTRY}/${ECR_REPOSITORY}:${image_tag}"
+          base_image="${ECR_REGISTRY}/${ECR_REPOSITORY}@${REFERENCE_IMAGE_DIGEST}"
+
+          docker build \
+            --platform linux/amd64 \
+            --build-arg "BASE_IMAGE=${base_image}" \
+            --build-arg "BUILDER_GIT_COMMIT=${GITHUB_SHA}" \
+            --build-arg "BUILDER_CONTRACT_VERSION=${BUILDER_CONTRACT_VERSION}" \
+            --file deploy/Dockerfile.aws-map-builder \
+            --tag "${image_uri}" \
+            .
+
+          echo "image_tag=${image_tag}" >> "${GITHUB_OUTPUT}"
+          echo "image_uri=${image_uri}" >> "${GITHUB_OUTPUT}"
+
+      - name: Smoke test image
+        run: bash infra/aws-map-builder/scripts/smoke-image.sh "${{ steps.image.outputs.image_uri }}"
+
+      - name: Push immutable image
+        id: push
+        env:
+          IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+        run: |
+          docker push "${IMAGE_URI}"
+          digest="$(aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids "imageTag=${IMAGE_TAG}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "ECR did not return an immutable digest" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "### FireViewer Map Builder image" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Git commit: \`${GITHUB_SHA}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Docker tag: \`${IMAGE_TAG}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Docker digest: \`${digest}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Builder contract: \`${BUILDER_CONTRACT_VERSION}\`" >> "${GITHUB_STEP_SUMMARY}"

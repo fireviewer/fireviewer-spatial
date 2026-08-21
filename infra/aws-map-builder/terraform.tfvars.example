@@ -10,6 +10,17 @@ scratch_volume_size_gib     = 100
 scratch_iops                = 3000
 scratch_throughput_mibps    = 125
 
-# Hard migration gates. Do not change before the direct-EC2 evidence passes.
+# The direct EC2 G2/G3 receipt passed on 2026-08-21. Batch still requires an
+# explicit opt-in so a normal foundation apply cannot create worker capacity.
 g2_validated = false
 enable_batch = false
+
+# If the account already owns this OIDC provider, pass its ARN instead of
+# asking this stack to create a duplicate. The ARN and repository name are not
+# secrets.
+github_repository         = "fireviewer/fireviewer-spatial"
+github_oidc_provider_arn  = null
+
+# Batch executes only an immutable image digest. Update deliberately after the
+# corresponding GitHub Actions image release has passed its smoke test.
+batch_image_digest = "sha256:64b70a0e227e68336126bf6833b2b417f34a0556685a4caf93c88d9181ae5ecf"

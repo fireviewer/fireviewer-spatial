@@ -23,7 +23,8 @@ AWS Batch compute environment during the initial apply.
 - least-privilege EC2 worker role plus SSM access;
 - seven-day EC2/Batch log groups;
 - monthly budget and optional percentage email notifications;
-- a launch template with encrypted, delete-on-termination volumes.
+- a launch template with encrypted, delete-on-termination volumes;
+- a GitHub OIDC role restricted to this repository and ECR publication.
 
 The worker needs a short-lived public IPv4 address because it downloads public
 geospatial sources and reaches ECR/SSM. There is no Elastic IP, bastion, load
@@ -43,9 +44,8 @@ terraform plan -var='aws_profile=unicorn-whodev' -out plans/foundation.tfplan
 terraform apply plans/foundation.tfplan
 ```
 
-Do not set `enable_batch=true`. Terraform rejects that setting while
-`g2_validated=false`. The bounded G2 runner launches one instance from the
-launch template and guarantees a termination attempt in its `finally` path.
+The bounded G2 runner launches one instance from the launch template and
+guarantees a termination attempt in its `finally` path.
 
 Run the direct gate only after the immutable image is present in ECR:
 
@@ -58,8 +58,60 @@ remain, the monthly budget is below 90%, the exact image digest is present,
 the launch template still matches the 2 vCPU/8 GiB/gp3 profile, and no other
 Map Builder instance is active.
 
+G2/G3 passed on 2026-08-21. The versioned receipt is
+`reference/map-builder-reference-v1/aws-g2-validation.json`.
+
+## GitHub Actions and OIDC
+
+On a `map-builder-*` Git tag or an explicit manual dispatch from `main`, the
+`aws-map-builder-image` workflow runs runtime tests, builds Linux/amd64,
+executes a container smoke test, pushes a unique immutable tag and records the
+exact ECR digest. It uses temporary OIDC credentials and has no access to EC2,
+Batch, S3, IAM administration or Hugging Face.
+
+After applying the OIDC role, expose its non-secret ARN to GitHub as the
+repository variable `AWS_MAP_BUILDER_ROLE_ARN`:
+
+```powershell
+terraform output -raw github_actions_role_arn
+```
+
+If `token.actions.githubusercontent.com` already exists in the AWS account,
+set `github_oidc_provider_arn` to that provider ARN so Terraform does not try
+to create a duplicate.
+
+## AWS Batch activation
+
+Batch is implemented but disabled by default. Enabling it requires both gates
+to be explicit:
+
+```powershell
+terraform plan `
+  -var='aws_profile=unicorn-whodev' `
+  -var='g2_validated=true' `
+  -var='enable_batch=true' `
+  -var='batch_image_digest=sha256:...'
+```
+
+The managed EC2 compute environment is locked to:
+
+```text
+min vCPU     = 0
+desired vCPU = 0
+max vCPU     = 2
+instance     = m7i-flex.large
+jobs         = one 2-vCPU map build at a time
+```
+
+It uses an ECS-optimised Amazon Linux 2023 worker, the same encrypted gp3
+scratch profile and the same digest-pinned image. No job means no desired
+worker capacity. The AWS-specific execution script remains separate from the
+provider-neutral Python builder.
+
 ## Publication invariant
 
 The container writes a provider-neutral output directory. The execution layer
-uploads artifacts, verifies their S3 metadata, uploads manifests, and writes
-`zone.done.json` last. A prefix without that final object is incomplete.
+performs one bulk artifact upload, compares the local/S3 object counts, then
+writes and checksum-verifies `zone.done.json` last. It does not issue a slow
+HEAD request for every artifact. A prefix without that final object is
+incomplete.

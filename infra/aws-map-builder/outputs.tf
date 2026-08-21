@@ -32,3 +32,28 @@ output "batch_enabled" {
   value       = local.batch_activation_requested
   description = "Always false before G2/G3 are explicitly validated."
 }
+
+output "github_actions_role_arn" {
+  value       = aws_iam_role.github_actions_ecr.arn
+  description = "Set this non-secret ARN as the GitHub variable AWS_MAP_BUILDER_ROLE_ARN."
+}
+
+output "github_oidc_provider_arn" {
+  value       = local.github_oidc_provider_arn
+  description = "GitHub Actions OIDC provider used by the ECR publishing role."
+}
+
+output "batch_compute_environment_arn" {
+  value       = try(aws_batch_compute_environment.map_builder[0].arn, null)
+  description = "Managed EC2 Batch compute environment; null while Batch is disabled."
+}
+
+output "batch_job_queue_arn" {
+  value       = try(aws_batch_job_queue.map_builder[0].arn, null)
+  description = "Single-worker Batch queue; null while Batch is disabled."
+}
+
+output "batch_job_definition_arn" {
+  value       = try(aws_batch_job_definition.map_builder[0].arn, null)
+  description = "Digest-pinned Map Builder job definition; null while Batch is disabled."
+}

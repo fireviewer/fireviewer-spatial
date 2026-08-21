@@ -123,6 +123,51 @@ variable "g2_validated" {
   default     = false
 }
 
+variable "github_repository" {
+  description = "GitHub owner/repository allowed to publish immutable Map Builder images."
+  type        = string
+  default     = "fireviewer/fireviewer-spatial"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
+    error_message = "github_repository must use the owner/repository form."
+  }
+}
+
+variable "github_oidc_provider_arn" {
+  description = "Existing GitHub OIDC provider ARN. Leave null to create it in this stack."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.github_oidc_provider_arn == null || can(regex("^arn:[^:]+:iam::[0-9]{12}:oidc-provider/token\\.actions\\.githubusercontent\\.com$", var.github_oidc_provider_arn))
+    error_message = "github_oidc_provider_arn must be the token.actions.githubusercontent.com provider ARN."
+  }
+}
+
+variable "github_oidc_thumbprint" {
+  description = "Root CA SHA-1 thumbprint used when Terraform creates the GitHub OIDC provider."
+  type        = string
+  default     = "6938fd4d98bab03faadb97b34396831e3780aea1"
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.github_oidc_thumbprint))
+    error_message = "github_oidc_thumbprint must be a lowercase SHA-1 hex digest."
+  }
+}
+
+variable "batch_image_digest" {
+  description = "Exact immutable Map Builder image digest used by the Batch job definition."
+  type        = string
+  default     = "sha256:64b70a0e227e68336126bf6833b2b417f34a0556685a4caf93c88d9181ae5ecf"
+
+  validation {
+    condition     = can(regex("^sha256:[0-9a-f]{64}$", var.batch_image_digest))
+    error_message = "batch_image_digest must be a full sha256 digest."
+  }
+}
+
 check "batch_requires_g2" {
   assert {
     condition     = !var.enable_batch || var.g2_validated

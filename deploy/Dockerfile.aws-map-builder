@@ -3,17 +3,29 @@ FROM ${BASE_IMAGE}
 
 ARG BUILDER_GIT_COMMIT=766f157d00e15da72271ec197706c203f040fb7a
 ARG BUILDER_CONTRACT_VERSION=fireviewer.map-job.v1
+ARG AWS_CLI_VERSION=2.36.28
 
 LABEL org.opencontainers.image.title="FireViewer Map Builder" \
       org.opencontainers.image.revision="${BUILDER_GIT_COMMIT}" \
       fireviewer.builder.contract="${BUILDER_CONTRACT_VERSION}" \
       fireviewer.builder.reference="map-builder-reference-v1"
 
-# This layer is only a provider-neutral runtime adapter.  The frozen spatial
-# engine and embedded real asset library remain byte-identical in BASE_IMAGE.
-COPY fireviewer-spatial/runtime/ /opt/fireviewer/runtime/
+# The runtime directory is provider-neutral. The AWS execution adapter is kept
+# in a separate path and is invoked only by the Batch job definition.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && curl --fail --silent --show-error --location \
+      "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip" \
+      --output /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/aws /tmp/awscliv2.zip /var/lib/apt/lists/*
+
+COPY runtime/ /opt/fireviewer/runtime/
+COPY infra/aws-map-builder/scripts/execute-batch.sh /opt/fireviewer/aws/execute-batch.sh
 RUN chmod 0555 /opt/fireviewer/runtime/map_builder.py \
-    && ln -s /opt/fireviewer/runtime/map_builder.py /usr/local/bin/map-builder
+    /opt/fireviewer/aws/execute-batch.sh \
+    && ln -sfn /opt/fireviewer/runtime/map_builder.py /usr/local/bin/map-builder
 
 ENV PYTHONPATH=/opt/fireviewer/runtime:/opt/fireviewer/fireviewer-spatial/blender:/opt/fireviewer/fireviewer-spatial/omniverse \
     FIREVIEWER_VALIDATION_REQUEST_JSON="" \
