@@ -160,7 +160,7 @@ variable "github_oidc_thumbprint" {
 variable "batch_image_digest" {
   description = "Exact immutable Map Builder image digest used by the Batch job definition."
   type        = string
-  default     = "sha256:64b70a0e227e68336126bf6833b2b417f34a0556685a4caf93c88d9181ae5ecf"
+  default     = "sha256:3c3aef7fd7a0439971f0952cf65a8b2fdae67300f1526dcba4809d2816f88b37"
 
   validation {
     condition     = can(regex("^sha256:[0-9a-f]{64}$", var.batch_image_digest))

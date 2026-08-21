@@ -21,6 +21,6 @@ enable_batch = false
 github_repository         = "fireviewer/fireviewer-spatial"
 github_oidc_provider_arn  = null
 
-# Batch executes only an immutable image digest. Update deliberately after the
-# corresponding GitHub Actions image release has passed its smoke test.
-batch_image_digest = "sha256:64b70a0e227e68336126bf6833b2b417f34a0556685a4caf93c88d9181ae5ecf"
+# Batch executes only the immutable image digest produced by the validated
+# local build and smoke-test release path.
+batch_image_digest = "sha256:3c3aef7fd7a0439971f0952cf65a8b2fdae67300f1526dcba4809d2816f88b37"
