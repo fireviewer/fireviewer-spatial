@@ -223,3 +223,117 @@ resource "aws_batch_job_definition" "map_builder" {
     attempt_duration_seconds = 7200
   }
 }
+
+resource "aws_batch_job_definition" "map_viewer_exporter" {
+  count = local.batch_activation_requested ? 1 : 0
+
+  name                  = "${var.name_prefix}-hf-exporter"
+  type                  = "container"
+  platform_capabilities = ["EC2"]
+  propagate_tags        = true
+
+  parameters = {
+    image_digest   = var.batch_image_digest
+    job_id         = "REQUIRED"
+    receipt_s3_uri = "REQUIRED"
+    repo_id        = var.hf_dataset_id
+    source_s3_uri  = "REQUIRED"
+  }
+
+  container_properties = jsonencode({
+    image            = "${aws_ecr_repository.map_builder.repository_url}@${var.batch_image_digest}"
+    jobRoleArn       = aws_iam_role.batch_hf_job[0].arn
+    executionRoleArn = aws_iam_role.batch_hf_execution[0].arn
+    command = [
+      "/opt/fireviewer/aws/execute-hf-export.sh",
+      "--source-s3-uri",
+      "Ref::source_s3_uri",
+      "--receipt-s3-uri",
+      "Ref::receipt_s3_uri",
+      "--repo-id",
+      "Ref::repo_id",
+      "--job-id",
+      "Ref::job_id",
+      "--image-digest",
+      "Ref::image_digest",
+    ]
+    environment = [
+      { name = "AWS_DEFAULT_REGION", value = local.region },
+      { name = "TMPDIR", value = "/scratch/tmp" },
+      { name = "TMP", value = "/scratch/tmp" },
+      { name = "TEMP", value = "/scratch/tmp" },
+      { name = "XDG_CACHE_HOME", value = "/scratch/cache" },
+      { name = "HF_XET_CACHE", value = "/scratch/hf-xet" },
+      { name = "HF_XET_HIGH_PERFORMANCE", value = "1" },
+    ]
+    secrets = [
+      {
+        name      = "HF_TOKEN"
+        valueFrom = var.hf_export_token_parameter_arn
+      },
+    ]
+    linuxParameters = {
+      initProcessEnabled = true
+    }
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.batch.name
+        "awslogs-region"        = local.region
+        "awslogs-stream-prefix" = "hf-export"
+      }
+    }
+    mountPoints = [
+      {
+        sourceVolume  = "scratch"
+        containerPath = "/scratch"
+        readOnly      = false
+      },
+    ]
+    readonlyRootFilesystem = false
+    resourceRequirements = [
+      { type = "VCPU", value = "2" },
+      { type = "MEMORY", value = "2048" },
+    ]
+    volumes = [
+      {
+        name = "scratch"
+        host = { sourcePath = "/scratch/jobs" }
+      },
+    ]
+  })
+
+  retry_strategy {
+    attempts = 2
+
+    evaluate_on_exit {
+      action       = "RETRY"
+      on_exit_code = "75"
+    }
+
+    evaluate_on_exit {
+      action       = "EXIT"
+      on_exit_code = "1"
+    }
+
+    evaluate_on_exit {
+      action       = "EXIT"
+      on_exit_code = "2*"
+    }
+
+    evaluate_on_exit {
+      action       = "EXIT"
+      on_exit_code = "3*"
+    }
+  }
+
+  timeout {
+    attempt_duration_seconds = 7200
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.batch_hf_execution,
+    aws_iam_role_policy.batch_hf_execution_secret,
+    aws_iam_role_policy.batch_hf_job,
+  ]
+}

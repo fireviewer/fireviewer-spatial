@@ -1098,6 +1098,8 @@ def _validate_self_contained_glb(path: Path) -> None:
 
 def validate_tiled_viewer_package(
     job_root: Path | str,
+    *,
+    require_sealed_source_assets: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Validate every published payload and return the backend viewer descriptor."""
 
@@ -1136,9 +1138,10 @@ def validate_tiled_viewer_package(
             != len(_tile_records(zone_receipt))
         ):
             raise TiledViewerPackageError("Provenance scellée du viewer invalide")
-        _validate_source_asset(root, sealed_source.get("zone_receipt"), "zone")
-        _validate_source_asset(root, sealed_source.get("stage_layout"), "layout")
-        _validate_source_asset(root, sealed_source.get("zone_blend"), "zone.blend")
+        if require_sealed_source_assets:
+            _validate_source_asset(root, sealed_source.get("zone_receipt"), "zone")
+            _validate_source_asset(root, sealed_source.get("stage_layout"), "layout")
+            _validate_source_asset(root, sealed_source.get("zone_blend"), "zone.blend")
     else:
         viewer_path = root / "viewer.glb"
         viewer_receipt = _load_json(root / "viewer-scene.v1.json", "reçu viewer")

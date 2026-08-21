@@ -29,9 +29,12 @@ COPY blender/build_tiled_viewer_package.py \
     blender/map_validation_job.py \
     /opt/fireviewer/fireviewer-spatial/blender/
 COPY infra/aws-map-builder/scripts/execute-batch.sh /opt/fireviewer/aws/execute-batch.sh
+COPY infra/aws-map-builder/scripts/execute-hf-export.sh /opt/fireviewer/aws/execute-hf-export.sh
 COPY deploy/aws-map-builder-entrypoint.sh /usr/local/bin/aws-map-builder-entrypoint
 RUN chmod 0555 /opt/fireviewer/runtime/map_builder.py \
     /opt/fireviewer/aws/execute-batch.sh \
+    /opt/fireviewer/aws/execute-hf-export.sh \
+    /opt/fireviewer/runtime/hf_viewer_exporter.py \
     /usr/local/bin/aws-map-builder-entrypoint \
     && ln -sfn /opt/fireviewer/runtime/map_builder.py /usr/local/bin/map-builder
 

@@ -96,6 +96,7 @@ data "aws_iam_policy_document" "vercel_backend" {
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job/*",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-queue/${var.name_prefix}",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}:*",
+      "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}-hf-exporter:*",
     ]
 
     condition {
@@ -107,7 +108,7 @@ data "aws_iam_policy_document" "vercel_backend" {
     condition {
       test     = "StringEquals"
       variable = "aws:RequestTag/Component"
-      values   = ["MapBuilder"]
+      values   = ["MapBuilder", "MapViewerExporter"]
     }
   }
 
@@ -119,6 +120,7 @@ data "aws_iam_policy_document" "vercel_backend" {
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job/*",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-queue/${var.name_prefix}",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}:*",
+      "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}-hf-exporter:*",
     ]
 
     condition {
@@ -130,7 +132,7 @@ data "aws_iam_policy_document" "vercel_backend" {
     condition {
       test     = "StringEquals"
       variable = "aws:RequestTag/Component"
-      values   = ["MapBuilder"]
+      values   = ["MapBuilder", "MapViewerExporter"]
     }
   }
 
@@ -158,7 +160,7 @@ data "aws_iam_policy_document" "vercel_backend" {
     condition {
       test     = "StringEquals"
       variable = "aws:ResourceTag/Component"
-      values   = ["MapBuilder"]
+      values   = ["MapBuilder", "MapViewerExporter"]
     }
   }
 }

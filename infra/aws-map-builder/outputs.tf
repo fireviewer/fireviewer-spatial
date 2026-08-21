@@ -58,6 +58,11 @@ output "batch_job_definition_arn" {
   description = "Digest-pinned Map Builder job definition; null while Batch is disabled."
 }
 
+output "batch_hf_exporter_job_definition_arn" {
+  value       = try(aws_batch_job_definition.map_viewer_exporter[0].arn, null)
+  description = "Pinned Batch job definition used only to publish validated tiled viewers to Hugging Face."
+}
+
 output "vercel_backend_role_arn" {
   value       = try(aws_iam_role.vercel_backend[0].arn, null)
   description = "Set this non-secret ARN as AWS_ROLE_ARN on the fireviewer-api Vercel project."

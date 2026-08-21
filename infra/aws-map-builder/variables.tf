@@ -168,6 +168,29 @@ variable "batch_image_digest" {
   }
 }
 
+variable "hf_export_token_parameter_arn" {
+  description = "Existing SSM SecureString ARN containing the Hugging Face token used only by the exporter job."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.hf_export_token_parameter_arn == null || can(regex("^arn:[^:]+:ssm:eu-west-3:[0-9]{12}:parameter/[A-Za-z0-9_.\\/-]+$", var.hf_export_token_parameter_arn))
+    error_message = "hf_export_token_parameter_arn must be an eu-west-3 SSM parameter ARN."
+  }
+}
+
+variable "hf_dataset_id" {
+  description = "Public Hugging Face dataset receiving immutable tiled Map Builder runtimes."
+  type        = string
+  default     = "fireviewer/simple-measured-scenes-v1"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$", var.hf_dataset_id))
+    error_message = "hf_dataset_id must use the owner/dataset form."
+  }
+}
+
 variable "vercel_team_slug" {
   description = "Vercel team slug used by the Team OIDC issuer. Null keeps the backend AWS role disabled."
   type        = string
@@ -207,5 +230,12 @@ check "batch_requires_g2" {
   assert {
     condition     = !var.enable_batch || var.g2_validated
     error_message = "AWS Batch cannot be enabled before direct EC2 gates G2 and G3 pass."
+  }
+}
+
+check "batch_requires_hf_export_secret" {
+  assert {
+    condition     = !local.batch_activation_requested || var.hf_export_token_parameter_arn != null
+    error_message = "Enabled production Batch requires the existing Hugging Face token SSM parameter ARN."
   }
 }
