@@ -1,0 +1,63 @@
+{
+  "schema": "fireviewer.aws-g2-validation.v1",
+  "status": "PASS",
+  "observed_at": "2026-08-21T15:22:00.7038252Z",
+  "reference": {
+    "git_commit": "766f157d00e15da72271ec197706c203f040fb7a",
+    "git_tag": "map-builder-reference-v1",
+    "image_digest": "sha256:64b70a0e227e68336126bf6833b2b417f34a0556685a4caf93c88d9181ae5ecf",
+    "builder_contract": "fireviewer.map-job.v1"
+  },
+  "execution": {
+    "region": "eu-west-3",
+    "instance_type": "m7i-flex.large",
+    "ami_id": "ami-00d6895097fb473a6",
+    "launch_template_id": "lt-042b103e3b8b528d9",
+    "launch_template_version": "1",
+    "scratch": {
+      "type": "gp3",
+      "size_gib": 100,
+      "iops": 3000,
+      "throughput_mibps": 125,
+      "delete_on_termination": true
+    }
+  },
+  "semantic_parity": {
+    "status": "PASS",
+    "checks_passed": 10,
+    "checks_total": 10,
+    "build_id": "89f5a8c3898fc629f610449bc68cb30e33dc69d554544a067348745e875ecee6",
+    "viewer_byte_count": 61847836,
+    "viewer_sha256": "0e77de7701a6c134b6cfc20ac5729469bc3bbe2448965137e4546418ff592549"
+  },
+  "resources": {
+    "builder_runtime_seconds": 225.333,
+    "cpu_avg_percent": 107.221,
+    "cpu_peak_percent": 197.73,
+    "ram_cgroup_peak_gb": 2.877445,
+    "ram_system_peak_gb": 2.593754,
+    "swap_peak_gb": 0.0,
+    "oom_events": 0,
+    "oom_kill_events": 0,
+    "scratch_peak_gb_including_docker": 4.9518585205078125,
+    "disk_write_gb": 0.853458,
+    "disk_write_avg_mbps": 3.845,
+    "disk_write_peak_mbps": 152.199,
+    "io_wait_percent": 0.263,
+    "artifact_upload_seconds": 2
+  },
+  "publication": {
+    "object_count": 223,
+    "zone_done_written_last": true,
+    "zone_done_last_modified": "2026-08-21T15:21:43Z",
+    "zone_done_sha256": "c465486ab109647088b3f601818c0d1df56bf970c5f5c871db552b9298b45f30",
+    "zone_done_version_id": "OVnHpLSY.xITD1pfi1XysiVaTdfRwPVH"
+  },
+  "cleanup": {
+    "active_instances_eu_west_3": 0,
+    "active_ebs_volumes_eu_west_3": 0
+  },
+  "limitations": [
+    "The cgroup block-I/O read counter is not representative of source downloads served through the host page cache; no read-volume gate is inferred from it."
+  ]
+}

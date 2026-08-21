@@ -1,0 +1,35 @@
+{
+  "schema": "fireviewer.map-build-metrics.v1",
+  "evidence": "observed-local-docker-2026-08-21",
+  "runtime_seconds": 185.853,
+  "phase_times": {
+    "sealed_map": 147.499,
+    "viewer_export": 38.353,
+    "placement_evidence": 0.0,
+    "viewer_evidence": 0.0,
+    "viewer_publication": 0.0
+  },
+  "resources": {
+    "cpu_avg_percent": null,
+    "cpu_peak_percent": null,
+    "ram_peak_gb": null,
+    "system_ram_peak_gb": null,
+    "swap_peak_gb": null,
+    "disk_read_gb": null,
+    "disk_write_gb": null,
+    "io_wait_percent": null,
+    "scratch_peak_gb": null
+  },
+  "inputs": {
+    "request_byte_count": 119
+  },
+  "outputs": {
+    "viewer_glb_byte_count": 61847836,
+    "zone_usda_byte_count": 19977,
+    "zone_blend_byte_count": 55792679,
+    "zone_context_byte_count": 3552928
+  },
+  "tile_count": 9,
+  "object_count": 70201,
+  "resource_measurement_status": "not_captured_in_original_run; required on replay"
+}

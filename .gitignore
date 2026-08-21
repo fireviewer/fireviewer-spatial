@@ -48,3 +48,16 @@ omniverse/assets/environments/*.hdr
 *.mp4
 *.mov
 
+# Local golden-build payloads are preserved outside Git.  Only their request,
+# semantic baseline, metrics and hashes are versioned.
+reference/**/artifacts/
+
+# Terraform keeps state and operator-specific values local.  CI uses OIDC and
+# never consumes a committed credential or long-lived AWS key.
+infra/**/.terraform/
+infra/**/*.tfstate
+infra/**/*.tfstate.*
+infra/**/*.tfvars
+!infra/**/*.tfvars.example
+infra/**/plans/
+

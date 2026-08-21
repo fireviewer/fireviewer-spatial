@@ -1,0 +1,32 @@
+{
+  "schema": "fireviewer.map-semantic-baseline.v1",
+  "reference_tag": "map-builder-reference-v1",
+  "golden_build_id": "dad37cf44fc83faa6469d9483abec897d9648daece402d0e6d22f1d8cfd8887b",
+  "zone_id": "GPS-0E12F428C04E6EEE",
+  "status": "completed",
+  "tile_count": 9,
+  "counts": {
+    "trees": 70197,
+    "buildings": 4,
+    "context_assets": 0,
+    "placeholder_instances": 0,
+    "degraded_mns_tiles": 0
+  },
+  "spatial_reference": {
+    "horizontal_crs": "EPSG:2154",
+    "vertical_datum": "NGF-IGN69",
+    "up_axis": "Z",
+    "meters_per_unit": 1,
+    "bounds_l93_m": [885500.0, 6407000.0, 887000.0, 6408500.0],
+    "local_origin_l93_m": [885500.0, 6407000.0, 387.248],
+    "height_minimum_ngf_ign69_m": 387.248,
+    "height_maximum_ngf_ign69_m": 1068.498
+  },
+  "viewer": {
+    "representation": "complete_non_simplified_map",
+    "extension": "EXT_mesh_gpu_instancing",
+    "source_instance_count": 70201,
+    "mesh_coverage": "complete",
+    "external_dependencies": 0
+  }
+}

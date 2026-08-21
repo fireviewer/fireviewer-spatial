@@ -1,0 +1,7 @@
+**
+!fireviewer-spatial/
+!fireviewer-spatial/runtime/
+!fireviewer-spatial/runtime/**
+**/__pycache__/**
+**/*.pyc
+**/.pytest_cache/**

@@ -1,0 +1,15 @@
+aws_region  = "eu-west-3"
+aws_profile = "unicorn-whodev"
+
+# Optional. Terraform creates the budget without email notifications when null.
+budget_alert_email = null
+monthly_budget_usd = 10
+
+instance_type               = "m7i-flex.large"
+scratch_volume_size_gib     = 100
+scratch_iops                = 3000
+scratch_throughput_mibps    = 125
+
+# Hard migration gates. Do not change before the direct-EC2 evidence passes.
+g2_validated = false
+enable_batch = false

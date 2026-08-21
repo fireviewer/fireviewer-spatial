@@ -1,0 +1,25 @@
+{
+  "schema": "fireviewer.aws-cost-guard.v1",
+  "currency": "USD",
+  "region": "eu-west-3",
+  "quote_observed_at": "2026-08-21T07:30:00+02:00",
+  "source": "AWS Price List API",
+  "rates": {
+    "m7i-flex.large_hour": "0.1117200000",
+    "gp3_gib_month": "0.0928000000",
+    "public_ipv4_hour": "0.0050000000"
+  },
+  "calculation": {
+    "hours_per_month": "730",
+    "maximum_runtime_hours": "2",
+    "root_volume_gib": "20",
+    "scratch_volume_gib": "100",
+    "maximum_gross_run_cost_usd": "1.00"
+  },
+  "policy": {
+    "credit_reference_usd": "140",
+    "minimum_credit_fraction": "0.10",
+    "stop_at_budget_fraction": "0.90",
+    "automatic_instance_upgrade": false
+  }
+}

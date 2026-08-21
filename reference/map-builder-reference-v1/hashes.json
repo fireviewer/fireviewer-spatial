@@ -1,0 +1,16 @@
+{
+  "schema": "fireviewer.map-build-hashes.v1",
+  "algorithm": "sha256",
+  "golden_build_id": "dad37cf44fc83faa6469d9483abec897d9648daece402d0e6d22f1d8cfd8887b",
+  "artifacts": [
+    {"path": "viewer.glb", "byte_count": 61847836, "sha256": "2dcc0bcb68b74343acabdfb658a758a1d66f4c46c8084a9090a8db48da51596b"},
+    {"path": "zone.usda", "byte_count": 19977, "sha256": "4821aaa32f141a23b809669908073be5b07a5e4de5e6bd77b8dc26bc015ec322"},
+    {"path": "zone.blend", "byte_count": 55792679, "sha256": "361d1c5879a626f132cb88a91e9a9c9cb25b063906b047ae31e06c57f1fa17c9"},
+    {"path": "zone.done.json", "byte_count": 6103, "sha256": "88c5ef88801d3c54f81263fb69e50fd3176079131ebbb28314ca8b60905e0c15"},
+    {"path": "zone-plan.json", "byte_count": 1316, "sha256": "aeacb6eb41220397763298e1a94d4a8bb4bac9fe389872e53179fb359892f2b3"},
+    {"path": "zone-context.json", "byte_count": 3552928, "sha256": "e54d4c21139a8ac803f2971e0a6935238d3008eef942cf41b96d8425b453146a"},
+    {"path": "validation-result.json", "byte_count": 37314, "sha256": "abd570ec8263bb5ba16a87370944a68547de730c5ada03c402653a53ef6977e8"},
+    {"path": "manifest.json", "byte_count": 1295, "sha256": "3723c2c8f272035b30552da34295c6c3b7207665c30508d801dc930deed4bd8f"},
+    {"path": "dependency-inventory.json", "byte_count": 40028, "sha256": "bf56b0bff998e45c53b54c52ec9976770260859666a54dbfeeca530c805456dc"}
+  ]
+}

@@ -1,0 +1,29 @@
+ARG BASE_IMAGE=fireviewer-map-builder:frozen-v1-20260821
+FROM ${BASE_IMAGE}
+
+ARG BUILDER_GIT_COMMIT=766f157d00e15da72271ec197706c203f040fb7a
+ARG BUILDER_CONTRACT_VERSION=fireviewer.map-job.v1
+
+LABEL org.opencontainers.image.title="FireViewer Map Builder" \
+      org.opencontainers.image.revision="${BUILDER_GIT_COMMIT}" \
+      fireviewer.builder.contract="${BUILDER_CONTRACT_VERSION}" \
+      fireviewer.builder.reference="map-builder-reference-v1"
+
+# This layer is only a provider-neutral runtime adapter.  The frozen spatial
+# engine and embedded real asset library remain byte-identical in BASE_IMAGE.
+COPY fireviewer-spatial/runtime/ /opt/fireviewer/runtime/
+RUN chmod 0555 /opt/fireviewer/runtime/map_builder.py \
+    && ln -s /opt/fireviewer/runtime/map_builder.py /usr/local/bin/map-builder
+
+ENV PYTHONPATH=/opt/fireviewer/runtime:/opt/fireviewer/fireviewer-spatial/blender:/opt/fireviewer/fireviewer-spatial/omniverse \
+    FIREVIEWER_VALIDATION_REQUEST_JSON="" \
+    FIREVIEWER_VALIDATION_REQUEST_FILE="" \
+    FIREVIEWER_VALIDATION_CREATE_EVIDENCE=0 \
+    FIREVIEWER_VALIDATION_REQUIRE_EVIDENCE_UPLOAD=0 \
+    FIREVIEWER_VALIDATION_PUBLISH_VIEWER=0 \
+    FIREVIEWER_VALIDATION_REQUIRE_VIEWER_PUBLICATION=0 \
+    FIREVIEWER_VALIDATION_REQUIRE_NINE_TILES=0
+
+HEALTHCHECK NONE
+ENTRYPOINT ["python", "/opt/fireviewer/runtime/map_builder.py"]
+CMD ["--request", "/input/request.json", "--scratch-root", "/scratch", "--output", "/output"]
