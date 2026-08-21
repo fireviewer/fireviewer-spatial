@@ -1352,15 +1352,35 @@ def _semantic_tags(terms: set[str]) -> list[str]:
         "public_service": ("administratif", "enseignement", "mairie", "public"),
         "religious": ("chapelle", "eglise", "religieux"),
         "degraded": ("abandon", "degrade", "ruine", "vacant"),
+        "conifer": ("conifer", "douglas", "epicea", "meleze", "pin", "sapin"),
+        "broadleaf": (
+            "bouleau",
+            "charme",
+            "chataignier",
+            "chene",
+            "erable",
+            "feuill",
+            "frene",
+            "hetre",
+            "merisier",
+            "noyer",
+            "platane",
+            "robinier",
+            "tilleul",
+        ),
+        "oak": ("chene",),
         "road_safety": ("autoroute", "route", "routier", "voie"),
         "rail_signal": ("ferree", "rail", "train"),
         "hydro_bank": ("eau", "hydro", "riviere", "ruisseau"),
     }
-    return sorted(
+    tags = {
         tag
         for tag, fragments in rules.items()
         if any(fragment in joined for fragment in fragments)
-    )
+    }
+    if any(term in terms for term in ("mixte", "melange", "mixed")):
+        tags.update(("broadleaf", "conifer"))
+    return sorted(tags)
 
 
 def _candidate_category(
@@ -1371,13 +1391,9 @@ def _candidate_category(
     if family == "buildings":
         return "building"
     if family == "trees":
-        height_cm = _integer(candidate.get("height_cm"), "tree height_cm", minimum=1)
-        if (
-            library.get("schema") == REFERENCE_CATALOG_SCHEMA
-            and height_cm < 300
-            and library.get("selection_pools", {}).get("vegetation")
-        ):
-            return "vegetation"
+        # These candidates come from the measured crown detector. A short crown
+        # can be a sapling or a locally underestimated canopy; it is not evidence
+        # for replacing the tree by grass, scrub, or a natural prop.
         return "tree"
     if family == "context_assets":
         return _require_nonempty_string(
@@ -1394,6 +1410,7 @@ def _candidate_selection_metadata(
     properties = candidate.get("source_properties", {})
     properties = properties if isinstance(properties, Mapping) else {}
     terms = _metadata_terms(properties)
+    semantic_tags = _semantic_tags(terms)
     if family == "buildings":
         context = "building"
     elif family == "trees":
@@ -1405,15 +1422,27 @@ def _candidate_selection_metadata(
         classification = candidate.get("context_classification")
         if isinstance(classification, str):
             terms.update(_metadata_terms({"classification": classification}))
+        semantic_tags = [
+            tag
+            for tag in _semantic_tags(terms)
+            if tag in {"broadleaf", "conifer", "oak"}
+        ]
     else:
         context = _require_nonempty_string(
             candidate.get("selection_context"), "context selection context"
         )
-    return {
+    metadata = {
         "context": context,
-        "semantic_tags": _semantic_tags(terms),
+        "semantic_tags": semantic_tags,
         "reference_terms": sorted(terms),
     }
+    if (
+        family == "trees"
+        and candidate.get("asset_selection_policy")
+        == "current_bdtopo_composition_else_bdforet_v1_then_conifer_or_oak_only"
+    ):
+        metadata["tree_form_policy"] = "conifer_or_oak_only"
+    return metadata
 
 
 def _instance_from_candidate(
@@ -1426,10 +1455,13 @@ def _instance_from_candidate(
     prototype: _Prototype,
     terrain: TerrainReference,
 ) -> _Instance:
+    ground_value = candidate.get(
+        "support_elevation_mm", candidate.get("ground_elevation_mm")
+    )
     ground_m = (
         _integer(
-            candidate.get("ground_elevation_mm"),
-            "candidate ground_elevation_mm",
+            ground_value,
+            "candidate support/ground elevation mm",
             minimum=-2_147_483_648,
         )
         / 1000.0
@@ -1468,12 +1500,14 @@ def _instance_from_candidate(
         raise RuntimeError(f"unknown placement family: {family}")
     extents = prototype.native_extents
     if family == "trees":
-        # Crown components measure placement and height, not a license to warp an
-        # authored tree independently on each axis.  Height is the reliable HAG
-        # measurement; a uniform scale preserves the source silhouette and keeps
-        # every Y-up prototype upright after the shared axis conversion.
-        uniform_scale = height_m / extents[1]
-        scale = (uniform_scale, uniform_scale, uniform_scale)
+        if (
+            candidate.get("geometry_scale_policy")
+            == "measured_crown_diameter_x_measured_hag_height"
+        ):
+            scale = (width / extents[0], height_m / extents[1], depth / extents[2])
+        else:
+            uniform_scale = height_m / extents[1]
+            scale = (uniform_scale, uniform_scale, uniform_scale)
     elif family == "buildings":
         scale = (width / extents[0], height_m / extents[1], depth / extents[2])
     else:
@@ -2255,7 +2289,12 @@ def build_measured_scene_usd(
             "thinning_applied": False,
             "fallback_primitive_used": False,
             "catalog_placeholder_usd_used": placeholder_instance_count > 0,
-            "tree_scale": "uniform_from_mns_mnt_height",
+            "tree_scale": inventory.get("trees", {}).get(
+                "geometry_scale_policy", "uniform_from_mns_mnt_height"
+            ),
+            "tree_base_elevation": inventory.get("trees", {}).get(
+                "base_elevation_policy", "point_mnt_ground_elevation"
+            ),
             "tree_yaw": "deterministic_selection_seed",
             "non_uniform_building_scale_candidate_ids": non_uniform_buildings,
             "catalogue_entries_consumed": False,

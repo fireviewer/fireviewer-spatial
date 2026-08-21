@@ -359,10 +359,19 @@ def run() -> dict[str, Any]:
         max_side_m=config.max_side_m,
         max_tiles=config.max_tiles,
     )
-    if len(plan.tiles) != 9:
+    tile_count = len(plan.tiles)
+    require_nine_tiles = _bool_env(
+        "FIREVIEWER_VALIDATION_REQUIRE_NINE_TILES",
+        True,
+    )
+    create_evidence = _bool_env(
+        "FIREVIEWER_VALIDATION_CREATE_EVIDENCE",
+        True,
+    )
+    if require_nine_tiles and tile_count != 9:
         raise MapValidationJobError(
             "hard stop: validation request must resolve to exactly 9 tiles, "
-            f"got {len(plan.tiles)}"
+            f"got {tile_count}"
         )
 
     selected_producer = _producer_for_profile(profile)
@@ -419,27 +428,34 @@ def run() -> dict[str, Any]:
     zone_receipt = json.loads(
         (job_root / "zone.done.json").read_text(encoding="utf-8")
     )
-    if not isinstance(zone_receipt, dict) or zone_receipt.get("tile_count") != 9:
-        raise MapValidationJobError("sealed zone receipt does not contain 9 tiles")
+    if (
+        not isinstance(zone_receipt, dict)
+        or zone_receipt.get("tile_count") != tile_count
+    ):
+        raise MapValidationJobError(
+            "sealed zone receipt tile count differs from the production plan"
+        )
     _validate_no_placeholders(zone_receipt)
     zone_id = str(zone_receipt["zone_id"])
     build_id = str(zone_receipt["build_id"])
 
     placement_finished = time.perf_counter()
-    placement_evidence = create_and_publish_validation_folder(
-        job_root,
-        provider=provider,
-        stage="placement",
-        require_nine_tiles=True,
-    )
-    if (
-        _bool_env("FIREVIEWER_VALIDATION_REQUIRE_EVIDENCE_UPLOAD", True)
-        and not placement_evidence.get("publication")
-    ):
-        raise MapValidationJobError(
-            "placement evidence was created but not published; "
-            "refusing expensive viewer export"
+    placement_evidence: dict[str, Any] | None = None
+    if create_evidence:
+        placement_evidence = create_and_publish_validation_folder(
+            job_root,
+            provider=provider,
+            stage="placement",
+            require_nine_tiles=require_nine_tiles,
         )
+        if (
+            _bool_env("FIREVIEWER_VALIDATION_REQUIRE_EVIDENCE_UPLOAD", True)
+            and not placement_evidence.get("publication")
+        ):
+            raise MapValidationJobError(
+                "placement evidence was created but not published; "
+                "refusing expensive viewer export"
+            )
     placement_evidence_finished = time.perf_counter()
 
     viewer_receipt, monolithic_viewer, tiled_viewer_receipt, viewer = _run_viewer_export(
@@ -449,17 +465,21 @@ def run() -> dict[str, Any]:
     )
     viewer_finished = time.perf_counter()
 
-    viewer_evidence = create_and_publish_validation_folder(
-        job_root,
-        provider=provider,
-        stage="viewer",
-        require_nine_tiles=True,
-    )
-    if (
-        _bool_env("FIREVIEWER_VALIDATION_REQUIRE_EVIDENCE_UPLOAD", True)
-        and not viewer_evidence.get("publication")
-    ):
-        raise MapValidationJobError("viewer validation evidence was not published")
+    viewer_evidence: dict[str, Any] | None = None
+    if create_evidence:
+        viewer_evidence = create_and_publish_validation_folder(
+            job_root,
+            provider=provider,
+            stage="viewer",
+            require_nine_tiles=require_nine_tiles,
+        )
+        if (
+            _bool_env("FIREVIEWER_VALIDATION_REQUIRE_EVIDENCE_UPLOAD", True)
+            and not viewer_evidence.get("publication")
+        ):
+            raise MapValidationJobError(
+                "viewer validation evidence was not published"
+            )
     viewer_evidence_finished = time.perf_counter()
 
     viewer_publication: dict[str, Any] | None = None
@@ -505,7 +525,7 @@ def run() -> dict[str, Any]:
         "request": request,
         "zone_id": zone_id,
         "build_id": build_id,
-        "tile_count": 9,
+        "tile_count": tile_count,
         "tile_origins_l93_m": [
             list(tile.origin_l93_m) for tile in plan.tiles
         ],

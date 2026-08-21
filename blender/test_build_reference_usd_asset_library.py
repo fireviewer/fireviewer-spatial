@@ -86,6 +86,176 @@ def _reviewed(reference: dict, category: str) -> dict:
     }
 
 
+def test_runtime_tree_selection_respects_conifer_and_oak_evidence() -> None:
+    assets = [
+        {
+            "asset_id": "oak",
+            "category": "tree",
+            "reference": {"path": "01_arbres/Chene pedoncule.png"},
+            "placement": library._placement_profile(
+                "01_arbres/Chene pedoncule.png", "tree"
+            ),
+        },
+        {
+            "asset_id": "pine",
+            "category": "tree",
+            "reference": {"path": "01_arbres/Pin sylvestre.png"},
+            "placement": library._placement_profile(
+                "01_arbres/Pin sylvestre.png", "tree"
+            ),
+        },
+    ]
+    catalog = {
+        "schema": library.SCHEMA,
+        "catalog_revision": _sha(b"tree-selection-catalog"),
+        "assets": assets,
+        "selection_pools": {"tree": ["oak", "pine"]},
+    }
+
+    oak = library._select_asset_for_candidate_from_validated_library(
+        catalog,
+        category="tree",
+        zone="GPS-SPECIES",
+        candidate="tree-1",
+        rule_version="tree-v2",
+        usage="technical_pilot_non_final",
+        metadata={
+            "context": "measured_woody_canopy",
+            "semantic_tags": ["broadleaf", "oak"],
+            "reference_terms": ["chene"],
+            "tree_form_policy": "conifer_or_oak_only",
+        },
+    )
+    conifer = library._select_asset_for_candidate_from_validated_library(
+        catalog,
+        category="tree",
+        zone="GPS-SPECIES",
+        candidate="tree-2",
+        rule_version="tree-v2",
+        usage="technical_pilot_non_final",
+        metadata={
+            "context": "measured_woody_canopy",
+            "semantic_tags": ["conifer"],
+            "reference_terms": ["pin", "noir"],
+            "tree_form_policy": "conifer_or_oak_only",
+        },
+    )
+
+    assert oak["asset_id"] == "oak"
+    assert conifer["asset_id"] == "pine"
+
+
+def test_runtime_tree_selection_never_uses_unrelated_broadleaf_or_natural_prop() -> None:
+    assets = [
+        {
+            "asset_id": "oak",
+            "category": "tree",
+            "reference": {"path": "01_arbres/Chene pedoncule.png"},
+            "placement": library._placement_profile(
+                "01_arbres/Chene pedoncule.png", "tree"
+            ),
+        },
+        {
+            "asset_id": "pine",
+            "category": "tree",
+            "reference": {"path": "01_arbres/Pin sylvestre.png"},
+            "placement": library._placement_profile(
+                "01_arbres/Pin sylvestre.png", "tree"
+            ),
+        },
+        {
+            "asset_id": "plane",
+            "category": "tree",
+            "reference": {"path": "01_arbres/Platane.png"},
+            "placement": library._placement_profile("01_arbres/Platane.png", "tree"),
+        },
+        {
+            "asset_id": "rock",
+            "category": "vegetation",
+            "reference": {"path": "04_vegetaux/Grand rocher moussu.png"},
+            "placement": library._placement_profile(
+                "04_vegetaux/Grand rocher moussu.png", "vegetation"
+            ),
+        },
+    ]
+    catalog = {
+        "schema": library.SCHEMA,
+        "catalog_revision": _sha(b"tree-form-catalog"),
+        "assets": assets,
+        "selection_pools": {
+            "tree": ["oak", "pine", "plane"],
+            "vegetation": ["rock"],
+        },
+    }
+
+    selected = {
+        library._select_asset_for_candidate_from_validated_library(
+            catalog,
+            category="tree",
+            zone="GPS-SPECIES",
+            candidate=f"tree-{index}",
+            rule_version="tree-v2",
+            usage="technical_pilot_non_final",
+            metadata={
+                "context": "measured_woody_canopy",
+                "semantic_tags": [],
+                "reference_terms": [],
+                "tree_form_policy": "conifer_or_oak_only",
+            },
+        )["asset_id"]
+        for index in range(32)
+    }
+
+    assert selected <= {"oak", "pine"}
+    assert selected == {"oak", "pine"}
+
+
+def test_runtime_forest_terms_do_not_collapse_compatible_conifer_variety() -> None:
+    assets = [
+        {
+            "asset_id": asset_id,
+            "category": "tree",
+            "reference": {"path": path},
+            "placement": library._placement_profile(path, "tree"),
+        }
+        for asset_id, path in (
+            ("douglas", "01_arbres/Douglas.png"),
+            ("pine", "01_arbres/Pin sylvestre.png"),
+            ("spruce", "01_arbres/Epicea commun.png"),
+        )
+    ]
+    # Reproduce the accidental lexical advantage seen in the real r11
+    # catalogue.  Forest-composition terms are evidence for the conifer form,
+    # not for selecting this one species for every measured crown.
+    assets[0]["placement"]["reference_terms"].extend(["foret", "fermee"])
+    catalog = {
+        "schema": library.SCHEMA,
+        "catalog_revision": _sha(b"tree-variety-catalog"),
+        "assets": assets,
+        "selection_pools": {"tree": [asset["asset_id"] for asset in assets]},
+    }
+
+    selected = {
+        library._select_asset_for_candidate_from_validated_library(
+            catalog,
+            category="tree",
+            zone="GPS-FOREST",
+            candidate=f"tree-{index}",
+            rule_version="tree-v2",
+            usage="technical_pilot_non_final",
+            metadata={
+                "context": "measured_woody_canopy",
+                "semantic_tags": ["conifer"],
+                "reference_terms": ["foret", "fermee", "coniferes"],
+                "tree_form_policy": "conifer_or_oak_only",
+            },
+        )["asset_id"]
+        for index in range(64)
+    }
+
+    assert selected == {"douglas", "pine", "spruce"}
+
+
 def _fixture() -> tuple[dict, dict, dict, dict]:
     tree = _reference("111111111111_tree", "01_arbres/Lot 1/Tree.png")
     building = _reference(

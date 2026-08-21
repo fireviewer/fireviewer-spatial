@@ -979,6 +979,7 @@ def _placement_context(
             "vegetation": sorted(
                 vegetation_features, key=lambda item: item["source_id"]
             ),
+            "forest_composition": [],
             "roads": sorted(road_features, key=lambda item: item["source_id"]),
             "rail": sorted(rail_features, key=lambda item: item["source_id"]),
             "hydro_lines": sorted(
@@ -1003,6 +1004,7 @@ def _placement_context(
             "feature_counts": {
                 "buildings": len(footprints),
                 "vegetation": len(vegetation),
+                "forest_composition": 0,
                 "roads": len(roads),
                 "rail": len(rail),
                 "water": len(water),
@@ -1033,6 +1035,7 @@ def _load_indexed_zone_context(path: Path) -> _IndexedZoneContext:
         for role in (
             "buildings",
             "vegetation",
+            "forest_composition",
             "roads",
             "rail",
             "hydro_lines",
@@ -1137,6 +1140,7 @@ def _placement_context_from_zone(
     vegetation = [
         mapping(geometry) for geometry, _properties, _id in vegetation_records
     ]
+    forest_composition_records = selected("forest_composition")
 
     road_records = selected("roads")
     roads: list[Any] = []
@@ -1181,6 +1185,14 @@ def _placement_context_from_zone(
                 }
                 for geometry, properties, source_id in vegetation_records
             ],
+            "forest_composition": [
+                {
+                    "source_id": source_id,
+                    "geometry": mapping(geometry),
+                    "properties": dict(properties),
+                }
+                for geometry, properties, source_id in forest_composition_records
+            ],
             "roads": [
                 {
                     "source_id": source_id,
@@ -1220,6 +1232,12 @@ def _placement_context_from_zone(
             "zone_context_source_revision": source_revision,
             "vegetation_policy": "BDTOPO_V3:zone_de_vegetation semantic confirmation",
             "vegetation_feature_ids": [item[2] for item in vegetation_records],
+            "forest_composition_policy": (
+                "BDFORETV1 composition refines generic current vegetation semantics only"
+            ),
+            "forest_composition_feature_ids": [
+                item[2] for item in forest_composition_records
+            ],
             "road_width_policy": "mid_distance_roads.resolve_road_width_m.v1",
             "road_feature_ids": [item[2] for item in road_records],
             "road_widths": road_widths,
@@ -1230,6 +1248,7 @@ def _placement_context_from_zone(
             "feature_counts": {
                 "buildings": len(footprints),
                 "vegetation": len(vegetation),
+                "forest_composition": len(forest_composition_records),
                 "roads": len(roads),
                 "rail": len(rail),
                 "water": len(water),

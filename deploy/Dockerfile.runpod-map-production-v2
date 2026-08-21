@@ -11,11 +11,15 @@ ENV FIREVIEWER_TILE_WORKERS=8 \
     FIREVIEWER_SCRATCH_ROOT=/tmp/fireviewer-map-validation \
     FIREVIEWER_VALIDATION_PROVIDER=runpod \
     FIREVIEWER_VALIDATION_PROFILE=factual-v2 \
+    FIREVIEWER_VALIDATION_REQUEST_JSON="" \
+    FIREVIEWER_VALIDATION_REQUEST_FILE="" \
+    FIREVIEWER_VALIDATION_REQUIRE_NINE_TILES=0 \
+    FIREVIEWER_VALIDATION_CREATE_EVIDENCE=0 \
     FIREVIEWER_VALIDATION_REQUIRE_EVIDENCE_UPLOAD=1 \
     FIREVIEWER_VALIDATION_PUBLISH_VIEWER=1 \
     FIREVIEWER_VALIDATION_REQUIRE_VIEWER_PUBLICATION=1 \
     FIREVIEWER_VALIDATION_VIEWER_SCRIPT=export_complete_viewer_glb.py \
-    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:pilot-v2-20260820-r8-runpod-validation \
+    FIREVIEWER_IMAGE_REFERENCE=charlibillabert/fireviewer-simple-production-ui:map-builder-frozen-v1-20260821 \
     HF_XET_CACHE=/tmp/fireviewer-hf-xet
 
 COPY fireviewer-spatial/requirements.map-validation-job.txt /opt/fireviewer/requirements.map-validation-job.txt

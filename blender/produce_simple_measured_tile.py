@@ -691,6 +691,7 @@ def _load_placement_context(
         normalized[key] = tuple(values)
     allowed_feature_roles = {
         "vegetation",
+        "forest_composition",
         "roads",
         "rail",
         "hydro_lines",
@@ -800,6 +801,7 @@ def _request_identity(
     asset_bundle_root: Path | None,
     asset_bundle_identity_root: Path | None,
     portable_root: Path,
+    pipeline_files: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     request: dict[str, Any] = {
         "schema": REQUEST_SCHEMA,
@@ -822,7 +824,7 @@ def _request_identity(
         "asset_root_names": sorted(asset_roots),
         "usage": "technical_pilot_non_final",
         "mns_fallback_policy": "ground_only_on_hag_validation_failure",
-        "pipeline_files": _pipeline_file_hashes(),
+        "pipeline_files": dict(pipeline_files or _pipeline_file_hashes()),
     }
     if asset_bundle_root is not None:
         identity_root = asset_bundle_identity_root or asset_bundle_root
@@ -1127,10 +1129,14 @@ def produce_simple_measured_tile(
     asset_bundle_root: Path | str | None = None,
     asset_bundle_identity_root: Path | str | None = None,
     progress_callback: ProgressCallback | None = None,
+    _placement_builder: Callable[..., Any] | None = None,
+    _pipeline_hash_provider: Callable[[], Mapping[str, str]] | None = None,
 ) -> SimpleMeasuredTilePackage:
     """Build or verify exactly one technical pilot tile, with no network access."""
 
     _load_contract()
+    placement_builder = _placement_builder or build_placement_inventory
+    pipeline_hash_provider = _pipeline_hash_provider or _pipeline_file_hashes
     if not isinstance(zone_id, str) or not zone_id.strip():
         raise SimpleMeasuredTileError("zone_id must be non-empty")
     zone_id = zone_id.strip()
@@ -1220,6 +1226,7 @@ def produce_simple_measured_tile(
         asset_bundle_root=shared_bundle,
         asset_bundle_identity_root=shared_bundle_identity,
         portable_root=portable,
+        pipeline_files=pipeline_hash_provider(),
     )
     if destination.exists():
         if not destination.is_dir():
@@ -1314,7 +1321,7 @@ def produce_simple_measured_tile(
                 tile_id=tile_id,
                 reason=reason,
             )
-            placement = build_placement_inventory(
+            placement = placement_builder(
                 sources.mnt_m,
                 sources.mns_m,
                 tile_origin_l93_m=origin,
@@ -1330,7 +1337,7 @@ def produce_simple_measured_tile(
                 "degraded": False,
             }
             try:
-                placement = build_placement_inventory(
+                placement = placement_builder(
                     sources.mnt_m,
                     sources.mns_m,
                     tile_origin_l93_m=origin,
@@ -1356,7 +1363,7 @@ def produce_simple_measured_tile(
                     tile_id=tile_id,
                     reason=message,
                 )
-                placement = build_placement_inventory(
+                placement = placement_builder(
                     sources.mnt_m,
                     sources.mnt_m,
                     tile_origin_l93_m=origin,

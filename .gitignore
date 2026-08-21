@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
+.pytest-*/
+.test-*/
 .mypy_cache/
 .ruff_cache/
 .env
@@ -14,6 +16,14 @@ outputs/
 production-work/
 productions/
 site-upload/
+datasets/
+models/
+checkpoints/
+weights/
+media/
+captures/
+renders/
+uploads/
 .tmp-placement-tests/
 bin/
 omniverse/assets/environments/*.hdr
@@ -30,4 +40,11 @@ omniverse/assets/environments/*.hdr
 *.zip
 *.tar
 *.7z
+*.ckpt
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.mp4
+*.mov
 

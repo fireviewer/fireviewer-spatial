@@ -2189,6 +2189,34 @@ def write_reference_asset_library(
     }
 
 
+def _runtime_tree_semantic_tags(asset: Mapping[str, Any]) -> set[str]:
+    if asset.get("category") not in {"tree", "vegetation"}:
+        return set()
+    reference = asset.get("reference")
+    path = str(reference.get("path", "")) if isinstance(reference, Mapping) else ""
+    searchable = _search_text(path)
+    broadleaf_fragments = (
+        "bouleau",
+        "charme",
+        "chataignier",
+        "chene",
+        "erable",
+        "frene",
+        "hetre",
+        "merisier",
+        "noyer",
+        "platane",
+        "robinier",
+        "tilleul",
+    )
+    tags: set[str] = set()
+    if any(fragment in searchable for fragment in broadleaf_fragments):
+        tags.add("broadleaf")
+    if "chene" in searchable:
+        tags.add("oak")
+    return tags
+
+
 def _select_asset_for_candidate_from_validated_library(
     library: Mapping[str, Any],
     *,
@@ -2237,11 +2265,52 @@ def _select_asset_for_candidate_from_validated_library(
             "selection metadata reference_terms are invalid"
         )
     reference_terms = set(raw_terms)
+    tree_form_policy = candidate_metadata.get("tree_form_policy")
+    if tree_form_policy not in {None, "conifer_or_oak_only"}:
+        raise ReferenceAssetLibraryError("selection metadata tree_form_policy is invalid")
+    if category == "tree" and tree_form_policy == "conifer_or_oak_only":
+        # The measured MNS/MNT family represents woody crowns. The reviewed
+        # catalogue also contains orchards, burned trees and decorative species,
+        # but this factual forest profile is deliberately limited to the two
+        # forms supported by the IGN composition evidence: conifers and oaks.
+        desired_tree_forms: set[str] = set()
+        if "conifer" in semantic_tags:
+            desired_tree_forms.add("conifer")
+        if semantic_tags & {"broadleaf", "oak"}:
+            desired_tree_forms.add("oak")
+        if not desired_tree_forms:
+            desired_tree_forms.update(("conifer", "oak"))
+        form_compatible = []
+        for asset in candidates:
+            placement = asset["placement"]
+            asset_tags = set(placement["semantic_tags"]) | _runtime_tree_semantic_tags(
+                asset
+            )
+            if desired_tree_forms & asset_tags:
+                form_compatible.append(asset)
+        if not form_compatible:
+            raise ReferenceAssetLibraryError(
+                "no conifer or oak USD asset matches the measured tree evidence"
+            )
+        candidates = form_compatible
+    # IGN forest-composition labels describe a form (conifer, oak, mixed), not
+    # a precise species.  Once the factual tree-form filter above has been
+    # applied, generic terms such as ``foret``, ``fermee`` or ``mixte`` must not
+    # collapse a whole forest onto the few catalogue entries that happen to
+    # repeat those words.  Keep the term-level tie-breaker for buildings and
+    # the other categories, where it carries useful semantic information.
+    score_reference_terms = not (
+        category == "tree" and tree_form_policy == "conifer_or_oak_only"
+    )
     scored: list[tuple[int, Mapping[str, Any]]] = []
     for asset in candidates:
         placement = asset["placement"]
-        score = 8 * len(semantic_tags & set(placement["semantic_tags"]))
-        score += len(reference_terms & set(placement["reference_terms"]))
+        asset_tags = set(placement["semantic_tags"]) | _runtime_tree_semantic_tags(
+            asset
+        )
+        score = 8 * len(semantic_tags & asset_tags)
+        if score_reference_terms:
+            score += len(reference_terms & set(placement["reference_terms"]))
         scored.append((score, asset))
     maximum_score = max((score for score, _asset in scored), default=0)
     if maximum_score > 0:

@@ -4,30 +4,32 @@ This module deliberately leaves the production v1 inventory untouched.  It
 keeps the v1 outer inventory schema so the existing OpenUSD scene assembler can
 consume the result, but records a distinct v2 contract and algorithm identity.
 
-The profile changes three things only:
+The profile keeps quantity measured while tightening factual presentation:
 
 * BD TOPO footprints author building XY geometry; MNT/MNS author ground/height.
 * Tree count/status stays identical to the measured 1 m crown detector, while
   the position/ground/height of each candidate is refined inside its exact
   original 1 m peak cell from the native 0.5 m elevation pair when available.
+* Tree width follows the measured crown, the visual base uses bounded local MNT
+  support, and IGN forest composition is retained for deterministic selection.
 * Road/rail/hydro features no longer create generic equipment instances.  Only
   validated fixed-coordinate context assets are instantiated by this profile.
 
-No quota or thinning is introduced.  The legacy Lightning image does not import
-this module and remains an independent fallback.
+No quota or thinning is introduced. The legacy Lightning image does not import
+this module and remains an independent comparison reference.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import math
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from rasterio.transform import from_origin
+from shapely.geometry import Point
 
 import mns_mnt_placement_inventory as v1
 from fixed_asset_placement import (
@@ -37,10 +39,18 @@ from fixed_asset_placement import (
 from fixed_asset_placement import canonical_json_bytes as canonical_fixed_asset_bytes
 
 CONTRACT_SCHEMA = "fireviewer.mns-mnt-placement-contract.v2"
-ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v5"
+ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v8"
 PLACEMENT_PROFILE = "fireviewer.factual-placement-profile.v2"
 NATIVE_RESOLUTION_M = 0.5
 NATIVE_SOURCE_SIZE = 1040
+NATIVE_SEVERE_NEGATIVE_LIMIT_MM = -1_000
+NATIVE_SEVERE_NEGATIVE_MAX_FRACTION = 0.01
+CANONICAL_SEVERE_NEGATIVE_LIMIT_MM = -1_000
+CANONICAL_SEVERE_NEGATIVE_MAX_FRACTION = 0.01
+TREE_BASE_MAX_CLEARANCE_MM = 150
+TREE_ASSET_SELECTION_POLICY = (
+    "current_bdtopo_composition_else_bdforet_v1_then_conifer_or_oak_only"
+)
 
 
 class NativeGridMisalignmentError(v1.PlacementInventoryError):
@@ -87,6 +97,81 @@ def _native_pair_mm(
     return v1._quantize_mm(mnt), v1._quantize_mm(mns)
 
 
+def _source_grid_v2(
+    mnt_m: Any, mns_m: Any
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int | float | str]]:
+    """Build HAG without discarding a tile for a few harmless low MNS cells.
+
+    Negative HAG cannot create a false object: it is clamped to ground. The v1
+    count threshold rejected real mountain tiles for only four extra samples.
+    Isolated larger negative samples are also harmless after that clamp, while
+    a systemic negative offset still proves that the grids are misaligned.
+    """
+
+    mnt = np.asarray(mnt_m, dtype="float64")
+    mns = np.asarray(mns_m, dtype="float64")
+    expected = (v1.PROCESSING_SIZE, v1.PROCESSING_SIZE)
+    if mnt.shape != expected or mns.shape != expected:
+        raise v1.PlacementInventoryError(
+            f"MNT and MNS must be co-registered arrays with shape {expected}"
+        )
+    if not np.isfinite(mnt).all() or not np.isfinite(mns).all():
+        raise v1.PlacementInventoryError("MNT and MNS must not contain nodata or NaN")
+    mnt_mm = v1._quantize_mm(mnt)
+    mns_mm = v1._quantize_mm(mns)
+    delta_mm = mns_mm.astype("int64") - mnt_mm.astype("int64")
+    minimum_delta_mm = int(delta_mm.min())
+    severe_negative_count = int(
+        np.count_nonzero(delta_mm < CANONICAL_SEVERE_NEGATIVE_LIMIT_MM)
+    )
+    severe_negative_fraction = severe_negative_count / int(delta_mm.size)
+    if severe_negative_fraction > CANONICAL_SEVERE_NEGATIVE_MAX_FRACTION:
+        raise v1.PlacementInventoryError(
+            "factual v2 canonical MNS/MNT has a systemic negative offset"
+        )
+    negative_outlier_count = int(
+        np.count_nonzero(delta_mm < -(v1.NEGATIVE_HAG_TOLERANCE_CM * 10))
+    )
+    negative_outlier_fraction = negative_outlier_count / int(delta_mm.size)
+    negative_sample_count = int(np.count_nonzero(delta_mm < 0))
+    delta_cm = (np.maximum(delta_mm, 0) + 5) // 10
+    maximum_delta_mm = int(delta_mm.max())
+    positive_outliers = delta_cm > v1.MAX_HAG_CM
+    positive_outlier_count = int(np.count_nonzero(positive_outliers))
+    positive_outlier_fraction = positive_outlier_count / int(delta_mm.size)
+    if (
+        positive_outlier_count > v1.POSITIVE_HAG_MAX_OUTLIER_COUNT
+        or positive_outlier_fraction > v1.POSITIVE_HAG_MAX_OUTLIER_FRACTION
+    ):
+        raise v1.PlacementInventoryError(
+            "factual v2 MNS-MNT has too many samples above the uint16 contract"
+        )
+    if positive_outlier_count:
+        mns_mm = mns_mm.copy()
+        delta_mm = delta_mm.copy()
+        delta_cm = delta_cm.copy()
+        mns_mm[positive_outliers] = mnt_mm[positive_outliers]
+        delta_mm[positive_outliers] = 0
+        delta_cm[positive_outliers] = 0
+    diagnostics: dict[str, int | float | str] = {
+        "minimum_source_delta_mm": minimum_delta_mm,
+        "maximum_source_delta_mm_before_repair": maximum_delta_mm,
+        "negative_source_sample_count_clamped": negative_sample_count,
+        "negative_outlier_below_tolerance_count": negative_outlier_count,
+        "negative_outlier_fraction": round(negative_outlier_fraction, 12),
+        "severe_negative_below_100cm_count": severe_negative_count,
+        "severe_negative_below_100cm_fraction": round(
+            severe_negative_fraction, 12
+        ),
+        "negative_outlier_policy": (
+            "clamp_all_when_below_minus_100cm_fraction_is_at_most_1pct"
+        ),
+        "positive_uint16_outlier_count_repaired_to_ground": positive_outlier_count,
+        "positive_uint16_outlier_fraction": round(positive_outlier_fraction, 12),
+    }
+    return mnt_mm, mns_mm, delta_cm.astype("uint16"), diagnostics
+
+
 def _refine_tree_candidates_native_05m(
     trees: dict[str, Any],
     *,
@@ -94,7 +179,7 @@ def _refine_tree_candidates_native_05m(
     mns_mm_05m: np.ndarray,
     west: int,
     south: int,
-) -> int:
+) -> tuple[int, dict[str, int | float | str]]:
     """Refine each existing tree inside its original 1 m peak cell only.
 
     The operation cannot create, delete, merge or move a candidate into another
@@ -103,9 +188,13 @@ def _refine_tree_candidates_native_05m(
     """
 
     delta_mm = mns_mm_05m.astype("int64") - mnt_mm_05m.astype("int64")
-    if int(delta_mm.min()) < -(v1.NEGATIVE_HAG_HARD_LIMIT_CM * 10):
+    severe_negative_count = int(
+        np.count_nonzero(delta_mm < NATIVE_SEVERE_NEGATIVE_LIMIT_MM)
+    )
+    severe_negative_fraction = severe_negative_count / int(delta_mm.size)
+    if severe_negative_fraction > NATIVE_SEVERE_NEGATIVE_MAX_FRACTION:
         raise NativeGridMisalignmentError(
-            "native MNS lies more than 100 cm below MNT; grids are misaligned"
+            "factual v2 native MNS/MNT has a systemic negative offset"
         )
     hag_mm = np.maximum(delta_mm, 0)
     grid_west = west - v1.HALO_M
@@ -141,21 +230,34 @@ def _refine_tree_candidates_native_05m(
         ):
             raise v1.PlacementInventoryError("tree native refinement escaped source grid")
 
-        choices: list[tuple[int, float, float, int, int]] = []
+        choices: list[tuple[int, float, float, int, int, int]] = []
         for row in (row0, row0 + 1):
             for column in (column0, column0 + 1):
                 x_m = grid_west + (column + 0.5) * NATIVE_RESOLUTION_M
                 y_m = grid_north - (row + 0.5) * NATIVE_RESOLUTION_M
-                choices.append((int(hag_mm[row, column]), x_m, y_m, row, column))
-        height_mm, x_m, y_m, row, column = min(
+                choices.append(
+                    (
+                        int(hag_mm[row, column]),
+                        x_m,
+                        y_m,
+                        row,
+                        column,
+                        int(mnt_mm_05m[row, column]),
+                    )
+                )
+        height_mm, x_m, y_m, row, column, ground_mm = min(
             choices,
             key=lambda item: (-item[0], item[1], item[2], item[3], item[4]),
         )
-        ground_mm = int(mnt_mm_05m[row, column])
+        support_elevation_mm = min(
+            max(item[5] for item in choices),
+            ground_mm + TREE_BASE_MAX_CLEARANCE_MM,
+        )
         height_cm = max(1, int((height_mm + 5) // 10))
         previous = candidate.get("position_l93_m")
         candidate["position_l93_m"] = [round(x_m, 3), round(y_m, 3)]
         candidate["ground_elevation_mm"] = ground_mm
+        candidate["support_elevation_mm"] = support_elevation_mm
         candidate["height_cm"] = height_cm
         candidate["top_elevation_mm"] = ground_mm + height_cm * 10
         candidate["native_05m_refinement"] = {
@@ -166,9 +268,99 @@ def _refine_tree_candidates_native_05m(
             "native_row": row,
             "native_column": column,
             "native_hag_mm": height_mm,
+            "support_policy": (
+                "highest_native_mnt_inside_peak_cell_bounded_to_15cm_clearance"
+            ),
+            "support_elevation_mm": support_elevation_mm,
         }
         refined += 1
-    return refined
+    return refined, {
+        "minimum_native_delta_mm": int(delta_mm.min()),
+        "negative_native_sample_count": int(np.count_nonzero(delta_mm < 0)),
+        "severe_negative_native_sample_count": severe_negative_count,
+        "severe_negative_native_fraction": round(severe_negative_fraction, 12),
+        "integrity_policy": (
+            "reject_when_more_than_1pct_is_below_mnt_by_more_than_100cm"
+        ),
+    }
+
+
+def _feature_matches_point(
+    features: Sequence[Mapping[str, Any]], point: Point
+) -> list[Mapping[str, Any]]:
+    matches = [
+        feature
+        for feature in features
+        if feature["geometry"].bounds[0] <= point.x <= feature["geometry"].bounds[2]
+        and feature["geometry"].bounds[1] <= point.y <= feature["geometry"].bounds[3]
+        and feature["geometry"].covers(point)
+    ]
+    return sorted(
+        matches,
+        key=lambda item: (float(item["geometry"].area), str(item["source_id"])),
+    )
+
+
+def _has_current_forest_composition(properties: Mapping[str, Any]) -> bool:
+    text = " ".join(
+        str(value).casefold()
+        for value in properties.values()
+        if isinstance(value, str)
+    )
+    return any(
+        term in text
+        for term in ("conif", "feuill", "mixte", "mélang", "melang")
+    )
+
+
+def _enrich_tree_semantics(
+    trees: Mapping[str, Any],
+    *,
+    vegetation_features: Sequence[Mapping[str, Any]],
+    forest_composition_features: Sequence[Mapping[str, Any]],
+) -> int:
+    candidates = trees.get("candidates")
+    if not isinstance(candidates, list):
+        raise v1.PlacementInventoryError("tree candidate array is invalid")
+    enriched = 0
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            raise v1.PlacementInventoryError("tree candidate is invalid")
+        position = candidate.get("position_l93_m")
+        if not isinstance(position, list) or len(position) != 2:
+            raise v1.PlacementInventoryError("tree position is invalid")
+        point = Point(float(position[0]), float(position[1]))
+        current = _feature_matches_point(vegetation_features, point)
+        historical = _feature_matches_point(forest_composition_features, point)
+        current_primary = current[0] if current else None
+        historical_primary = historical[0] if historical else None
+        selection_properties: dict[str, Any] = {}
+        if current_primary is not None:
+            selection_properties.update(dict(current_primary["source_properties"]))
+        # BD Foret v1 is older. It refines only generic current BD TOPO zones;
+        # an explicit current conifer/broadleaf/mixed class always wins.
+        if historical_primary is not None and not _has_current_forest_composition(
+            selection_properties
+        ):
+            selection_properties.update(
+                {
+                    f"forest_{key}": value
+                    for key, value in historical_primary["source_properties"].items()
+                }
+            )
+        candidate["source_properties"] = selection_properties
+        candidate["vegetation_context_source_ids"] = [
+            str(feature["source_id"]) for feature in current
+        ]
+        candidate["forest_composition_source_ids"] = [
+            str(feature["source_id"]) for feature in historical
+        ]
+        candidate["semantic_context_policy"] = (
+            "current_bdtopo_composition_else_bdforet_v1_then_generic"
+        )
+        if selection_properties:
+            enriched += 1
+    return enriched
 
 
 def _valid_building_exclusion_mask(
@@ -241,7 +433,7 @@ def build_placement_inventory_v2(
             f"fixed asset placements are invalid: {error}"
         ) from error
 
-    mnt_mm, mns_mm, hag_cm, source_diagnostics = v1._source_grid(mnt_m, mns_m)
+    mnt_mm, mns_mm, hag_cm, source_diagnostics = _source_grid_v2(mnt_m, mns_m)
     masks_input = dict(context_masks or {})
     geometries_input = dict(context_geometries or {})
     unknown_masks = sorted(set(masks_input) - set(v1._CONTEXT_KEYS))
@@ -283,7 +475,7 @@ def build_placement_inventory_v2(
         masks[key] |= geometry_masks[key]
 
     footprints = v1._normalise_footprints(building_footprints)
-    _features, context_features_hash = v1._normalise_context_features(context_features)
+    features, context_features_hash = v1._normalise_context_features(context_features)
     buildings, _all_footprints_mask, footprint_context_hash = v1._building_inventory(
         footprints,
         mnt_mm=mnt_mm,
@@ -315,10 +507,22 @@ def build_placement_inventory_v2(
     )
     trees["count_semantics"] = "estimated_individual_crowns_not_certified_tree_stems"
     trees["native_refinement_may_change_candidate_count"] = False
+    trees["geometry_scale_policy"] = "measured_crown_diameter_x_measured_hag_height"
+    trees["base_elevation_policy"] = (
+        "highest_native_mnt_inside_peak_cell_bounded_to_15cm_clearance"
+    )
+    trees["asset_selection_policy"] = TREE_ASSET_SELECTION_POLICY
+    for candidate in trees["candidates"]:
+        candidate["support_elevation_mm"] = candidate["ground_elevation_mm"]
+        candidate["geometry_scale_policy"] = (
+            "measured_crown_diameter_x_measured_hag_height"
+        )
+        candidate["asset_selection_policy"] = TREE_ASSET_SELECTION_POLICY
     native = _native_pair_mm(native_mnt_05m, native_mns_05m)
     native_refined = 0
     native_status = "not_available"
     native_hashes: dict[str, str] = {}
+    native_diagnostics: dict[str, int | float | str] = {}
     if native is not None:
         native_mnt_mm, native_mns_mm = native
         native_hashes = {
@@ -329,22 +533,14 @@ def build_placement_inventory_v2(
                 np.asarray(native_mns_mm, dtype="<i4").tobytes(order="C")
             ),
         }
-        try:
-            native_refined = _refine_tree_candidates_native_05m(
-                trees,
-                mnt_mm_05m=native_mnt_mm,
-                mns_mm_05m=native_mns_mm,
-                west=west,
-                south=south,
-            )
-        except NativeGridMisalignmentError:
-            # The canonical 1 m MNS/MNT pair has already passed the strict v1
-            # integrity checks and authored the candidate set above.  A broken
-            # optional 0.5 m pair must not invalidate that measured placement;
-            # reject only the sub-metre refinement and record the decision.
-            native_status = "rejected_misaligned_below_mnt"
-        else:
-            native_status = "applied"
+        native_refined, native_diagnostics = _refine_tree_candidates_native_05m(
+            trees,
+            mnt_mm_05m=native_mnt_mm,
+            mns_mm_05m=native_mns_mm,
+            west=west,
+            south=south,
+        )
+        native_status = "applied"
     trees["native_05m_refinement_count"] = native_refined
     trees["native_05m_refinement_resolution_m"] = (
         NATIVE_RESOLUTION_M if native_status == "applied" else None
@@ -353,6 +549,12 @@ def build_placement_inventory_v2(
         NATIVE_RESOLUTION_M if native is not None else None
     )
     trees["native_05m_refinement_status"] = native_status
+    trees["native_05m_integrity"] = native_diagnostics
+    trees["semantic_context_enrichment_count"] = _enrich_tree_semantics(
+        trees,
+        vegetation_features=features["vegetation"],
+        forest_composition_features=features["forest_composition"],
+    )
 
     context_assets = _fixed_only_context_assets(
         mnt_mm=mnt_mm,
@@ -470,6 +672,11 @@ def validate_inventory_v2(inventory: Mapping[str, Any]) -> None:
         or trees.get("native_refinement_may_change_candidate_count") is not False
         or trees.get("count_semantics")
         != "estimated_individual_crowns_not_certified_tree_stems"
+        or trees.get("geometry_scale_policy")
+        != "measured_crown_diameter_x_measured_hag_height"
+        or trees.get("base_elevation_policy")
+        != "highest_native_mnt_inside_peak_cell_bounded_to_15cm_clearance"
+        or trees.get("asset_selection_policy") != TREE_ASSET_SELECTION_POLICY
         or context_assets.get("automatic_feature_assets_disabled") is not True
     ):
         raise v1.PlacementInventoryError("v2 factual placement policy changed")
@@ -481,11 +688,7 @@ def validate_inventory_v2(inventory: Mapping[str, Any]) -> None:
     if not isinstance(trees.get("native_05m_refinement_count"), int):
         raise v1.PlacementInventoryError("v2 native tree refinement count is invalid")
     native_status = trees.get("native_05m_refinement_status")
-    if native_status not in {
-        "not_available",
-        "applied",
-        "rejected_misaligned_below_mnt",
-    }:
+    if native_status not in {"not_available", "applied"}:
         raise v1.PlacementInventoryError("v2 native tree refinement status is invalid")
     if (
         native_status != "applied"
@@ -494,6 +697,27 @@ def validate_inventory_v2(inventory: Mapping[str, Any]) -> None:
         raise v1.PlacementInventoryError(
             "v2 rejected native refinement changed canonical candidates"
         )
+    candidates = trees.get("candidates")
+    if not isinstance(candidates, list):
+        raise v1.PlacementInventoryError("v2 tree candidates are invalid")
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            raise v1.PlacementInventoryError("v2 tree candidate is invalid")
+        ground = candidate.get("ground_elevation_mm")
+        support = candidate.get("support_elevation_mm")
+        if (
+            isinstance(ground, bool)
+            or not isinstance(ground, int)
+            or isinstance(support, bool)
+            or not isinstance(support, int)
+            or support < ground
+            or support - ground > TREE_BASE_MAX_CLEARANCE_MM
+        ):
+            raise v1.PlacementInventoryError("v2 tree support elevation is invalid")
+        if not isinstance(candidate.get("source_properties"), Mapping):
+            raise v1.PlacementInventoryError("v2 tree semantic properties are invalid")
+        if candidate.get("asset_selection_policy") != TREE_ASSET_SELECTION_POLICY:
+            raise v1.PlacementInventoryError("v2 tree asset selection policy is invalid")
 
 
 __all__ = [
@@ -501,6 +725,7 @@ __all__ = [
     "CONTRACT_SCHEMA",
     "NativeGridMisalignmentError",
     "PLACEMENT_PROFILE",
+    "TREE_ASSET_SELECTION_POLICY",
     "build_placement_inventory_v2",
     "validate_inventory_v2",
 ]

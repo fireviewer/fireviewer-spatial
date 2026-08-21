@@ -13,7 +13,11 @@ BOUNDS = (819490, 6311990, 821010, 6313510)
 
 
 def _feature(layer: str) -> dict[str, object]:
-    if layer.endswith("batiment") or layer.endswith("zone_de_vegetation"):
+    if (
+        layer.endswith("batiment")
+        or layer.endswith("zone_de_vegetation")
+        or layer.endswith("resu_bdv1_shape")
+    ):
         geometry = {
             "type": "Polygon",
             "coordinates": [
@@ -37,6 +41,7 @@ def _feature(layer: str) -> dict[str, object]:
         "properties": {
             "cleabs": source_id,
             "nature": "Route empierrée",
+            "libelle2": "FUTAIE DE PIN NOIR",
             "importance": "5",
             "largeur_de_chaussee": None,
         },
@@ -75,6 +80,12 @@ def test_wfs_request_is_lambert93_and_paged() -> None:
         "STARTINDEX": ["5"],
         "COUNT": ["25"],
     }
+
+    forest_url = context.wfs_url(
+        context.LAYERS["forest_composition"], BOUNDS, start_index=0
+    )
+    forest_values = parse_qs(urlparse(forest_url).query)
+    assert forest_values["SORTBY"] == ["dep,tfifn,typn"]
 
 
 def test_zone_context_is_atomic_hash_locked_and_reusable(tmp_path: Path) -> None:

@@ -137,7 +137,7 @@ def test_verify_rehashes_blend_zone_receipt_and_all_twenty_images(
         gallery.verify_gallery(zone_root)
 
 
-def test_tree_instance_gate_rejects_non_uniform_or_non_upright_scales() -> None:
+def test_tree_instance_gate_accepts_measured_scaling_and_rejects_invalid_or_tilted() -> None:
     def fake_point_cloud(
         scale: tuple[float, float, float], quaternion: tuple[float, ...]
     ):
@@ -157,11 +157,18 @@ def test_tree_instance_gate_rejects_non_uniform_or_non_upright_scales() -> None:
         )
     ) == {"trees": 1, "buildings": 0}
 
-    warped = fake_point_cloud((3.0, 0.7, 4.5), (2**-0.5, 2**-0.5, 0, 0))
-    with pytest.raises(gallery.SimpleZoneGalleryError, match="non-uniform"):
+    measured = fake_point_cloud((3.0, 0.7, 4.5), (2**-0.5, 2**-0.5, 0, 0))
+    assert gallery._validate_measured_instances(
+        SimpleNamespace(
+            context=SimpleNamespace(scene=SimpleNamespace(objects=[measured]))
+        )
+    ) == {"trees": 1, "buildings": 0}
+
+    invalid = fake_point_cloud((3.0, 0.0, 4.5), (2**-0.5, 2**-0.5, 0, 0))
+    with pytest.raises(gallery.SimpleZoneGalleryError, match="invalid measured"):
         gallery._validate_measured_instances(
             SimpleNamespace(
-                context=SimpleNamespace(scene=SimpleNamespace(objects=[warped]))
+                context=SimpleNamespace(scene=SimpleNamespace(objects=[invalid]))
             )
         )
 

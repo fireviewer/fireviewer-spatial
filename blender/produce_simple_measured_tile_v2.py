@@ -1,10 +1,10 @@
 """Side-by-side tile producer using the factual placement v2 profile.
 
-The stable v1 producer is reused rather than copied.  This module installs one
-process-local dispatcher for the placement step and keeps the native 0.5 m
+The stable v1 producer is reused rather than copied. This module injects one
+per-call dispatcher for the placement step and keeps the native 0.5 m
 MNT/MNS arrays in thread-local storage so ProductionEngine can still process
 multiple tiles concurrently.  The Lightning r46 image does not import this
-module, therefore the fallback path remains byte-for-byte unchanged.
+module and remains a byte-for-byte independent comparison reference.
 """
 
 from __future__ import annotations
@@ -57,12 +57,7 @@ def _native_pair_from_inputs(
     mnt_path: Path | str,
     mns_path: Path | str,
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """Load the already-validated source pair for sub-metre tree refinement.
-
-    Failure here intentionally disables only the optional 0.5 m refinement.
-    The stable producer still performs its complete source validation, nodata
-    repair and MNS fallback policy before the factual v2 inventory is built.
-    """
+    """Load the source pair required by factual v2 placement."""
 
     try:
         with rasterio.open(Path(mnt_path)) as mnt_dataset:
@@ -112,15 +107,6 @@ def _placement_dispatcher(
     native_mns: np.ndarray | None = None
     if native is not None:
         native_mnt, native_mns = native
-        # The stable producer invokes the placement builder a second time with
-        # MNT as both inputs after a validated MNS fallback. Mirror that exact
-        # degraded mode for the optional native refinement too.
-        try:
-            degraded = np.array_equal(np.asarray(mnt_m), np.asarray(mns_m))
-        except Exception:
-            degraded = False
-        if degraded:
-            native_mns = native_mnt
     return build_placement_inventory_v2(
         mnt_m,
         mns_m,
@@ -128,12 +114,6 @@ def _placement_dispatcher(
         native_mns_05m=native_mns,
         **kwargs,
     )
-
-
-# Process-local hooks. Only the v2 image imports this module.  Thread-local
-# source state keeps concurrent tile workers isolated.
-legacy.build_placement_inventory = _placement_dispatcher
-legacy._pipeline_file_hashes = _pipeline_file_hashes_v2
 
 
 def produce_simple_measured_tile_v2(
@@ -161,7 +141,13 @@ def produce_simple_measured_tile_v2(
         raise legacy.SimpleMeasuredTileError(
             "nested v2 tile production on one worker thread is forbidden"
         )
-    _TLS.native_pair = _native_pair_from_inputs(mnt_05m, mns_05m)
+    native_pair = _native_pair_from_inputs(mnt_05m, mns_05m)
+    if native_pair is None:
+        raise legacy.SimpleMeasuredTileError(
+            "factual v2 requires a finite, co-registered native 0.5 m MNT/MNS pair; "
+            "publishing an empty degraded tile is forbidden"
+        )
+    _TLS.native_pair = native_pair
     try:
         return legacy.produce_simple_measured_tile(
             mnt_05m=mnt_05m,
@@ -180,6 +166,8 @@ def produce_simple_measured_tile_v2(
             asset_bundle_root=asset_bundle_root,
             asset_bundle_identity_root=asset_bundle_identity_root,
             progress_callback=progress_callback,
+            _placement_builder=_placement_dispatcher,
+            _pipeline_hash_provider=_pipeline_file_hashes_v2,
         )
     finally:
         _TLS.native_pair = None

@@ -350,7 +350,7 @@ def _import_usd_scene(bpy: Any, stage: Path) -> None:
 
 
 def _validate_measured_instances(bpy: Any) -> dict[str, int]:
-    """Reject warped or tilted tree instances before any visual receipt."""
+    """Reject invalid scales or tilted trees before any visual receipt."""
 
     counts = {"trees": 0, "buildings": 0}
     for obj in bpy.context.scene.objects:
@@ -373,9 +373,11 @@ def _validate_measured_instances(bpy: Any) -> dict[str, int]:
             raise SimpleZoneGalleryError("Tree instances lack scale or orientation")
         for index in range(point_count):
             scale = tuple(float(value) for value in scale_attribute.data[index].vector)
-            if max(scale) - min(scale) > max(scale) * 1e-5:
+            if len(scale) != 3 or any(
+                not math.isfinite(value) or value <= 0.0 for value in scale
+            ):
                 raise SimpleZoneGalleryError(
-                    f"Tree instance {index} is deformed by non-uniform scaling"
+                    f"Tree instance {index} has invalid measured scaling"
                 )
             quaternion = tuple(
                 float(value) for value in orientation_attribute.data[index].value

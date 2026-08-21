@@ -242,6 +242,108 @@ def _inventory() -> dict:
     return payload
 
 
+def test_factual_tree_uses_measured_crown_width_and_support_elevation(
+    tmp_path: Path,
+) -> None:
+    prototype = measured._Prototype(
+        family="trees",
+        asset_id="tree-oak",
+        reference="prototype.usda",
+        source_path=tmp_path / "prototype.usda",
+        source_relative="prototype.usda",
+        source_sha256=_hash_bytes(b"prototype"),
+        source_byte_count=9,
+        texture_path=None,
+        texture_relative=None,
+        texture_sha256=None,
+        texture_byte_count=None,
+        wrapper_relative="tree-oak/prototype.usda",
+        wrapper_bytes=b"",
+        material_policy="test",
+        source_up_axis="Y",
+        native_min_y=-0.5,
+        native_extents=(2.0, 4.0, 4.0),
+        qualification_blockers=(),
+        availability="real_usd",
+        fallback_resolution=None,
+    )
+    candidate = {
+        "candidate_id": "tree-factual",
+        "position_l93_m": [700_010.0, 6_600_020.0],
+        "ground_elevation_mm": 100_000,
+        "support_elevation_mm": 101_250,
+        "height_cm": 1_000,
+        "equivalent_crown_radius_m": 3.0,
+        "geometry_scale_policy": "measured_crown_diameter_x_measured_hag_height",
+    }
+
+    instance = measured._instance_from_candidate(
+        candidate,
+        family="trees",
+        asset_id="tree-oak",
+        asset_category="tree",
+        selection_seed=1,
+        prototype=prototype,
+        terrain=measured.TerrainReference(
+            tmp_path / "terrain.usda", (700_000.0, 6_600_000.0)
+        ),
+    )
+
+    assert instance.scale == (3.0, 2.5, 1.5)
+    assert instance.position == (10.0, 20.0, 101.25)
+    assert instance.measured_horizontal_m == (6.0, 6.0)
+
+
+def test_tree_semantic_tags_distinguish_conifers_oaks_and_mixed_forest() -> None:
+    conifer_metadata = measured._candidate_selection_metadata(
+        "trees",
+        {
+            "source_properties": {"nature": "Forêt fermée de conifères"},
+            "context_classification": "vegetation_prior",
+        },
+        "tree",
+    )
+    assert conifer_metadata["semantic_tags"] == ["conifer"]
+    oak_tags = measured._semantic_tags(
+        measured._metadata_terms({"libelle2": "FUTAIE DE CHENES DECIDUS PURS"})
+    )
+    assert {"broadleaf", "oak"}.issubset(oak_tags)
+    mixed_tags = measured._semantic_tags(
+        measured._metadata_terms({"nature": "Forêt fermée mixte"})
+    )
+    assert {"broadleaf", "conifer"}.issubset(mixed_tags)
+
+
+def test_short_measured_crown_stays_a_tree_candidate() -> None:
+    assert (
+        measured._candidate_category(
+            "trees",
+            {"height_cm": 175},
+            {
+                "schema": measured.REFERENCE_CATALOG_SCHEMA,
+                "selection_pools": {"tree": ["oak"], "vegetation": ["grass"]},
+            },
+        )
+        == "tree"
+    )
+
+
+def test_factual_tree_selection_metadata_locks_conifer_or_oak_forms() -> None:
+    metadata = measured._candidate_selection_metadata(
+        "trees",
+        {
+            "source_properties": {"nature": "Bois"},
+            "asset_selection_policy": (
+                "current_bdtopo_composition_else_bdforet_v1_then_"
+                "conifer_or_oak_only"
+            ),
+        },
+        "tree",
+    )
+
+    assert metadata["tree_form_policy"] == "conifer_or_oak_only"
+
+
 def test_self_contained_usdz_keeps_scoped_pbr_and_omits_redundant_texture(
     tmp_path: Path,
 ) -> None:

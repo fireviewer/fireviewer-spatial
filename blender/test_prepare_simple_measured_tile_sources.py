@@ -411,7 +411,7 @@ def test_source_bundle_accepts_one_hash_locked_zone_context(
                     ]
                 ],
             }
-        elif role == "vegetation":
+        elif role in {"vegetation", "forest_composition"}:
             geometry = {
                 "type": "Polygon",
                 "coordinates": [
@@ -434,6 +434,7 @@ def test_source_bundle_accepts_one_hash_locked_zone_context(
             "properties": {
                 "cleabs": f"{role}-1",
                 "nature": "Route empierrée",
+                "libelle2": "FUTAIE DE PIN NOIR",
                 "importance": "5",
                 "largeur_de_chaussee": None,
             },
@@ -494,6 +495,7 @@ def test_source_bundle_accepts_one_hash_locked_zone_context(
     assert placement["provenance"]["feature_counts"] == {
         "buildings": 1,
         "vegetation": 1,
+        "forest_composition": 1,
         "roads": 1,
         "rail": 1,
         "water": 2,
@@ -503,6 +505,7 @@ def test_source_bundle_accepts_one_hash_locked_zone_context(
         role: len(records) for role, records in placement["context_features"].items()
     } == {
         "vegetation": 1,
+        "forest_composition": 1,
         "roads": 1,
         "rail": 1,
         "hydro_lines": 1,

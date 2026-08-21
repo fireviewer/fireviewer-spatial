@@ -1,8 +1,8 @@
 {
   "schema": "fireviewer.mns-mnt-placement-contract.v2",
-  "status": "experimental_locked_for_9_tile_validation",
+  "status": "experimental_locked_for_r11_quality_validation",
   "compatibility_inventory_schema": "fireviewer.mns-mnt-placement-inventory.v1",
-  "algorithm": "fireviewer.mns-mnt-placement-algorithm.v5",
+  "algorithm": "fireviewer.mns-mnt-placement-algorithm.v8",
   "crs": "EPSG:2154",
   "grid": {
     "canonical_hag_resolution_m": 1,
@@ -14,7 +14,9 @@
   "canonical_hag_source_quality": {
     "sparse_positive_uint16_outlier_policy": "replace at most 32 samples and fraction at most 0.000125 above 65534cm with local MNT ground and record diagnostics",
     "larger_positive_outlier_population": "reject_as_corrupt_or_misaligned",
-    "candidate_authority_after_repair": "all_non_outlier_measured_hag_samples"
+    "candidate_authority_after_repair": "all_non_outlier_measured_hag_samples",
+    "negative_hag_policy": "clamp_negative_to_ground_when_fraction_below_minus_100cm_is_at_most_1pct",
+    "systemic_negative_offset": "reject_when_more_than_1pct_of_canonical_samples_are_below_mnt_by_more_than_100cm"
   },
   "buildings": {
     "existence_authority": "stable_bdtopo_footprint_confirmed_by_measured_mns_minus_mnt",
@@ -33,11 +35,18 @@
     "quantity_authority": "measured_hag_crown_candidates_without_quota_or_thinning",
     "candidate_generation": "legacy_1m_peak_preserving_hag_watershed",
     "native_refinement": "same_1m_peak_cell_selects_highest_native_0.5m_hag_sample",
-    "native_refinement_integrity_failure": "reject_native_refinement_and_keep_canonical_1m_candidates_with_recorded_status",
+    "native_refinement_integrity_failure": "reject_tile_when_more_than_1pct_of_native_samples_are_below_mnt_by_more_than_100cm",
     "native_refinement_may_change_candidate_count": false,
     "native_refinement_may_cross_1m_peak_cell": false,
     "ground_authority": "native_0.5m_mnt_when_available_else_1m_mnt",
+    "visual_base_authority": "highest_native_mnt_sample_inside_original_1m_peak_cell_bounded_to_15cm_clearance_above_selected_ground",
     "height_authority": "native_0.5m_mns_minus_mnt_when_available_else_1m_hag",
+    "horizontal_extent_authority": "measured_equivalent_crown_diameter",
+    "asset_semantics": "current_bdtopo_forest_composition_else_bdforet_v1_composition_then_conifer_or_oak_only",
+    "allowed_runtime_forms": [
+      "conifer",
+      "oak"
+    ],
     "representation": "real_reviewed_catalog_usd_asset_only",
     "procedural_tree_asset": "forbidden",
     "primitive_placeholder": "forbidden",
@@ -79,8 +88,8 @@
     "role": "evidence_only_not_a_map",
     "root": "validation/<zone_id>/<build_id>/<provider>"
   },
-  "fallback": {
-    "lightning_r46": "untouched",
-    "runpod_v2": "experimental_until_9_tile_validation_passes"
+  "provider_transition": {
+    "lightning_r46": "untouched_comparison_reference",
+    "runpod_v2": "replacement_candidate_until_9_tile_quality_validation_passes"
   }
 }

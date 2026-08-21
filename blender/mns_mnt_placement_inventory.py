@@ -83,6 +83,7 @@ _CONNECTIVITY_4 = np.array(
 _CONTEXT_KEYS = ("buildings", "vegetation", "roads", "rail", "water")
 _CONTEXT_FEATURE_ROLES = (
     "vegetation",
+    "forest_composition",
     "roads",
     "rail",
     "hydro_lines",
@@ -1903,16 +1904,50 @@ def validate_inventory(inventory: Mapping[str, Any]) -> None:
         for value in (minimum_delta, negative_count, outlier_count)
     ):
         raise PlacementInventoryError("HAG source diagnostics are invalid")
+    factual_v2_negative_policy = (
+        inventory.get("placement_profile")
+        == "fireviewer.factual-placement-profile.v2"
+        and hag.get("negative_outlier_policy")
+        == "clamp_all_when_below_minus_100cm_fraction_is_at_most_1pct"
+    )
+    severe_negative_count = hag.get("severe_negative_below_100cm_count")
+    severe_negative_fraction = hag.get("severe_negative_below_100cm_fraction")
+    factual_v2_severe_diagnostics_valid = (
+        factual_v2_negative_policy
+        and isinstance(severe_negative_count, int)
+        and not isinstance(severe_negative_count, bool)
+        and severe_negative_count >= 0
+        and severe_negative_count <= negative_count
+        and isinstance(severe_negative_fraction, (int, float))
+        and not isinstance(severe_negative_fraction, bool)
+        and math.isfinite(float(severe_negative_fraction))
+        and 0 <= severe_negative_fraction <= 0.01
+        and math.isclose(
+            float(severe_negative_fraction),
+            severe_negative_count / (PROCESSING_SIZE * PROCESSING_SIZE),
+            abs_tol=5e-13,
+        )
+    )
     if (
-        minimum_delta < -(NEGATIVE_HAG_HARD_LIMIT_CM * 10)
+        (
+            minimum_delta < -(NEGATIVE_HAG_HARD_LIMIT_CM * 10)
+            and not factual_v2_severe_diagnostics_valid
+        )
         or negative_count < 0
         or outlier_count < 0
-        or outlier_count > NEGATIVE_HAG_MAX_OUTLIER_COUNT
+        or (factual_v2_negative_policy and not factual_v2_severe_diagnostics_valid)
+        or (
+            not factual_v2_negative_policy
+            and outlier_count > NEGATIVE_HAG_MAX_OUTLIER_COUNT
+        )
         or not isinstance(outlier_fraction, (int, float))
         or isinstance(outlier_fraction, bool)
         or not math.isfinite(float(outlier_fraction))
         or outlier_fraction < 0
-        or outlier_fraction > NEGATIVE_HAG_MAX_OUTLIER_FRACTION
+        or (
+            not factual_v2_negative_policy
+            and outlier_fraction > NEGATIVE_HAG_MAX_OUTLIER_FRACTION
+        )
         or outlier_count > negative_count
     ):
         raise PlacementInventoryError("HAG source diagnostics violate the contract")

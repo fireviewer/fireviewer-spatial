@@ -31,10 +31,14 @@ PAGE_SIZE = 5_000
 LAYERS = {
     "buildings": "BDTOPO_V3:batiment",
     "vegetation": "BDTOPO_V3:zone_de_vegetation",
+    "forest_composition": "BDFORETV1_BDD_FXX_LAMB93_20140403:resu_bdv1_shape",
     "roads": "BDTOPO_V3:troncon_de_route",
     "rail": "BDTOPO_V3:troncon_de_voie_ferree",
     "hydro_lines": "BDTOPO_V3:troncon_hydrographique",
     "hydro_surfaces": "BDTOPO_V3:surface_hydrographique",
+}
+SORT_FIELDS = {
+    LAYERS["forest_composition"]: "dep,tfifn,typn",
 }
 
 
@@ -115,7 +119,7 @@ def wfs_url(
         ("SRSNAME", CRS),
         ("BBOX", f"{west},{south},{east},{north},{CRS}"),
         ("OUTPUTFORMAT", "application/json"),
-        ("SORTBY", "cleabs"),
+        ("SORTBY", SORT_FIELDS.get(layer, "cleabs")),
         ("STARTINDEX", str(start_index)),
         ("COUNT", str(count)),
     ]
@@ -310,7 +314,7 @@ def prepare_zone_context(
     source_revision: str,
     http_get: HttpGet | None = None,
 ) -> ZoneContext:
-    """Download all six national layers once and atomically publish the snapshot."""
+    """Download all national context layers once and atomically publish them."""
 
     destination = _require_output(output_path)
     bounds = _bounds(bounds_l93_m)
