@@ -25,6 +25,15 @@ def _shard(
     plan_tile_count: int,
 ) -> None:
     shard = root / str(index)
+    prototype = (
+        shard
+        / "shared"
+        / "prototype-bundles"
+        / "v1-test"
+        / f"prototype-{index}.usda"
+    )
+    prototype.parent.mkdir(parents=True, exist_ok=True)
+    prototype.write_text(f"prototype-{index}", encoding="utf-8")
     checkpoint_root = shard / "tile-checkpoints" / "v1"
     for tile_id in tile_ids:
         archive = checkpoint_root / f"{tile_id}.zip"
@@ -99,6 +108,11 @@ def test_merge_shards_requires_complete_disjoint_inventory(tmp_path: Path) -> No
 
     assert receipt["tile_count"] == 4
     assert len(list((tmp_path / "merged" / "tile-checkpoints" / "v1").glob("*.zip"))) == 4
+    prototype_root = tmp_path / "merged" / "shared" / "prototype-bundles" / "v1-test"
+    assert sorted(path.name for path in prototype_root.glob("*.usda")) == [
+        "prototype-0.usda",
+        "prototype-1.usda",
+    ]
 
 
 def test_merge_shards_rejects_duplicate_tile_assignment(tmp_path: Path) -> None:

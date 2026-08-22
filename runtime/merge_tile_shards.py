@@ -118,7 +118,11 @@ def merge_shards(
             ):
                 raise ShardMergeError(f"invalid checkpoint for tile {tile_id}")
 
-        for collection in ("tile-checkpoints", "prototype-bundles", "provenance"):
+        for collection in (
+            Path("tile-checkpoints"),
+            Path("shared") / "prototype-bundles",
+            Path("provenance"),
+        ):
             collection_root = shard_root / collection
             if not collection_root.is_dir():
                 continue

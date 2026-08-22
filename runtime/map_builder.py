@@ -185,12 +185,16 @@ def _copy_directory(source: Path, destination: Path) -> None:
 
 
 def _seed_checkpoints(seed_root: Path, job_root: Path) -> None:
-    allowed = ("tile-checkpoints", "prototype-bundles", "provenance")
+    allowed = (
+        Path("tile-checkpoints"),
+        Path("shared") / "prototype-bundles",
+        Path("provenance"),
+    )
     job_root.mkdir(parents=True, exist_ok=True)
-    for name in allowed:
-        source = seed_root / name
+    for relative in allowed:
+        source = seed_root / relative
         if source.is_dir():
-            _copy_directory(source, job_root / name)
+            _copy_directory(source, job_root / relative)
 
 
 def publish_shard_output(
@@ -205,10 +209,15 @@ def publish_shard_output(
     if output_root.exists() and any(output_root.iterdir()):
         raise MapBuilderContractError(f"output directory is not empty: {output_root}")
     output_root.mkdir(parents=True, exist_ok=True)
-    for name in ("tile-checkpoints", "prototype-bundles", "provenance"):
-        source = job_root / name
+    publishable = (
+        Path("tile-checkpoints"),
+        Path("shared") / "prototype-bundles",
+        Path("provenance"),
+    )
+    for relative in publishable:
+        source = job_root / relative
         if source.is_dir():
-            _copy_directory(source, output_root / name)
+            _copy_directory(source, output_root / relative)
     _copy_file(job_root / "zone-plan.json", output_root / "zone-plan.json")
     _copy_file(
         job_root / "tile-shard-result.json",

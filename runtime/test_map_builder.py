@@ -76,6 +76,64 @@ def test_publish_output_writes_zone_done_last(tmp_path: Path) -> None:
     assert not (output / "runtime" / "viewer-scene.v1.json").exists()
 
 
+def test_shard_publication_and_seed_preserve_shared_prototype_namespace(
+    tmp_path: Path,
+) -> None:
+    job_root = tmp_path / "job"
+    prototype = (
+        job_root
+        / "shared"
+        / "prototype-bundles"
+        / "v1-test"
+        / "tree-oak"
+        / "prototype.usda"
+    )
+    prototype.parent.mkdir(parents=True)
+    prototype.write_text("prototype", encoding="utf-8")
+    for name in ("zone-plan.json", "tile-shard-result.json", "validation-result.json"):
+        (job_root / name).write_text("{}", encoding="utf-8")
+
+    shard_output = tmp_path / "shard-output"
+    validation = {
+        "shard": {
+            "shard_index": 0,
+            "shard_count": 1,
+            "tile_count": 1,
+            "tile_ids": ["tile-0"],
+        },
+        "timings_seconds": {"total": 1.0},
+    }
+    map_builder.publish_shard_output(
+        job_root,
+        shard_output,
+        _job(),
+        validation,
+        {"ram_peak_gb": 1.0},
+    )
+
+    published = (
+        shard_output
+        / "shared"
+        / "prototype-bundles"
+        / "v1-test"
+        / "tree-oak"
+        / "prototype.usda"
+    )
+    assert published.read_text(encoding="utf-8") == "prototype"
+
+    seeded_job = tmp_path / "seeded-job"
+    map_builder._seed_checkpoints(shard_output, seeded_job)
+    seeded = (
+        seeded_job
+        / "shared"
+        / "prototype-bundles"
+        / "v1-test"
+        / "tree-oak"
+        / "prototype.usda"
+    )
+    assert seeded.read_text(encoding="utf-8") == "prototype"
+
+
 def test_semantic_comparator_rejects_count_drift(tmp_path: Path) -> None:
     output = tmp_path / "output"
     (output / "manifests").mkdir(parents=True)
