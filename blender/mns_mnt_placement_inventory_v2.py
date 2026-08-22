@@ -10,8 +10,9 @@ The profile keeps quantity measured while tightening factual presentation:
 * Tree count/status stays identical to the measured 1 m crown detector, while
   the position/ground/height of each candidate is refined inside its exact
   original 1 m peak cell from the native 0.5 m elevation pair when available.
-* Tree width follows the measured crown, the visual base uses bounded local MNT
-  support, and IGN forest composition is retained for deterministic selection.
+* Tree crown and height measurements select and uniformly resize a compatible
+  prototype; the visual base uses bounded local MNT support, and IGN forest
+  composition is retained for deterministic selection.
 * Road/rail/hydro features no longer create generic equipment instances.  Only
   validated fixed-coordinate context assets are instantiated by this profile.
 
@@ -39,7 +40,7 @@ from fixed_asset_placement import (
 from fixed_asset_placement import canonical_json_bytes as canonical_fixed_asset_bytes
 
 CONTRACT_SCHEMA = "fireviewer.mns-mnt-placement-contract.v2"
-ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v8"
+ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v9"
 PLACEMENT_PROFILE = "fireviewer.factual-placement-profile.v2"
 NATIVE_RESOLUTION_M = 0.5
 NATIVE_SOURCE_SIZE = 1040
@@ -507,7 +508,9 @@ def build_placement_inventory_v2(
     )
     trees["count_semantics"] = "estimated_individual_crowns_not_certified_tree_stems"
     trees["native_refinement_may_change_candidate_count"] = False
-    trees["geometry_scale_policy"] = "measured_crown_diameter_x_measured_hag_height"
+    trees["geometry_scale_policy"] = (
+        "uniform_fit_inside_measured_crown_and_height_bounds"
+    )
     trees["base_elevation_policy"] = (
         "highest_native_mnt_inside_peak_cell_bounded_to_15cm_clearance"
     )
@@ -515,7 +518,7 @@ def build_placement_inventory_v2(
     for candidate in trees["candidates"]:
         candidate["support_elevation_mm"] = candidate["ground_elevation_mm"]
         candidate["geometry_scale_policy"] = (
-            "measured_crown_diameter_x_measured_hag_height"
+            "uniform_fit_inside_measured_crown_and_height_bounds"
         )
         candidate["asset_selection_policy"] = TREE_ASSET_SELECTION_POLICY
     native = _native_pair_mm(native_mnt_05m, native_mns_05m)
@@ -673,7 +676,7 @@ def validate_inventory_v2(inventory: Mapping[str, Any]) -> None:
         or trees.get("count_semantics")
         != "estimated_individual_crowns_not_certified_tree_stems"
         or trees.get("geometry_scale_policy")
-        != "measured_crown_diameter_x_measured_hag_height"
+        != "uniform_fit_inside_measured_crown_and_height_bounds"
         or trees.get("base_elevation_policy")
         != "highest_native_mnt_inside_peak_cell_bounded_to_15cm_clearance"
         or trees.get("asset_selection_policy") != TREE_ASSET_SELECTION_POLICY

@@ -256,6 +256,117 @@ def test_runtime_forest_terms_do_not_collapse_compatible_conifer_variety() -> No
     assert selected == {"douglas", "pine", "spruce"}
 
 
+def _runtime_building_asset(
+    asset_id: str, path: str, extents: tuple[float, float, float]
+) -> dict:
+    return {
+        "asset_id": asset_id,
+        "category": "building",
+        "reference": {"path": path},
+        "placement": library._placement_profile(path, "building"),
+        "source_bounds": {
+            "minimum": [0.0, 0.0, 0.0],
+            "maximum": list(extents),
+        },
+    }
+
+
+def test_generic_buildings_are_residential_height_classed_and_never_stations() -> None:
+    assets = [
+        _runtime_building_asset(
+            "house-fit", "02_batiments/maison_individuelle.png", (10.0, 7.0, 6.0)
+        ),
+        _runtime_building_asset(
+            "house-wrong-shape", "02_batiments/pavillon_etroit.png", (4.0, 15.0, 4.0)
+        ),
+        _runtime_building_asset(
+            "apartment", "02_batiments/immeuble_collectif.png", (10.0, 15.0, 6.0)
+        ),
+        _runtime_building_asset(
+            "station",
+            "02_lot_2_services_et_habitat/station_service_rurale.png",
+            (10.0, 7.0, 6.0),
+        ),
+        _runtime_building_asset(
+            "supermarket", "Lot_06_batiments_commerciaux/supermarche.png", (10.0, 7.0, 6.0)
+        ),
+        _runtime_building_asset(
+            "mixed-warehouse",
+            "02_batiments/habitat_commerce_industrie/entrepot_commercial.png",
+            (10.0, 7.0, 6.0),
+        ),
+    ]
+    catalog = {
+        "schema": library.SCHEMA,
+        "catalog_revision": _sha(b"strict-building-selection"),
+        "assets": assets,
+        "selection_pools": {"building": [asset["asset_id"] for asset in assets]},
+    }
+    common = {
+        "category": "building",
+        "zone": "FR-26",
+        "rule_version": "building-v2",
+        "usage": "technical_pilot_non_final",
+    }
+
+    low = {
+        library._select_asset_for_candidate_from_validated_library(
+            catalog,
+            candidate=f"house-{index}",
+            metadata={
+                "context": "building",
+                "semantic_tags": ["residential"],
+                "reference_terms": ["batiment", "indifferencie"],
+                "building_form": "low_rise_house",
+                "measured_dimensions_m": [10.0, 7.0, 6.0],
+            },
+            **common,
+        )["asset_id"]
+        for index in range(32)
+    }
+    high = library._select_asset_for_candidate_from_validated_library(
+        catalog,
+        candidate="collective-1",
+        metadata={
+            "context": "building",
+            "semantic_tags": ["residential"],
+            "reference_terms": ["batiment", "indifferencie"],
+            "building_form": "multi_storey_residential",
+            "measured_dimensions_m": [10.0, 15.0, 6.0],
+        },
+        **common,
+    )
+    commercial = library._select_asset_for_candidate_from_validated_library(
+        catalog,
+        candidate="commerce-1",
+        metadata={
+            "context": "building",
+            "semantic_tags": ["commercial"],
+            "reference_terms": ["commerce"],
+            "building_form": "low_rise_house",
+            "measured_dimensions_m": [10.0, 7.0, 6.0],
+        },
+        **common,
+    )
+    station = library._select_asset_for_candidate_from_validated_library(
+        catalog,
+        candidate="station-1",
+        metadata={
+            "context": "building",
+            "semantic_tags": ["commercial"],
+            "reference_terms": ["station", "service"],
+            "building_form": "low_rise_house",
+            "measured_dimensions_m": [10.0, 7.0, 6.0],
+        },
+        **common,
+    )
+
+    assert low == {"house-fit"}
+    assert high["asset_id"] == "apartment"
+    assert commercial["asset_id"] == "supermarket"
+    assert station["asset_id"] == "station"
+
+
 def _fixture() -> tuple[dict, dict, dict, dict]:
     tree = _reference("111111111111_tree", "01_arbres/Lot 1/Tree.png")
     building = _reference(

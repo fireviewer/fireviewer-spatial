@@ -17,7 +17,7 @@
       "ambiguous",
       "rejected"
     ],
-    "position_source": "inventory_anchor_or_peak_cell_or_stable_SIG_feature_grounded_by_MNT",
+    "position_source": "inventory_footprint_oriented_box_center_or_peak_cell_or_stable_SIG_feature_grounded_by_MNT",
     "ground_source": "inventory_ground_elevation_mm",
     "height_source": "inventory_height_cm",
     "building_footprint_source": "inventory_footprint_geojson_or_explicit_component_dimensions",
@@ -51,7 +51,7 @@
     "api": "build_asset_library_53.select_asset_for_candidate",
     "fixed_asset_override": "a validated fixed_asset_id bypasses the API and must resolve to the exact same-category catalog asset; seed remains deterministic",
     "rule_versions": {
-      "building": "fireviewer.measured-building-selection.v1",
+      "building": "fireviewer.measured-building-selection.v2",
       "tree": "fireviewer.measured-tree-selection.v1",
       "vegetation": "fireviewer.measured-low-vegetation-selection.v1",
       "road_equipment": "fireviewer.measured-road-equipment-selection.v1",
@@ -109,13 +109,13 @@
   "normalization": {
     "prototype_grounding": "translate_source_min_y_to_zero_before_instancing",
     "axis_conversion": "positive_90_degrees_about_x_then_building_footprint_yaw_about_z",
-    "tree_scale": "uniform_from_mns_mnt_height",
+    "tree_scale": "one_uniform_factor_fitted_inside_measured_crown_and_height_bounds",
     "tree_yaw": "deterministic_selection_seed",
     "context_asset_scale": "catalog_native_uniform",
     "context_asset_yaw": "stable_SIG_feature_axis",
-    "building_scale": "measured_target_extents_divided_by_native_source_bounds_extents",
+    "building_scale": "one_uniform_factor_fitted_inside_measured_oriented_footprint_bounds",
     "technical_missing_dimensions_or_pivot": "allowed_only_as_technical_pilot_non_final",
-    "non_uniform_building_scale": "technical_pilot_non_final_only",
+    "non_uniform_building_scale": "forbidden",
     "final_missing_dimensions_or_pivot": "blocked"
   },
   "outputs": {

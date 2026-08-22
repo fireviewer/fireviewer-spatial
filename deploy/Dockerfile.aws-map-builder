@@ -23,12 +23,19 @@ RUN apt-get update \
 
 COPY runtime/ /opt/fireviewer/runtime/
 COPY blender/build_tiled_viewer_package.py \
+    blender/build_reference_usd_asset_library.py \
     blender/build_tiled_viewer_from_sealed.py \
     blender/export_tiled_viewer_prototypes.py \
     blender/map_validation_folder.py \
     blender/map_validation_job.py \
+    blender/mns_mnt_placement_contract.v2.json \
+    blender/mns_mnt_placement_inventory_v2.py \
+    blender/reference_usd_asset_library_contract.v1.json \
     blender/simple_production_engine.py \
     /opt/fireviewer/fireviewer-spatial/blender/
+COPY omniverse/build_measured_scene_usd.py \
+    omniverse/measured_scene_usd_contract.v1.json \
+    /opt/fireviewer/fireviewer-spatial/omniverse/
 COPY infra/aws-map-builder/scripts/execute-batch.sh /opt/fireviewer/aws/execute-batch.sh
 COPY infra/aws-map-builder/scripts/execute-batch-shard.sh /opt/fireviewer/aws/execute-batch-shard.sh
 COPY infra/aws-map-builder/scripts/execute-hf-export.sh /opt/fireviewer/aws/execute-hf-export.sh

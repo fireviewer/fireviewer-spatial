@@ -196,3 +196,33 @@ def test_tree_semantics_prefer_current_composition_then_forest_inventory() -> No
     assert historical.inventory["trees"]["valid_count"] == (
         current.inventory["trees"]["valid_count"]
     )
+
+
+def test_valid_building_footprint_excludes_tree_candidates_inside_it() -> None:
+    mnt, mns, vegetation = _canonical_tree_pair()
+    footprint = {
+        "source_id": "building-over-tree-peak",
+        "properties": {"nature": "Bâtiment indifférencié"},
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [ORIGIN[0] + 240, ORIGIN[1] + 240],
+                [ORIGIN[0] + 260, ORIGIN[1] + 240],
+                [ORIGIN[0] + 260, ORIGIN[1] + 260],
+                [ORIGIN[0] + 240, ORIGIN[1] + 260],
+                [ORIGIN[0] + 240, ORIGIN[1] + 240],
+            ]],
+        },
+    }
+
+    result = build_placement_inventory_v2(
+        mnt,
+        mns,
+        tile_origin_l93_m=ORIGIN,
+        zone_id="GPS-BUILDING-TREE-EXCLUSION",
+        building_footprints=[footprint],
+        context_masks={"vegetation": vegetation},
+    )
+
+    assert result.inventory["buildings"]["valid_count"] == 1
+    assert result.inventory["trees"]["valid_count"] == 0

@@ -1192,13 +1192,15 @@ def _convex_hull(points: Sequence[tuple[float, float]]) -> list[tuple[float, flo
     return lower[:-1] + upper[:-1]
 
 
-def _footprint_box(geometry: Any) -> tuple[float, float, float]:
-    """Return deterministic major width, minor depth and yaw from inventory geometry."""
+def _footprint_frame(
+    geometry: Any,
+) -> tuple[float, float, float, tuple[float, float]]:
+    """Return the deterministic oriented frame of an inventory footprint."""
 
     hull = _convex_hull(_geometry_points(geometry))
     if len(hull) < 3:
         raise MeasuredSceneError("building footprint has an empty convex hull")
-    candidates: list[tuple[float, float, float, float]] = []
+    candidates: list[tuple[float, float, float, float, float, float, float]] = []
     for index, point in enumerate(hull):
         following = hull[(index + 1) % len(hull)]
         dx = following[0] - point[0]
@@ -1212,21 +1214,32 @@ def _footprint_box(geometry: Any) -> tuple[float, float, float]:
         sine = math.sin(angle)
         along = [x * cosine + y * sine for x, y in hull]
         across = [-x * sine + y * cosine for x, y in hull]
+        center_along = (max(along) + min(along)) / 2.0
+        center_across = (max(across) + min(across)) / 2.0
+        center_x = center_along * cosine - center_across * sine
+        center_y = center_along * sine + center_across * cosine
         width = max(along) - min(along)
         depth = max(across) - min(across)
         if depth > width:
             width, depth = depth, width
             angle += math.pi / 2.0
         angle = (angle + math.pi / 2.0) % math.pi - math.pi / 2.0
-        candidates.append((width * depth, abs(angle), angle, width, depth))
+        candidates.append(
+            (width * depth, abs(angle), angle, width, depth, center_x, center_y)
+        )
     if not candidates:
         raise MeasuredSceneError("building footprint has no usable edge")
-    _area, _abs_angle, yaw, width, depth = min(
+    _area, _abs_angle, yaw, width, depth, center_x, center_y = min(
         candidates,
         key=lambda value: tuple(round(component, 9) for component in value),
     )
     if width <= 0.0 or depth <= 0.0:
         raise MeasuredSceneError("building footprint dimensions are empty")
+    return width, depth, yaw, (center_x, center_y)
+
+
+def _footprint_box(geometry: Any) -> tuple[float, float, float]:
+    width, depth, yaw, _center = _footprint_frame(geometry)
     return width, depth, yaw
 
 
@@ -1344,6 +1357,7 @@ def _semantic_tags(terms: set[str]) -> list[str]:
             "commerce",
             "commercial",
             "magasin",
+            "station",
             "superette",
             "supermarche",
         ),
@@ -1413,6 +1427,34 @@ def _candidate_selection_metadata(
     semantic_tags = _semantic_tags(terms)
     if family == "buildings":
         context = "building"
+        width, depth, _yaw = _building_measurement(candidate)
+        height = (
+            _integer(candidate.get("height_cm"), "candidate height_cm", minimum=1)
+            / 100.0
+        )
+        special_tags = {
+            "agricultural",
+            "commercial",
+            "degraded",
+            "industrial",
+            "public_service",
+            "religious",
+        }
+        if not special_tags.intersection(semantic_tags):
+            semantic_tags = sorted({*semantic_tags, "residential"})
+        footprint_area = candidate.get("footprint_area_m2")
+        if (
+            not isinstance(footprint_area, (int, float))
+            or not math.isfinite(float(footprint_area))
+            or float(footprint_area) <= 0.0
+        ):
+            footprint_area = width * depth
+        if height >= 13.0 or (height >= 10.0 and float(footprint_area) >= 250.0):
+            building_form = "multi_storey_residential"
+        elif height >= 8.0 or float(footprint_area) >= 180.0:
+            building_form = "mid_rise_residential"
+        else:
+            building_form = "low_rise_house"
     elif family == "trees":
         context = (
             "measured_low_vegetation"
@@ -1436,6 +1478,24 @@ def _candidate_selection_metadata(
         "semantic_tags": semantic_tags,
         "reference_terms": sorted(terms),
     }
+    if family == "buildings":
+        metadata["measured_dimensions_m"] = [width, height, depth]
+        metadata["building_form"] = building_form
+    elif (
+        family == "trees"
+        and candidate.get("equivalent_crown_radius_m") is not None
+        and candidate.get("height_cm") is not None
+    ):
+        radius = _finite(
+            candidate.get("equivalent_crown_radius_m"),
+            "tree crown radius",
+            positive=True,
+        )
+        height = (
+            _integer(candidate.get("height_cm"), "candidate height_cm", minimum=1)
+            / 100.0
+        )
+        metadata["measured_dimensions_m"] = [radius * 2.0, height, radius * 2.0]
     if (
         family == "trees"
         and candidate.get("asset_selection_policy")
@@ -1471,10 +1531,14 @@ def _instance_from_candidate(
             _integer(candidate.get("height_cm"), "candidate height_cm", minimum=1)
             / 100.0
         )
-        world_x, world_y = _point(
-            candidate.get("anchor_l93_m"), "building anchor_l93_m"
-        )
-        width, depth, yaw = _building_measurement(candidate)
+        geometry = candidate.get("footprint_geojson")
+        if geometry is not None:
+            width, depth, yaw, (world_x, world_y) = _footprint_frame(geometry)
+        else:
+            world_x, world_y = _point(
+                candidate.get("anchor_l93_m"), "building anchor_l93_m"
+            )
+            width, depth, yaw = _building_measurement(candidate)
     elif family == "trees":
         height_m = (
             _integer(candidate.get("height_cm"), "candidate height_cm", minimum=1)
@@ -1502,14 +1566,26 @@ def _instance_from_candidate(
     if family == "trees":
         if (
             candidate.get("geometry_scale_policy")
-            == "measured_crown_diameter_x_measured_hag_height"
+            == "uniform_fit_inside_measured_crown_and_height_bounds"
         ):
-            scale = (width / extents[0], height_m / extents[1], depth / extents[2])
+            uniform_scale = min(
+                width / extents[0], height_m / extents[1], depth / extents[2]
+            )
+            scale = (uniform_scale, uniform_scale, uniform_scale)
         else:
             uniform_scale = height_m / extents[1]
             scale = (uniform_scale, uniform_scale, uniform_scale)
     elif family == "buildings":
-        scale = (width / extents[0], height_m / extents[1], depth / extents[2])
+        native_width = extents[0]
+        native_depth = extents[2]
+        if native_depth > native_width:
+            native_width, native_depth = native_depth, native_width
+            yaw += math.pi / 2.0
+        # One scale factor preserves the prototype and keeps its horizontal
+        # bounds inside the authoritative oriented footprint. Adjacent source
+        # footprints may touch; independently stretched meshes may not overlap.
+        uniform_scale = min(width / native_width, depth / native_depth)
+        scale = (uniform_scale, uniform_scale, uniform_scale)
     else:
         scale = (1.0, 1.0, 1.0)
     if any(not math.isfinite(value) or value <= 0.0 for value in scale):
@@ -2124,10 +2200,11 @@ def build_measured_scene_usd(
             )
         )
     )
-    final_blockers.extend(
-        f"candidate:{candidate_id}:non_uniform_building_scale"
-        for candidate_id in non_uniform_buildings
-    )
+    if non_uniform_buildings:  # pragma: no cover - internal production invariant
+        raise MeasuredSceneError(
+            "building assets must use one uniform scale: "
+            + ", ".join(non_uniform_buildings)
+        )
     final_blockers = sorted(set(final_blockers))
     if usage == "final_scene" and final_blockers:
         raise MeasuredSceneError(
@@ -2296,6 +2373,7 @@ def build_measured_scene_usd(
                 "base_elevation_policy", "point_mnt_ground_elevation"
             ),
             "tree_yaw": "deterministic_selection_seed",
+            "building_scale": "uniform_fit_inside_measured_footprint_bounds",
             "non_uniform_building_scale_candidate_ids": non_uniform_buildings,
             "catalogue_entries_consumed": False,
             "repeated_asset_ids_allowed": True,

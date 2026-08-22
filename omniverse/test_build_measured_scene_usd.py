@@ -274,7 +274,7 @@ def test_factual_tree_uses_measured_crown_width_and_support_elevation(
         "support_elevation_mm": 101_250,
         "height_cm": 1_000,
         "equivalent_crown_radius_m": 3.0,
-        "geometry_scale_policy": "measured_crown_diameter_x_measured_hag_height",
+        "geometry_scale_policy": "uniform_fit_inside_measured_crown_and_height_bounds",
     }
 
     instance = measured._instance_from_candidate(
@@ -289,7 +289,7 @@ def test_factual_tree_uses_measured_crown_width_and_support_elevation(
         ),
     )
 
-    assert instance.scale == (3.0, 2.5, 1.5)
+    assert instance.scale == (1.5, 1.5, 1.5)
     assert instance.position == (10.0, 20.0, 101.25)
     assert instance.measured_horizontal_m == (6.0, 6.0)
 
@@ -312,6 +312,96 @@ def test_tree_semantic_tags_distinguish_conifers_oaks_and_mixed_forest() -> None
         measured._metadata_terms({"nature": "Forêt fermée mixte"})
     )
     assert {"broadleaf", "conifer"}.issubset(mixed_tags)
+
+
+@pytest.mark.parametrize(
+    ("height_cm", "area_m2", "expected_form"),
+    [
+        (650, 90.0, "low_rise_house"),
+        (900, 140.0, "mid_rise_residential"),
+        (1_400, 140.0, "multi_storey_residential"),
+        (1_050, 300.0, "multi_storey_residential"),
+    ],
+)
+def test_building_selection_metadata_uses_measured_form_without_special_evidence(
+    height_cm: int, area_m2: float, expected_form: str
+) -> None:
+    metadata = measured._candidate_selection_metadata(
+        "buildings",
+        {
+            "height_cm": height_cm,
+            "footprint_area_m2": area_m2,
+            "source_properties": {"nature": "Bâtiment indifférencié"},
+            "footprint_geojson": {
+                "type": "Polygon",
+                "coordinates": [[[0, 0], [12, 0], [12, 8], [0, 8], [0, 0]]],
+            },
+        },
+        "building",
+    )
+
+    assert metadata["semantic_tags"] == ["residential"]
+    assert metadata["measured_dimensions_m"] == [12.0, height_cm / 100.0, 8.0]
+    assert metadata["building_form"] == expected_form
+
+
+def test_building_instance_is_centered_and_uniformly_fitted_inside_footprint(
+    tmp_path: Path,
+) -> None:
+    prototype = measured._Prototype(
+        family="buildings",
+        asset_id="house",
+        reference="prototype.usda",
+        source_path=tmp_path / "prototype.usda",
+        source_relative="prototype.usda",
+        source_sha256=_hash_bytes(b"prototype"),
+        source_byte_count=9,
+        texture_path=None,
+        texture_relative=None,
+        texture_sha256=None,
+        texture_byte_count=None,
+        wrapper_relative="house/prototype.usda",
+        wrapper_bytes=b"",
+        material_policy="test",
+        source_up_axis="Y",
+        native_min_y=0.0,
+        native_extents=(2.0, 4.0, 4.0),
+        qualification_blockers=(),
+        availability="real_usd",
+        fallback_resolution=None,
+    )
+    candidate = {
+        "candidate_id": "building-adjacent",
+        "anchor_l93_m": [700_001.0, 6_600_001.0],
+        "ground_elevation_mm": 100_000,
+        "height_cm": 800,
+        "footprint_geojson": {
+            "type": "Polygon",
+            "coordinates": [[
+                [700_010.0, 6_600_020.0],
+                [700_020.0, 6_600_020.0],
+                [700_020.0, 6_600_026.0],
+                [700_010.0, 6_600_026.0],
+                [700_010.0, 6_600_020.0],
+            ]],
+        },
+    }
+
+    instance = measured._instance_from_candidate(
+        candidate,
+        family="buildings",
+        asset_id="house",
+        asset_category="building",
+        selection_seed=1,
+        prototype=prototype,
+        terrain=measured.TerrainReference(
+            tmp_path / "terrain.usda", (700_000.0, 6_600_000.0)
+        ),
+    )
+
+    assert instance.position == (15.0, 23.0, 100.0)
+    assert instance.scale == (2.5, 2.5, 2.5)
+    assert instance.measured_horizontal_m == (10.0, 6.0)
 
 
 def test_short_measured_crown_stays_a_tree_candidate() -> None:
@@ -635,10 +725,10 @@ def test_builds_bit_stable_measured_scene_without_quota_or_fallback(
         assert 'uniform token info:id = "UsdPreviewSurface"' in wrapper_text
         assert 'bindMaterialAs = "strongerThanDescendants"' in wrapper_text
         assert "asset inputs:file = @textures/source.png@" in wrapper_text
-    assert receipt["placement_policy"]["non_uniform_building_scale_candidate_ids"] == [
-        "building-valid-component",
-        "building-valid-footprint",
-    ]
+    assert receipt["placement_policy"]["building_scale"] == (
+        "uniform_fit_inside_measured_footprint_bounds"
+    )
+    assert receipt["placement_policy"]["non_uniform_building_scale_candidate_ids"] == []
 
 
 def test_reference_catalog_is_validated_once_per_scene(
@@ -954,6 +1044,11 @@ def test_contract_locks_measured_sources_and_quantity_preservation() -> None:
     }
     assert implementations["fallback"]["binding_strength"] == "strongerThanDescendants"
     assert contract["prototype_material"]["pbr_atlas"] == "forbidden"
+    assert contract["normalization"]["building_scale"] == (
+        "one_uniform_factor_fitted_inside_measured_oriented_footprint_bounds"
+    )
+    assert contract["normalization"]["non_uniform_building_scale"] == "forbidden"
+    assert contract["selection"]["rule_versions"]["building"].endswith(".v2")
     assert contract["acceptance"]["builder_never_grants_final_acceptance"] is True
 
 

@@ -2,7 +2,7 @@
   "schema": "fireviewer.mns-mnt-placement-contract.v2",
   "status": "experimental_locked_for_r11_quality_validation",
   "compatibility_inventory_schema": "fireviewer.mns-mnt-placement-inventory.v1",
-  "algorithm": "fireviewer.mns-mnt-placement-algorithm.v8",
+  "algorithm": "fireviewer.mns-mnt-placement-algorithm.v9",
   "crs": "EPSG:2154",
   "grid": {
     "canonical_hag_resolution_m": 1,
@@ -28,7 +28,16 @@
     "representation": "real_reviewed_catalog_usd_asset_only",
     "procedural_building_asset": "forbidden",
     "primitive_placeholder": "forbidden",
-    "asset_selection": "closest_compatible_real_asset_by_semantics_and_measured_dimensions",
+    "asset_selection": "strict_source_semantics_then_height_footprint_class_then_closest_uniform_scale_shape",
+    "asset_scale": "one_uniform_factor_only_no_axis_stretching",
+    "generic_building_semantics": "residential_only_special_assets_require_explicit_source_evidence",
+    "residential_form_rules": {
+      "multi_storey_residential": "height_m >= 13 or (height_m >= 10 and footprint_area_m2 >= 250)",
+      "mid_rise_residential": "otherwise height_m >= 8 or footprint_area_m2 >= 180",
+      "low_rise_house": "otherwise",
+      "explicit_special_semantics": "source evidence overrides residential form filtering"
+    },
+    "adjacency": "shared_footprint_boundaries_may_touch_but_asset_bounds_must_not_interpenetrate",
     "asset_may_change_measured_position": false
   },
   "trees": {
@@ -42,6 +51,7 @@
     "visual_base_authority": "highest_native_mnt_sample_inside_original_1m_peak_cell_bounded_to_15cm_clearance_above_selected_ground",
     "height_authority": "native_0.5m_mns_minus_mnt_when_available_else_1m_hag",
     "horizontal_extent_authority": "measured_equivalent_crown_diameter",
+    "asset_scale": "one_uniform_factor_fitted_inside_measured_crown_and_height_bounds",
     "asset_semantics": "current_bdtopo_forest_composition_else_bdforet_v1_composition_then_conifer_or_oak_only",
     "allowed_runtime_forms": [
       "conifer",

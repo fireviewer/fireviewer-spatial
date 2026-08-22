@@ -37,7 +37,7 @@
   },
   "placement": {
     "repeatability": "one catalogue asset may be instanced by any number of independent candidates",
-    "selection": "best compatible context and semantic metadata score then stable hash",
+    "selection": "strict source semantics then measured building class and dimensions then stable hash",
     "quantity_source": "MNS_MNT candidates or stable SIG features; never catalogue quotas",
     "missing_usd": "resolve deterministically to a compatible real USD while retaining the requested asset identity"
   },

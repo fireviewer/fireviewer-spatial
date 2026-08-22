@@ -140,6 +140,7 @@ _SEMANTIC_KEYWORDS = {
         "epicerie",
         "pharmacie",
         "restaurant",
+        "station_service",
         "superette",
         "supermarche",
     ),
@@ -199,6 +200,20 @@ _SEMANTIC_KEYWORDS = {
     "hydro_crossing": ("gue", "passerelle", "pont"),
     "hydro_bank": ("berge", "enrochement", "fascine", "ponton"),
 }
+
+_BUILDING_SPECIAL_TAGS = frozenset(
+    {
+        "agricultural",
+        "commercial",
+        "degraded",
+        "industrial",
+        "public_service",
+        "religious",
+    }
+)
+_BUILDING_FORMS = frozenset(
+    {"low_rise_house", "mid_rise_residential", "multi_storey_residential"}
+)
 
 
 class ReferenceAssetLibraryError(ValueError):
@@ -2217,6 +2232,80 @@ def _runtime_tree_semantic_tags(asset: Mapping[str, Any]) -> set[str]:
     return tags
 
 
+def _runtime_building_semantic_tags(asset: Mapping[str, Any]) -> set[str]:
+    if asset.get("category") != "building":
+        return set()
+    reference = asset.get("reference")
+    path = str(reference.get("path", "")) if isinstance(reference, Mapping) else ""
+    searchable = _search_text(path)
+    return {
+        tag
+        for tag, fragments in _SEMANTIC_KEYWORDS.items()
+        if any(fragment in searchable for fragment in fragments)
+    }
+
+
+def _runtime_building_form(asset: Mapping[str, Any]) -> str | None:
+    reference = asset.get("reference")
+    path = str(reference.get("path", "")) if isinstance(reference, Mapping) else ""
+    searchable = _search_text(path)
+    if any(
+        fragment in searchable
+        for fragment in (
+            "immeuble",
+            "collectif",
+            "hlm",
+            "residence",
+            "logement_social",
+            "barre_de",
+        )
+    ):
+        return "multi_storey_residential"
+    if any(
+        fragment in searchable
+        for fragment in (
+            "maison_de_bourg",
+            "maison_de_ville",
+            "maison_d_angle",
+            "mitoyenne",
+            "facade_urbaine",
+            "alignement_de_facades",
+        )
+    ):
+        return "mid_rise_residential"
+    if any(
+        fragment in searchable
+        for fragment in ("maison", "pavillon", "chalet", "longere", "habitation")
+    ):
+        return "low_rise_house"
+    return None
+
+
+def _asset_shape_error(
+    asset: Mapping[str, Any], measured_dimensions: tuple[float, float, float]
+) -> float | None:
+    bounds = asset.get("source_bounds")
+    if not isinstance(bounds, Mapping):
+        return None
+    minimum = bounds.get("minimum")
+    maximum = bounds.get("maximum")
+    if not isinstance(minimum, list) or not isinstance(maximum, list):
+        return None
+    if len(minimum) != 3 or len(maximum) != 3:
+        return None
+    try:
+        extents = [float(maximum[index]) - float(minimum[index]) for index in range(3)]
+    except (TypeError, ValueError):
+        return None
+    if any(not math.isfinite(value) or value <= 0.0 for value in extents):
+        return None
+    width, height, depth = measured_dimensions
+    native_width, native_depth = sorted((extents[0], extents[2]), reverse=True)
+    ratios = (width / native_width, height / extents[1], depth / native_depth)
+    logs = [math.log(value) for value in ratios]
+    return max(logs) - min(logs)
+
+
 def _select_asset_for_candidate_from_validated_library(
     library: Mapping[str, Any],
     *,
@@ -2265,6 +2354,99 @@ def _select_asset_for_candidate_from_validated_library(
             "selection metadata reference_terms are invalid"
         )
     reference_terms = set(raw_terms)
+    building_form = candidate_metadata.get("building_form")
+    if building_form not in {None, *_BUILDING_FORMS}:
+        raise ReferenceAssetLibraryError("selection metadata building_form is invalid")
+    raw_dimensions = candidate_metadata.get("measured_dimensions_m")
+    measured_dimensions: tuple[float, float, float] | None = None
+    if raw_dimensions is not None:
+        if not isinstance(raw_dimensions, list) or len(raw_dimensions) != 3:
+            raise ReferenceAssetLibraryError(
+                "selection metadata measured_dimensions_m is invalid"
+            )
+        try:
+            measured_dimensions = tuple(float(value) for value in raw_dimensions)
+        except (TypeError, ValueError) as error:
+            raise ReferenceAssetLibraryError(
+                "selection metadata measured_dimensions_m is invalid"
+            ) from error
+        if any(
+            not math.isfinite(value) or value <= 0.0 for value in measured_dimensions
+        ):
+            raise ReferenceAssetLibraryError(
+                "selection metadata measured_dimensions_m is invalid"
+            )
+    if category == "building":
+        desired_special = semantic_tags & _BUILDING_SPECIAL_TAGS
+        tagged = [
+            (
+                asset,
+                set(asset["placement"]["semantic_tags"])
+                | _runtime_building_semantic_tags(asset),
+            )
+            for asset in candidates
+        ]
+        if desired_special:
+            compatible_tagged = [
+                (asset, asset_tags)
+                for asset, asset_tags in tagged
+                if desired_special & asset_tags
+            ]
+            if compatible_tagged:
+                minimum_extra_special_tags = min(
+                    len((asset_tags & _BUILDING_SPECIAL_TAGS) - desired_special)
+                    for _asset, asset_tags in compatible_tagged
+                )
+                compatible = [
+                    asset
+                    for asset, asset_tags in compatible_tagged
+                    if len((asset_tags & _BUILDING_SPECIAL_TAGS) - desired_special)
+                    == minimum_extra_special_tags
+                ]
+            else:
+                compatible = []
+        else:
+            compatible = [
+                asset
+                for asset, asset_tags in tagged
+                if "residential" in asset_tags
+                and not (asset_tags & _BUILDING_SPECIAL_TAGS)
+            ]
+            if not compatible:
+                compatible = [
+                    asset
+                    for asset, asset_tags in tagged
+                    if not (asset_tags & _BUILDING_SPECIAL_TAGS)
+                ]
+        if compatible:
+            candidates = compatible
+        # A station-service is a precise subtype, not a generic commercial
+        # fallback. It is eligible only when the source explicitly says so.
+        if not ({"station", "carburant", "essence"} & reference_terms):
+            without_fuel_stations = [
+                asset
+                for asset in candidates
+                if "station_service"
+                not in _search_text(str(asset.get("reference", {}).get("path", "")))
+            ]
+            if without_fuel_stations:
+                candidates = without_fuel_stations
+        if building_form is not None and not desired_special:
+            allowed_forms = {
+                "low_rise_house": {"low_rise_house"},
+                "mid_rise_residential": {
+                    "mid_rise_residential",
+                    "multi_storey_residential",
+                },
+                "multi_storey_residential": {"multi_storey_residential"},
+            }[building_form]
+            form_compatible = [
+                asset
+                for asset in candidates
+                if _runtime_building_form(asset) in allowed_forms
+            ]
+            if form_compatible:
+                candidates = form_compatible
     tree_form_policy = candidate_metadata.get("tree_form_policy")
     if tree_form_policy not in {None, "conifer_or_oak_only"}:
         raise ReferenceAssetLibraryError("selection metadata tree_form_policy is invalid")
@@ -2307,7 +2489,7 @@ def _select_asset_for_candidate_from_validated_library(
         placement = asset["placement"]
         asset_tags = set(placement["semantic_tags"]) | _runtime_tree_semantic_tags(
             asset
-        )
+        ) | _runtime_building_semantic_tags(asset)
         score = 8 * len(semantic_tags & asset_tags)
         if score_reference_terms:
             score += len(reference_terms & set(placement["reference_terms"]))
@@ -2315,6 +2497,20 @@ def _select_asset_for_candidate_from_validated_library(
     maximum_score = max((score for score, _asset in scored), default=0)
     if maximum_score > 0:
         candidates = [asset for score, asset in scored if score == maximum_score]
+    dimension_error: float | None = None
+    if category in {"building", "tree"} and measured_dimensions is not None:
+        dimension_scored = [
+            (error, asset)
+            for asset in candidates
+            if (error := _asset_shape_error(asset, measured_dimensions)) is not None
+        ]
+        if dimension_scored:
+            dimension_error = min(error for error, _asset in dimension_scored)
+            candidates = [
+                asset
+                for error, asset in dimension_scored
+                if error <= dimension_error + 0.15
+            ]
     candidates.sort(key=lambda asset: str(asset["asset_id"]))
     if not candidates:
         raise ReferenceAssetLibraryError(
@@ -2322,7 +2518,8 @@ def _select_asset_for_candidate_from_validated_library(
         )
     basis = (
         f"{zone}\x1f{candidate}\x1f{rule_version}\x1f"
-        f"{library['catalog_revision']}\x1f{maximum_score}"
+        f"{library['catalog_revision']}\x1f{maximum_score}\x1f"
+        f"{dimension_error if dimension_error is not None else 'none'}"
     )
     digest = hashlib.sha256(basis.encode("utf-8")).digest()
     seed = int.from_bytes(digest[:8], "big")
@@ -2333,6 +2530,7 @@ def _select_asset_for_candidate_from_validated_library(
         "selection_seed": seed,
         "usage_status": usage,
         "metadata_match_score": maximum_score,
+        "dimension_shape_error": dimension_error,
         "repeatable": True,
     }
 
