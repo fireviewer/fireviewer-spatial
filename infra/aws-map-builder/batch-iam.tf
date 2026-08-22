@@ -124,6 +124,17 @@ data "aws_iam_policy_document" "batch_job" {
     ]
     resources = ["${aws_s3_bucket.builds.arn}/maps/*"]
   }
+
+  statement {
+    sid    = "WriteOnlyCurrentTileShards"
+    effect = "Allow"
+    actions = [
+      "s3:AbortMultipartUpload",
+      "s3:ListMultipartUploadParts",
+      "s3:PutObject",
+    ]
+    resources = ["${aws_s3_bucket.work.arn}/requests/*/shards/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "batch_job" {

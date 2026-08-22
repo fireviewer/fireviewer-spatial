@@ -35,7 +35,12 @@ from build_tiled_viewer_package import (
 from map_validation_folder import create_and_publish_validation_folder
 from portable_scene_package import validate_map_upload_package
 from runpod_map_production import normalize_map_request, request_sha256
-from simple_production_engine import ProductionConfig, ProductionEngine, plan_zone
+from simple_production_engine import (
+    ProductionConfig,
+    ProductionEngine,
+    TileCheckpointShardReady,
+    plan_zone,
+)
 
 SCHEMA = "fireviewer.map-validation-job.v2"
 RESULT_NAME = "validation-result.json"
@@ -511,6 +516,19 @@ def run() -> dict[str, Any]:
             f"got {tile_count}"
         )
 
+    shard_index_raw = os.environ.get("FIREVIEWER_TILE_SHARD_INDEX", "").strip()
+    shard_count_raw = os.environ.get("FIREVIEWER_TILE_SHARD_COUNT", "").strip()
+    if bool(shard_index_raw) != bool(shard_count_raw):
+        raise MapValidationJobError(
+            "FIREVIEWER_TILE_SHARD_INDEX and FIREVIEWER_TILE_SHARD_COUNT "
+            "must be set together"
+        )
+    try:
+        shard_index = int(shard_index_raw) if shard_index_raw else None
+        shard_count = int(shard_count_raw) if shard_count_raw else None
+    except ValueError as error:
+        raise MapValidationJobError("tile shard coordinates must be integers") from error
+
     selected_producer = _producer_for_profile(profile)
     engine_config = replace(
         config,
@@ -551,6 +569,8 @@ def run() -> dict[str, Any]:
                 progress_callback=progress,
                 archive_ready_callback=None,
                 fixed_asset_placements=fixed,
+                tile_shard_index=shard_index,
+                tile_shard_count=shard_count,
             ):
                 if archive is not None:
                     raise MapValidationJobError(
@@ -558,6 +578,33 @@ def run() -> dict[str, Any]:
                     )
     except _SealedFolderReady as ready:
         job_root = ready.root
+    except TileCheckpointShardReady as ready:
+        if shard_index is None or shard_count is None:
+            raise MapValidationJobError(
+                "engine returned a tile shard outside shard mode"
+            ) from ready
+        job_root = ready.root
+        completed = time.perf_counter()
+        result = {
+            "schema": SCHEMA,
+            "status": "tile_shard_completed",
+            "provider": provider,
+            "profile": profile,
+            "request_sha256": request_sha256(request),
+            "request": request,
+            "zone_id": ready.receipt["zone_id"],
+            "tile_count": tile_count,
+            "shard": ready.receipt,
+            "timings_seconds": {"total": round(completed - started, 3)},
+            "progress_events": progress_events,
+        }
+        _write_json(job_root / RESULT_NAME, result)
+        print(
+            "FIREVIEWER_VALIDATION_SHARD_RESULT "
+            + json.dumps(result, ensure_ascii=False),
+            flush=True,
+        )
+        return result
 
     if job_root is None:
         raise MapValidationJobError("engine did not return a sealed map folder")

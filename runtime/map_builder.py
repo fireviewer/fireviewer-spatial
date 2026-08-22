@@ -152,6 +152,25 @@ def _find_job_root(run_root: Path, expected_zone: str) -> tuple[Path, dict[str, 
     return root, result
 
 
+def _find_shard_root(run_root: Path, expected_zone: str) -> tuple[Path, dict[str, Any]]:
+    candidates = list((run_root / "export").glob("jobs/*/validation-result.json"))
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    for result_path in candidates:
+        result = _load_json(result_path)
+        if (
+            result.get("status") == "tile_shard_completed"
+            and result.get("zone_id") == expected_zone
+        ):
+            matches.append((result_path.parent, result))
+    unique = {root.resolve(): result for root, result in matches}
+    if len(unique) != 1:
+        raise MapBuilderContractError(
+            f"expected one completed tile shard for {expected_zone}, found {len(unique)}"
+        )
+    root, result = next(iter(unique.items()))
+    return root, result
+
+
 def _copy_file(source: Path, destination: Path) -> None:
     if not source.is_file():
         raise MapBuilderContractError(f"required artifact is missing: {source.name}")
@@ -163,6 +182,71 @@ def _copy_directory(source: Path, destination: Path) -> None:
     if not source.is_dir():
         raise MapBuilderContractError(f"required artifact directory is missing: {source.name}")
     shutil.copytree(source, destination)
+
+
+def _seed_checkpoints(seed_root: Path, job_root: Path) -> None:
+    allowed = ("tile-checkpoints", "prototype-bundles", "provenance")
+    job_root.mkdir(parents=True, exist_ok=True)
+    for name in allowed:
+        source = seed_root / name
+        if source.is_dir():
+            _copy_directory(source, job_root / name)
+
+
+def publish_shard_output(
+    job_root: Path,
+    output_root: Path,
+    job: Mapping[str, Any],
+    validation_result: Mapping[str, Any],
+    resources: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Publish only resumable tile checkpoints; never a valid final map."""
+
+    if output_root.exists() and any(output_root.iterdir()):
+        raise MapBuilderContractError(f"output directory is not empty: {output_root}")
+    output_root.mkdir(parents=True, exist_ok=True)
+    for name in ("tile-checkpoints", "prototype-bundles", "provenance"):
+        source = job_root / name
+        if source.is_dir():
+            _copy_directory(source, output_root / name)
+    _copy_file(job_root / "zone-plan.json", output_root / "zone-plan.json")
+    _copy_file(
+        job_root / "tile-shard-result.json",
+        output_root / "tile-shard-result.json",
+    )
+    _copy_file(
+        job_root / "validation-result.json",
+        output_root / "validation-result.json",
+    )
+    shard = validation_result.get("shard")
+    if not isinstance(shard, Mapping):
+        raise MapBuilderContractError("tile shard validation receipt is missing")
+    metrics = {
+        "schema": "fireviewer.map-tile-shard-metrics.v1",
+        "build_id": job["build_id"],
+        "zone_id": job["zone_id"],
+        "shard_index": shard.get("shard_index"),
+        "shard_count": shard.get("shard_count"),
+        "tile_count": shard.get("tile_count"),
+        "runtime_seconds": validation_result.get("timings_seconds", {}).get("total"),
+        "resources": dict(resources),
+    }
+    _write_json(output_root / "metrics" / "shard-metrics.json", metrics)
+    if list(output_root.rglob("zone.done.json")):
+        raise MapBuilderContractError("a tile shard must never contain zone.done.json")
+    _write_json(
+        output_root / "shard.done.json",
+        {
+            "schema": "fireviewer.map-tile-shard-done.v1",
+            "build_id": job["build_id"],
+            "zone_id": job["zone_id"],
+            "shard_index": shard.get("shard_index"),
+            "shard_count": shard.get("shard_count"),
+            "tile_count": shard.get("tile_count"),
+            "tile_ids": shard.get("tile_ids"),
+        },
+    )
+    return metrics
 
 
 def publish_output(
@@ -289,6 +373,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     builder_request_path = run_root / "inputs" / "builder-request.json"
     _write_json(builder_request_path, builder_request)
 
+    if args.mode == "full" and args.checkpoint_seed:
+        seed_root = Path(args.checkpoint_seed).resolve(strict=True)
+        _seed_checkpoints(seed_root, run_root / "export" / "jobs" / job["zone_id"])
+
     environment = os.environ.copy()
     environment.update(
         {
@@ -313,6 +401,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "CPL_TMPDIR": str(run_root / "rasters"),
         }
     )
+    if args.mode == "tile-shard":
+        if args.shard_index is None or args.shard_count is None:
+            raise MapBuilderContractError(
+                "tile-shard mode requires --shard-index and --shard-count"
+            )
+        environment["FIREVIEWER_TILE_SHARD_INDEX"] = str(args.shard_index)
+        environment["FIREVIEWER_TILE_SHARD_COUNT"] = str(args.shard_count)
     Path(environment["TMPDIR"]).mkdir(parents=True, exist_ok=True)
 
     monitor = ResourceMonitor(run_root)
@@ -339,16 +434,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if return_code != 0:
         raise MapBuilderContractError(f"frozen builder exited with code {return_code}")
 
-    job_root, validation_result = _find_job_root(run_root, str(job["zone_id"]))
-    metrics = publish_output(
-        job_root,
-        Path(args.output).resolve(),
-        job,
-        validation_result,
-        resources,
-    )
+    if args.mode == "tile-shard":
+        job_root, validation_result = _find_shard_root(run_root, str(job["zone_id"]))
+        metrics = publish_shard_output(
+            job_root,
+            Path(args.output).resolve(),
+            job,
+            validation_result,
+            resources,
+        )
+        status = "tile_shard_completed"
+    else:
+        job_root, validation_result = _find_job_root(run_root, str(job["zone_id"]))
+        metrics = publish_output(
+            job_root,
+            Path(args.output).resolve(),
+            job,
+            validation_result,
+            resources,
+        )
+        status = "completed"
     result = {
-        "status": "completed",
+        "status": status,
         "schema": JOB_SCHEMA,
         "build_id": job["build_id"],
         "zone_id": job["zone_id"],
@@ -364,6 +471,10 @@ def main() -> None:
     parser.add_argument("--request", required=True)
     parser.add_argument("--scratch-root", default="/scratch")
     parser.add_argument("--output", default="/output")
+    parser.add_argument("--mode", choices=("full", "tile-shard"), default="full")
+    parser.add_argument("--shard-index", type=int)
+    parser.add_argument("--shard-count", type=int)
+    parser.add_argument("--checkpoint-seed")
     parser.add_argument(
         "--builder-entrypoint",
         default="/opt/fireviewer/fireviewer-spatial/blender/map_validation_job.py",

@@ -123,6 +123,52 @@ variable "g2_validated" {
   default     = false
 }
 
+variable "batch_max_parallel_workers" {
+  description = "General upper bound for tile-shard workers selected dynamically from any admin request."
+  type        = number
+  default     = 8
+
+  validation {
+    condition     = var.batch_max_parallel_workers >= 2 && var.batch_max_parallel_workers <= 8
+    error_message = "The initial general multi-worker ceiling must remain between 2 and 8."
+  }
+}
+
+variable "batch_shard_timeout_seconds" {
+  description = "Hard runtime ceiling for each parallel tile shard."
+  type        = number
+  default     = 2700
+}
+
+variable "batch_assembler_timeout_seconds" {
+  description = "Hard runtime ceiling for checkpoint merge, final scene and tiled viewer."
+  type        = number
+  default     = 3600
+}
+
+variable "batch_exporter_timeout_seconds" {
+  description = "Hard runtime ceiling for the separate Hugging Face publication."
+  type        = number
+  default     = 1200
+}
+
+variable "single_build_credit_limit_eur" {
+  description = "Absolute planning ceiling for one complete map build."
+  type        = number
+  default     = 2.0
+
+  validation {
+    condition     = var.single_build_credit_limit_eur == 2.0
+    error_message = "The authorized single-build credit ceiling is exactly EUR 2.00."
+  }
+}
+
+variable "conservative_worker_hour_eur" {
+  description = "Conservative combined EC2 plus ephemeral EBS planning rate per active worker-hour."
+  type        = number
+  default     = 0.19
+}
+
 variable "github_repository" {
   description = "GitHub owner/repository allowed to publish immutable Map Builder images."
   type        = string
@@ -288,5 +334,18 @@ check "batch_requires_hf_export_secret" {
   assert {
     condition     = !local.batch_activation_requested || var.hf_export_token_parameter_arn != null
     error_message = "Enabled production Batch requires the existing Hugging Face token SSM parameter ARN."
+  }
+}
+
+check "single_build_cost_guard" {
+  assert {
+    condition = (
+      (
+        var.batch_max_parallel_workers * var.batch_shard_timeout_seconds +
+        var.batch_assembler_timeout_seconds +
+        var.batch_exporter_timeout_seconds
+      ) / 3600 * var.conservative_worker_hour_eur * 1.20
+    ) <= var.single_build_credit_limit_eur
+    error_message = "The maximum planned worker time plus a 20 percent safety margin exceeds the EUR 2.00 build ceiling."
   }
 }

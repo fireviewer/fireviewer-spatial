@@ -110,6 +110,47 @@ class SimpleProductionError(RuntimeError):
     """The pod configuration or requested zone cannot be produced safely."""
 
 
+class TileCheckpointShardReady(RuntimeError):
+    """Signal that one execution shard finished its exact checkpoint subset."""
+
+    def __init__(self, root: Path, receipt: Mapping[str, Any]) -> None:
+        super().__init__(str(root))
+        self.root = root
+        self.receipt = dict(receipt)
+
+
+def tile_shard_indices(
+    tiles: Sequence[TilePlan],
+    *,
+    shard_index: int,
+    shard_count: int,
+) -> tuple[int, ...]:
+    """Return a deterministic, disjoint modulo partition of plan tile indices."""
+
+    tile_count = len(tiles)
+    if tile_count < 1:
+        raise SimpleProductionError("Le plan de production ne contient aucune tuile")
+    if shard_count < 1 or shard_count > tile_count:
+        raise SimpleProductionError(
+            "Le nombre de shards doit être compris entre 1 et le nombre de tuiles"
+        )
+    if shard_index < 0 or shard_index >= shard_count:
+        raise SimpleProductionError("L'index du shard est hors limites")
+    metatile_groups: dict[tuple[int, int], list[int]] = {}
+    for index, tile in enumerate(tiles):
+        x_m, y_m = tile.origin_l93_m
+        metatile_groups.setdefault((x_m // 2000, y_m // 2000), []).append(index)
+    assignments: list[list[int]] = [[] for _ in range(shard_count)]
+    loads = [0] * shard_count
+    for _metatile, indices in sorted(
+        metatile_groups.items(), key=lambda item: (-len(item[1]), item[0])
+    ):
+        owner = min(range(shard_count), key=lambda index: (loads[index], index))
+        assignments[owner].extend(indices)
+        loads[owner] += len(indices)
+    return tuple(sorted(assignments[shard_index]))
+
+
 @dataclass(frozen=True, slots=True)
 class ProductionConfig:
     work_root: Path
@@ -2403,7 +2444,13 @@ class ProductionEngine:
         progress_callback: ProgressCallback | None = None,
         archive_ready_callback: ArchiveReadyCallback | None = None,
         fixed_asset_placements: Mapping[str, Any] | None = None,
+        tile_shard_index: int | None = None,
+        tile_shard_count: int | None = None,
     ) -> Iterator[tuple[str, str | None, GalleryItems]]:
+        if (tile_shard_index is None) != (tile_shard_count is None):
+            raise SimpleProductionError(
+                "L'index et le nombre de shards doivent être fournis ensemble"
+            )
         if not self._lock.acquire(blocking=False):
             raise SimpleProductionError("Une production est déjà en cours sur ce pod")
         try:
@@ -2420,6 +2467,8 @@ class ProductionEngine:
                         fixed_asset_placements, self.asset_library_payload
                     )
                 ),
+                tile_shard_index=tile_shard_index,
+                tile_shard_count=tile_shard_count,
             )
         finally:
             self._lock.release()
@@ -2433,6 +2482,8 @@ class ProductionEngine:
         progress_callback: ProgressCallback | None,
         archive_ready_callback: ArchiveReadyCallback | None,
         fixed_asset_placements: Mapping[str, Any],
+        tile_shard_index: int | None,
+        tile_shard_count: int | None,
     ) -> Iterator[tuple[str, str | None, GalleryItems]]:
         started = time.perf_counter()
         base_plan = plan_zone(
@@ -2650,6 +2701,17 @@ class ProductionEngine:
             return
 
         total = len(plan.tiles)
+        assigned_tile_indices = (
+            set(
+                tile_shard_indices(
+                    plan.tiles,
+                    shard_index=tile_shard_index,
+                    shard_count=tile_shard_count,
+                )
+            )
+            if tile_shard_index is not None and tile_shard_count is not None
+            else set(range(total))
+        )
         context_storage_root = scratch_job if scratch_job is not None else job_root
         zone_context_path = context_storage_root / ZONE_CONTEXT_NAME
         report(
@@ -2980,8 +3042,10 @@ class ProductionEngine:
                 elif package_root.is_dir():
                     validate_published_tile(tile, package_root)
                     checkpoint = write_checkpoint(package_root, tile.tile_id)
-            if checkpoint is None:
+            if checkpoint is None and tile_index in assigned_tile_indices:
                 pending_tiles.append((tile_index, tile))
+                continue
+            if checkpoint is None:
                 continue
             with tile_progress_lock:
                 validated_checkpoints[tile.tile_id] = checkpoint
@@ -3044,6 +3108,39 @@ class ProductionEngine:
                     continue
                 yield f"Tuile {done_count}/{total} terminée — {tile_id}", None, []
         completed = len(completed_tiles)
+
+        if tile_shard_index is not None and tile_shard_count is not None:
+            assigned_tile_ids = [
+                plan.tiles[index].tile_id for index in sorted(assigned_tile_indices)
+            ]
+            missing = [
+                tile_id
+                for tile_id in assigned_tile_ids
+                if tile_id not in validated_checkpoints
+            ]
+            unexpected = sorted(
+                set(validated_checkpoints).difference(assigned_tile_ids)
+            )
+            if missing or unexpected:
+                raise SimpleProductionError(
+                    "Le shard de checkpoints est incomplet ou chevauche un autre shard: "
+                    f"missing={missing[:8]}, unexpected={unexpected[:8]}"
+                )
+            shard_receipt = {
+                "schema": "fireviewer.tile-checkpoint-shard.v1",
+                "zone_id": plan.zone_id,
+                "plan_tile_count": total,
+                "shard_index": tile_shard_index,
+                "shard_count": tile_shard_count,
+                "tile_count": len(assigned_tile_ids),
+                "tile_ids": assigned_tile_ids,
+                "checkpoint_receipts": {
+                    tile_id: validated_checkpoints[tile_id]
+                    for tile_id in assigned_tile_ids
+                },
+            }
+            _write_json(job_root / "tile-shard-result.json", shard_receipt)
+            raise TileCheckpointShardReady(job_root, shard_receipt)
 
         _status(
             job_root,
@@ -3203,9 +3300,11 @@ __all__ = [
     "ProductionConfig",
     "ProductionEngine",
     "SimpleProductionError",
+    "TileCheckpointShardReady",
     "TilePlan",
     "ZonePlan",
     "plan_zone",
+    "tile_shard_indices",
     "validate_config",
     "validate_embedded_assets",
     "validate_embedded_runtime",

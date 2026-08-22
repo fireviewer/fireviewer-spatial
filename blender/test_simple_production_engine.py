@@ -586,6 +586,35 @@ def test_parallel_scheduler_fails_instead_of_heartbeating_forever() -> None:
     assert stop.is_set()
 
 
+def test_tile_shard_partition_is_generic_disjoint_and_complete() -> None:
+    tiles = tuple(
+        production.TilePlan(f"tile-{index}", ((index % 24) * 500, (index // 24) * 500))
+        for index in range(576)
+    )
+    partitions = [
+        production.tile_shard_indices(tiles, shard_index=index, shard_count=8)
+        for index in range(8)
+    ]
+    assert max(map(len, partitions)) - min(map(len, partitions)) <= 16
+    assert set().union(*(set(partition) for partition in partitions)) == set(range(576))
+    assert sum(len(partition) for partition in partitions) == 576
+    owners: dict[tuple[int, int], set[int]] = {}
+    for shard_index, partition in enumerate(partitions):
+        for tile_index in partition:
+            x_m, y_m = tiles[tile_index].origin_l93_m
+            owners.setdefault((x_m // 2000, y_m // 2000), set()).add(shard_index)
+    assert all(len(shards) == 1 for shards in owners.values())
+
+
+def test_tile_shard_partition_rejects_invalid_coordinates() -> None:
+    with pytest.raises(production.SimpleProductionError, match="hors limites"):
+        production.tile_shard_indices(
+            tuple(production.TilePlan(f"tile-{index}", (index * 500, 0)) for index in range(9)),
+            shard_index=2,
+            shard_count=2,
+        )
+
+
 def test_engine_returns_full_pack_plus_unified_scene_and_removes_rasters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

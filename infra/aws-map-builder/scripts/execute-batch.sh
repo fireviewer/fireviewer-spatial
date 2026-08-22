@@ -4,6 +4,8 @@ set -euo pipefail
 request_s3_uri=""
 output_s3_uri=""
 expected_image_digest=""
+shards_s3_uri=""
+shard_count=""
 
 while (($#)); do
   case "$1" in
@@ -17,6 +19,14 @@ while (($#)); do
       ;;
     --image-digest)
       expected_image_digest="${2:-}"
+      shift 2
+      ;;
+    --shards-s3-uri)
+      shards_s3_uri="${2:-}"
+      shift 2
+      ;;
+    --shard-count)
+      shard_count="${2:-}"
       shift 2
       ;;
     *)
@@ -33,6 +43,15 @@ fi
 if [[ ! "${expected_image_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
   echo "image digest must be an immutable sha256 digest" >&2
   exit 20
+fi
+if [[ "${shards_s3_uri}" == "disabled" && "${shard_count}" == "0" ]]; then
+  shards_s3_uri=""
+  shard_count=""
+elif [[ -n "${shards_s3_uri}" || -n "${shard_count}" ]]; then
+  if [[ ! "${shards_s3_uri}" =~ ^s3://[^/]+/.+ ]] || [[ ! "${shard_count}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "shards URI and positive shard count must be supplied together" >&2
+    exit 20
+  fi
 fi
 
 job_id="${AWS_BATCH_JOB_ID:-}"
@@ -68,6 +87,32 @@ if observed != sys.argv[2]:
     )
 PY
 
+checkpoint_args=()
+if [[ -n "${shards_s3_uri}" ]]; then
+  shard_download_root="${run_root}/shards"
+  checkpoint_seed="${run_root}/checkpoint-seed"
+  mkdir -p "${shard_download_root}"
+  if ! aws s3 cp "${shards_s3_uri}" "${shard_download_root}" --recursive --only-show-errors; then
+    echo "Tile shard download failed" >&2
+    exit 75
+  fi
+  read -r request_build_id request_zone_id < <(python - "${request_path}" <<'PY'
+import json
+import sys
+
+request = json.load(open(sys.argv[1], encoding="utf-8"))
+print(request["build_id"], request["zone_id"])
+PY
+)
+  python /opt/fireviewer/runtime/merge_tile_shards.py \
+    --source "${shard_download_root}" \
+    --output "${checkpoint_seed}" \
+    --build-id "${request_build_id}" \
+    --zone-id "${request_zone_id}" \
+    --shard-count "${shard_count}"
+  checkpoint_args=(--checkpoint-seed "${checkpoint_seed}")
+fi
+
 output_without_scheme="${output_s3_uri#s3://}"
 output_bucket="${output_without_scheme%%/*}"
 output_prefix="${output_without_scheme#*/}"
@@ -83,7 +128,8 @@ set +e
 /usr/local/bin/map-builder \
   --request "${request_path}" \
   --scratch-root "${run_root}" \
-  --output "${output_path}"
+  --output "${output_path}" \
+  "${checkpoint_args[@]}"
 builder_status=$?
 set -e
 if ((builder_status != 0)); then

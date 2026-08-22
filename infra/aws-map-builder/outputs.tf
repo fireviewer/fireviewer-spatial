@@ -50,12 +50,17 @@ output "batch_compute_environment_arn" {
 
 output "batch_job_queue_arn" {
   value       = try(aws_batch_job_queue.map_builder[0].arn, null)
-  description = "Single-worker Batch queue; null while Batch is disabled."
+  description = "Ephemeral Batch queue with request-sized fan-out; null while Batch is disabled."
 }
 
 output "batch_job_definition_arn" {
   value       = try(aws_batch_job_definition.map_builder[0].arn, null)
   description = "Digest-pinned Map Builder job definition; null while Batch is disabled."
+}
+
+output "batch_tile_shard_job_definition_arn" {
+  value       = try(aws_batch_job_definition.map_tile_shard[0].arn, null)
+  description = "Digest-pinned array-child definition used for generic parallel tile checkpoint production."
 }
 
 output "batch_hf_exporter_job_definition_arn" {

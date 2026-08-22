@@ -120,6 +120,7 @@ data "aws_iam_policy_document" "map_admin" {
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job/*",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-queue/${var.name_prefix}",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}:*",
+      "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}-tile-shard:*",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}-hf-exporter:*",
     ]
 
@@ -132,7 +133,7 @@ data "aws_iam_policy_document" "map_admin" {
     condition {
       test     = "StringEquals"
       variable = "aws:RequestTag/Component"
-      values   = ["MapBuilder", "MapViewerExporter"]
+      values   = ["MapBuilder", "MapTileShard", "MapAssembler", "MapViewerExporter"]
     }
   }
 
@@ -144,6 +145,7 @@ data "aws_iam_policy_document" "map_admin" {
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job/*",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-queue/${var.name_prefix}",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}:*",
+      "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}-tile-shard:*",
       "arn:${local.partition}:batch:${local.region}:${local.account_id}:job-definition/${var.name_prefix}-hf-exporter:*",
     ]
 
@@ -156,7 +158,7 @@ data "aws_iam_policy_document" "map_admin" {
     condition {
       test     = "StringEquals"
       variable = "aws:RequestTag/Component"
-      values   = ["MapBuilder", "MapViewerExporter"]
+      values   = ["MapBuilder", "MapTileShard", "MapAssembler", "MapViewerExporter"]
     }
   }
 
@@ -184,7 +186,7 @@ data "aws_iam_policy_document" "map_admin" {
     condition {
       test     = "StringEquals"
       variable = "aws:ResourceTag/Component"
-      values   = ["MapBuilder", "MapViewerExporter"]
+      values   = ["MapBuilder", "MapTileShard", "MapAssembler", "MapViewerExporter"]
     }
   }
 }

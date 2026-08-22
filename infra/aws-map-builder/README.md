@@ -120,6 +120,10 @@ FV_MAP_AWS_WORK_BUCKET         = terraform output work_bucket_name
 FV_MAP_AWS_BUILDS_BUCKET       = terraform output builds_bucket_name
 FV_MAP_AWS_JOB_QUEUE           = terraform output batch_job_queue_arn
 FV_MAP_AWS_JOB_DEFINITION      = terraform output batch_job_definition_arn
+FV_MAP_AWS_TILE_SHARD_JOB_DEFINITION = terraform output batch_tile_shard_job_definition_arn
+FV_MAP_AWS_MAX_PARALLEL_WORKERS = 8
+FV_MAP_AWS_TARGET_TILES_PER_WORKER = 72
+FV_MAP_AWS_BUILD_CREDIT_LIMIT_EUR = 2.0
 FV_MAP_AWS_IMAGE_DIGEST        = sha256:3c3aef7fd7a0439971f0952cf65a8b2fdae67300f1526dcba4809d2816f88b37
 FV_MAP_AWS_BUILDER_GIT_COMMIT  = 766f157d00e15da72271ec197706c203f040fb7a
 ```
@@ -132,15 +136,22 @@ The managed EC2 compute environment is locked to:
 ```text
 min vCPU     = 0
 desired vCPU = 0
-max vCPU     = 2
+max vCPU     = 16
 instance     = m7i-flex.large
-jobs         = one 2-vCPU map build at a time
+jobs         = 1 to 8 tile workers selected from the request tile count
 ```
 
 It uses an ECS-optimised Amazon Linux 2023 worker, the same encrypted gp3
 scratch profile and the same digest-pinned image. No job means no desired
 worker capacity. The AWS-specific execution script remains separate from the
 provider-neutral Python builder.
+
+Requests up to 72 tiles keep the single-worker path. Heavier requests use
+`ceil(tile_count / 72)` array children, capped at eight. Whole 4x4 source
+metatiles stay on one child to avoid duplicate IGN downloads. A single
+dependent assembler verifies and restores every checkpoint before producing
+the final scene and tiled viewer. The Terraform cost guard budgets the maximum
+worker time, assembler and exporter plus a 20% margin below EUR 2.00.
 
 ## Publication invariant
 
