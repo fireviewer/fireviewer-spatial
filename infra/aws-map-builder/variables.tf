@@ -226,6 +226,57 @@ variable "vercel_oidc_provider_arn" {
   }
 }
 
+variable "azure_oidc_tenant_id" {
+  description = "Microsoft Entra tenant trusted for the Azure Container Apps backend. Null disables Azure federation."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.azure_oidc_tenant_id == null || can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", var.azure_oidc_tenant_id))
+    error_message = "azure_oidc_tenant_id must be null or a lowercase UUID."
+  }
+}
+
+variable "azure_oidc_audience" {
+  description = "Application ID URI requested by the Azure managed identity and accepted by AWS STS."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.azure_oidc_audience == null || can(regex("^(api|urn)://[A-Za-z0-9._:/-]{3,240}$", var.azure_oidc_audience))
+    error_message = "azure_oidc_audience must be null or an api:// / urn:// application identifier URI."
+  }
+}
+
+variable "azure_managed_identity_principal_id" {
+  description = "Object (principal) ID of the exact Azure managed identity allowed to assume the backend role."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.azure_managed_identity_principal_id == null || can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", var.azure_managed_identity_principal_id))
+    error_message = "azure_managed_identity_principal_id must be null or a lowercase UUID."
+  }
+}
+
+check "azure_oidc_configuration_is_complete" {
+  assert {
+    condition = length(compact([
+      var.azure_oidc_tenant_id,
+      var.azure_oidc_audience,
+      var.azure_managed_identity_principal_id,
+      ])) == 0 || length(compact([
+      var.azure_oidc_tenant_id,
+      var.azure_oidc_audience,
+      var.azure_managed_identity_principal_id,
+    ])) == 3
+    error_message = "Azure OIDC federation requires tenant ID, audience and managed identity principal ID together."
+  }
+}
+
 check "batch_requires_g2" {
   assert {
     condition     = !var.enable_batch || var.g2_validated

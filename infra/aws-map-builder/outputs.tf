@@ -72,3 +72,13 @@ output "vercel_oidc_provider_arn" {
   value       = local.vercel_oidc_provider_arn
   description = "Team-scoped Vercel OIDC provider trusted by the backend role."
 }
+
+output "azure_backend_role_arn" {
+  value       = try(aws_iam_role.azure_backend[0].arn, null)
+  description = "Temporary AWS role assumed by the Azure Container Apps managed identity."
+}
+
+output "azure_oidc_provider_arn" {
+  value       = try(aws_iam_openid_connect_provider.azure[0].arn, null)
+  description = "Microsoft Entra OIDC provider trusted by the Azure backend role."
+}

@@ -3,6 +3,8 @@ locals {
   vercel_oidc_issuer          = local.vercel_backend_oidc_enabled ? "https://oidc.vercel.com/${var.vercel_team_slug}" : null
   vercel_oidc_audience        = local.vercel_backend_oidc_enabled ? "https://vercel.com/${var.vercel_team_slug}" : null
   vercel_oidc_subject         = local.vercel_backend_oidc_enabled ? "owner:${var.vercel_team_slug}:project:${var.vercel_project_name}:environment:production" : null
+  azure_backend_oidc_enabled  = var.azure_oidc_tenant_id != null && var.azure_oidc_audience != null && var.azure_managed_identity_principal_id != null
+  map_admin_policy_enabled    = local.vercel_backend_oidc_enabled || local.azure_backend_oidc_enabled
 }
 
 resource "aws_iam_openid_connect_provider" "vercel" {
@@ -52,8 +54,8 @@ resource "aws_iam_role" "vercel_backend" {
   max_session_duration = 3600
 }
 
-data "aws_iam_policy_document" "vercel_backend" {
-  count = local.vercel_backend_oidc_enabled ? 1 : 0
+data "aws_iam_policy_document" "map_admin" {
+  count = local.map_admin_policy_enabled ? 1 : 0
 
   statement {
     sid     = "ListMapRequestObjects"
@@ -192,12 +194,68 @@ resource "aws_iam_role_policy" "vercel_backend" {
 
   name   = "${var.name_prefix}-vercel-backend"
   role   = aws_iam_role.vercel_backend[0].id
-  policy = data.aws_iam_policy_document.vercel_backend[0].json
+  policy = data.aws_iam_policy_document.map_admin[0].json
 }
 
 check "vercel_backend_requires_batch" {
   assert {
     condition     = !local.vercel_backend_oidc_enabled || local.batch_activation_requested
     error_message = "The Vercel backend role must not be activated before AWS Batch is explicitly enabled after G2/G3."
+  }
+}
+
+resource "aws_iam_openid_connect_provider" "azure" {
+  count = local.azure_backend_oidc_enabled ? 1 : 0
+
+  url            = "https://sts.windows.net/${var.azure_oidc_tenant_id}/"
+  client_id_list = [var.azure_oidc_audience]
+}
+
+data "aws_iam_policy_document" "azure_backend_assume_role" {
+  count = local.azure_backend_oidc_enabled ? 1 : 0
+
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.azure[0].arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "sts.windows.net/${var.azure_oidc_tenant_id}/:aud"
+      values   = [var.azure_oidc_audience]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "sts.windows.net/${var.azure_oidc_tenant_id}/:sub"
+      values   = [var.azure_managed_identity_principal_id]
+    }
+  }
+}
+
+resource "aws_iam_role" "azure_backend" {
+  count = local.azure_backend_oidc_enabled ? 1 : 0
+
+  name                 = "${var.name_prefix}-azure-backend"
+  assume_role_policy   = data.aws_iam_policy_document.azure_backend_assume_role[0].json
+  max_session_duration = 3600
+}
+
+resource "aws_iam_role_policy" "azure_backend" {
+  count = local.azure_backend_oidc_enabled ? 1 : 0
+
+  name   = "${var.name_prefix}-azure-backend"
+  role   = aws_iam_role.azure_backend[0].id
+  policy = data.aws_iam_policy_document.map_admin[0].json
+}
+
+check "azure_backend_requires_batch" {
+  assert {
+    condition     = !local.azure_backend_oidc_enabled || local.batch_activation_requested
+    error_message = "The Azure backend role must not be activated before AWS Batch is explicitly enabled after G2/G3."
   }
 }

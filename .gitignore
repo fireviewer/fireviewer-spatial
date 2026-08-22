@@ -56,6 +56,7 @@ reference/**/artifacts/
 # Terraform keeps state and operator-specific values local.  CI uses OIDC and
 # never consumes a committed credential or long-lived AWS key.
 infra/**/.terraform/
+infra/**/*.tfplan
 infra/**/*.tfstate
 infra/**/*.tfstate.*
 infra/**/*.tfvars
