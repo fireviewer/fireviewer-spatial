@@ -6,10 +6,12 @@ import pytest
 
 from build_tiled_viewer_from_sealed import (
     SealedPrototype,
+    TiledViewerPackageError,
     _gltf_instance_record,
     _multiply,
     _quaternion_matrix,
     _scene_instances,
+    _sealed_prototypes,
 )
 
 
@@ -86,3 +88,90 @@ def PointInstancer "ContextAssets" {
     assert groups[prototype.prototype_id][0] == pytest.approx(
         (501.0, 3.0, -502.0, 0.0, 0.0, 0.0, 1.0, 2.0, 4.0, 3.0)
     )
+
+
+def test_shared_asset_identifier_is_scoped_by_family(tmp_path: Path) -> None:
+    layout = {
+        "prototype_count": 2,
+        "prototypes": [
+            {
+                "family": "trees",
+                "asset_id": "shared-asset",
+                "identifier": "Asset_shared_asset",
+                "identity_sha256": "a" * 64,
+            },
+            {
+                "family": "context_assets",
+                "asset_id": "shared-asset",
+                "identifier": "Asset_shared_asset",
+                "identity_sha256": "b" * 64,
+            },
+        ],
+    }
+    prototypes = _sealed_prototypes(layout)
+    scene = tmp_path / "scene.usda"
+    scene.write_text(
+        '''#usda 1.0
+def PointInstancer "Buildings" {
+  rel prototypes = []
+  int64[] ids = []
+  point3f[] positions = []
+  float3[] scales = []
+  quath[] orientations = []
+  int[] protoIndices = []
+}
+def PointInstancer "Trees" {
+  rel prototypes = [</MeasuredScene/Prototypes/Trees/Asset_shared_asset>]
+  int64[] ids = [1]
+  point3f[] positions = [(0, 0, 0)]
+  float3[] scales = [(1, 1, 1)]
+  quath[] orientations = [(1, 0, 0, 0)]
+  int[] protoIndices = [0]
+}
+def PointInstancer "ContextAssets" {
+  rel prototypes = [</MeasuredScene/Prototypes/ContextAssets/Asset_shared_asset>]
+  int64[] ids = [2]
+  point3f[] positions = [(1, 1, 1)]
+  float3[] scales = [(1, 1, 1)]
+  quath[] orientations = [(1, 0, 0, 0)]
+  int[] protoIndices = [0]
+}
+''',
+        encoding="utf-8",
+    )
+    transforms = {prototype.prototype_id: IDENTITY for prototype in prototypes}
+    groups, counts = _scene_instances(
+        scene,
+        tile_id="x1000_y2000",
+        tile_origin=(1000, 2000),
+        zone_origin=(1000, 2000, 0),
+        prototypes=prototypes,
+        prototype_transforms=transforms,
+    )
+    assert counts == {"buildings": 0, "trees": 1, "context_assets": 1}
+    assert len(groups["trees-0000"]) == 1
+    assert len(groups["context_assets-0000"]) == 1
+
+
+def test_duplicate_identifier_in_same_family_is_rejected() -> None:
+    layout = {
+        "prototype_count": 2,
+        "prototypes": [
+            {
+                "family": "trees",
+                "asset_id": "asset-a",
+                "identifier": "Asset_collision",
+                "identity_sha256": "a" * 64,
+            },
+            {
+                "family": "trees",
+                "asset_id": "asset-b",
+                "identifier": "Asset_collision",
+                "identity_sha256": "b" * 64,
+            },
+        ],
+    }
+    with pytest.raises(
+        TiledViewerPackageError, match="Identité de prototype scellé invalide"
+    ):
+        _sealed_prototypes(layout)

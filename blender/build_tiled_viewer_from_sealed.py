@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import hashlib
-import json
 import math
 import os
 import re
@@ -153,7 +152,7 @@ def _sealed_prototypes(layout: Mapping[str, Any]) -> list[SealedPrototype]:
     if not isinstance(raw_rows, list):
         raise TiledViewerPackageError("Prototypes absents du layout scellé")
     counters = {family: 0 for family in FAMILY_ROOTS}
-    identifiers: set[str] = set()
+    identifiers: set[tuple[str, str]] = set()
     result: list[SealedPrototype] = []
     for raw in raw_rows:
         if not isinstance(raw, Mapping):
@@ -168,14 +167,14 @@ def _sealed_prototypes(layout: Mapping[str, Any]) -> list[SealedPrototype]:
             or not asset_id
             or not isinstance(identifier, str)
             or _USD_IDENTIFIER.fullmatch(identifier) is None
-            or identifier in identifiers
+            or (family, identifier) in identifiers
             or not isinstance(identity_sha256, str)
             or len(identity_sha256) != 64
         ):
             raise TiledViewerPackageError("Identité de prototype scellé invalide")
         prototype_id = f"{family}-{counters[family]:04d}"
         counters[family] += 1
-        identifiers.add(identifier)
+        identifiers.add((family, identifier))
         result.append(
             SealedPrototype(
                 prototype_id, family, asset_id, identifier, identity_sha256
@@ -357,7 +356,10 @@ def _scene_instances(
         text = scene_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise TiledViewerPackageError(f"scene.usda illisible pour {tile_id}") from error
-    by_identifier = {prototype.identifier: prototype for prototype in prototypes}
+    by_identifier = {
+        (prototype.family, prototype.identifier): prototype
+        for prototype in prototypes
+    }
     groups = {prototype.prototype_id: [] for prototype in prototypes}
     counts = {family: 0 for family in FAMILY_ROOTS}
     observed_families: set[str] = set()
@@ -376,8 +378,8 @@ def _scene_instances(
             raise TiledViewerPackageError("Cibles de prototypes USDA dupliquées")
         family_prototypes: list[SealedPrototype] = []
         for identifier in identifiers:
-            prototype = by_identifier.get(identifier)
-            if prototype is None or prototype.family != family:
+            prototype = by_identifier.get((family, identifier))
+            if prototype is None:
                 raise TiledViewerPackageError(
                     f"Prototype USDA absent du layout: {identifier}"
                 )
