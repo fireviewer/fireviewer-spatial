@@ -94,6 +94,7 @@ data "aws_iam_policy_document" "batch_job" {
       values = [
         "requests/*",
         "cache/*",
+        "jobs/*",
         "maps/*",
       ]
     }
@@ -109,6 +110,7 @@ data "aws_iam_policy_document" "batch_job" {
     resources = [
       "${aws_s3_bucket.work.arn}/requests/*",
       "${aws_s3_bucket.work.arn}/cache/*",
+      "${aws_s3_bucket.work.arn}/jobs/*",
     ]
   }
 
@@ -133,7 +135,7 @@ data "aws_iam_policy_document" "batch_job" {
       "s3:ListMultipartUploadParts",
       "s3:PutObject",
     ]
-    resources = ["${aws_s3_bucket.work.arn}/requests/*/shards/*"]
+    resources = ["${aws_s3_bucket.work.arn}/jobs/*/shards/*"]
   }
 }
 
