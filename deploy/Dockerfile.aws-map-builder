@@ -45,7 +45,9 @@ COPY infra/aws-map-builder/scripts/execute-batch.sh /opt/fireviewer/aws/execute-
 COPY infra/aws-map-builder/scripts/execute-batch-shard.sh /opt/fireviewer/aws/execute-batch-shard.sh
 COPY infra/aws-map-builder/scripts/execute-hf-export.sh /opt/fireviewer/aws/execute-hf-export.sh
 COPY deploy/aws-map-builder-entrypoint.sh /usr/local/bin/aws-map-builder-entrypoint
-RUN sed -i 's/\r$//' \
+RUN find /opt/fireviewer/runtime -type f -name '*.py' \
+      -exec sed -i 's/\r$//' {} + \
+    && sed -i 's/\r$//' \
       /opt/fireviewer/aws/execute-batch.sh \
       /opt/fireviewer/aws/execute-batch-shard.sh \
       /opt/fireviewer/aws/execute-hf-export.sh \
