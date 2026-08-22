@@ -308,9 +308,86 @@ resource "aws_batch_job_definition" "map_builder" {
   }
 }
 
-# A canary definition is deliberately separate from the definition consumed by
-# the admin backend. Registering it cannot change a production submission; an
-# operator must submit this exact ARN explicitly.
+# Canary shard and assembler definitions are deliberately separate from the
+# definitions consumed by the admin backend. Registering them cannot change a
+# production submission; an operator must submit these exact ARNs explicitly.
+resource "aws_batch_job_definition" "map_tile_shard_canary" {
+  count = local.batch_canary_requested ? 1 : 0
+
+  name                  = "${var.name_prefix}-tile-shard-canary"
+  type                  = "container"
+  platform_capabilities = ["EC2"]
+  propagate_tags        = true
+
+  parameters = {
+    image_digest   = var.batch_canary_image_digest
+    request_s3_uri = "REQUIRED"
+    shard_count    = "REQUIRED"
+    shards_s3_uri  = "REQUIRED"
+  }
+
+  container_properties = jsonencode({
+    image            = "${aws_ecr_repository.map_builder.repository_url}@${var.batch_canary_image_digest}"
+    jobRoleArn       = aws_iam_role.batch_job[0].arn
+    executionRoleArn = aws_iam_role.batch_execution[0].arn
+    command = [
+      "/opt/fireviewer/aws/execute-batch-shard.sh",
+      "--request-s3-uri",
+      "Ref::request_s3_uri",
+      "--shards-s3-uri",
+      "Ref::shards_s3_uri",
+      "--image-digest",
+      "Ref::image_digest",
+      "--shard-count",
+      "Ref::shard_count",
+    ]
+    environment = [
+      { name = "AWS_DEFAULT_REGION", value = local.region },
+      { name = "TMPDIR", value = "/scratch/tmp" },
+      { name = "TMP", value = "/scratch/tmp" },
+      { name = "TEMP", value = "/scratch/tmp" },
+      { name = "XDG_CACHE_HOME", value = "/scratch/cache" },
+    ]
+    linuxParameters = {
+      initProcessEnabled = true
+    }
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.batch.name
+        "awslogs-region"        = local.region
+        "awslogs-stream-prefix" = "canary-tile-shard"
+      }
+    }
+    mountPoints = [
+      {
+        sourceVolume  = "scratch"
+        containerPath = "/scratch"
+        readOnly      = false
+      },
+    ]
+    readonlyRootFilesystem = false
+    resourceRequirements = [
+      { type = "VCPU", value = "2" },
+      { type = "MEMORY", value = "7168" },
+    ]
+    volumes = [
+      {
+        name = "scratch"
+        host = { sourcePath = "/scratch/jobs" }
+      },
+    ]
+  })
+
+  retry_strategy {
+    attempts = 1
+  }
+
+  timeout {
+    attempt_duration_seconds = var.batch_shard_timeout_seconds
+  }
+}
+
 resource "aws_batch_job_definition" "map_builder_canary" {
   count = local.batch_canary_requested ? 1 : 0
 
