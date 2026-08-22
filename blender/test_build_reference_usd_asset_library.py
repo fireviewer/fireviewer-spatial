@@ -256,6 +256,33 @@ def test_runtime_forest_terms_do_not_collapse_compatible_conifer_variety() -> No
     assert selected == {"douglas", "pine", "spruce"}
 
 
+def test_frozen_station_service_profile_is_enriched_without_catalog_rebuild() -> None:
+    source = (
+        "02_lot_2_services_et_habitat/"
+        "08_station_service_rurale/reference.png"
+    )
+    current = library._placement_profile(source, "building")
+    assert "commercial" in current["semantic_tags"]
+
+    frozen = copy.deepcopy(current)
+    frozen["semantic_tags"].remove("commercial")
+    assert library._placement_profile_matches(source, "building", frozen)
+
+    equipment_source = (
+        "Lot_12_elements_complementaires_indispensables_autour_du_bati/"
+        "04_station_service_rurale_modernisee.png"
+    )
+    equipment = library._placement_profile(equipment_source, "public_equipment")
+    equipment["semantic_tags"].remove("commercial")
+    assert library._placement_profile_matches(
+        equipment_source, "public_equipment", equipment
+    )
+
+    malformed = copy.deepcopy(frozen)
+    malformed["selection"] = "uncontrolled"
+    assert not library._placement_profile_matches(source, "building", malformed)
+
+
 def _runtime_building_asset(
     asset_id: str, path: str, extents: tuple[float, float, float]
 ) -> dict:

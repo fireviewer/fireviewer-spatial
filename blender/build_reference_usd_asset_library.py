@@ -654,6 +654,34 @@ def _placement_profile(source_relative: str, category: str) -> dict[str, Any]:
     }
 
 
+def _placement_profile_matches(
+    source_relative: str,
+    category: str,
+    placement: object,
+) -> bool:
+    """Accept the frozen catalogue profile while enriching it at runtime.
+
+    The reference catalogue embedded in the frozen image predates the
+    ``station_service`` commercial keyword.  Runtime selection derives the
+    missing semantic from the immutable reference path, so rebuilding the
+    1.8 GiB catalogue is neither necessary nor desirable for this worker-only
+    correction.  No other profile difference is accepted.
+    """
+
+    expected = _placement_profile(source_relative, category)
+    if placement == expected:
+        return True
+    if "station_service" not in _search_text(source_relative):
+        return False
+    legacy = {
+        **expected,
+        "semantic_tags": [
+            tag for tag in expected["semantic_tags"] if tag != "commercial"
+        ],
+    }
+    return placement == legacy
+
+
 def _fallback_metadata_score(
     target_placement: Mapping[str, Any], donor_placement: Mapping[str, Any]
 ) -> int:
@@ -1819,10 +1847,8 @@ def validate_reference_asset_library(payload: Mapping[str, Any]) -> dict[str, An
         }:
             raise ReferenceAssetLibraryError("non-premium material policy differs")
         placement = asset.get("placement")
-        expected_placement = _placement_profile(
-            str(asset.get("reference", {}).get("path", "")), category
-        )
-        if placement != expected_placement:
+        reference_path = str(asset.get("reference", {}).get("path", ""))
+        if not _placement_profile_matches(reference_path, category, placement):
             raise ReferenceAssetLibraryError("asset placement profile differs")
         reference = asset.get("reference")
         if (
