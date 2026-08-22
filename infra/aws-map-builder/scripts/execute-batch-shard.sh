@@ -27,7 +27,7 @@ fi
 
 job_id="${AWS_BATCH_JOB_ID:-}"
 shard_index="${AWS_BATCH_JOB_ARRAY_INDEX:-}"
-if [[ ! "${job_id}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] \
+if [[ ! "${job_id}" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] \
   || [[ ! "${shard_index}" =~ ^[0-9]+$ ]] \
   || [[ ! "${shard_count}" =~ ^[1-9][0-9]*$ ]] \
   || ((shard_index >= shard_count)); then
