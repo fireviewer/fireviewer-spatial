@@ -115,6 +115,36 @@ def test_merge_shards_requires_complete_disjoint_inventory(tmp_path: Path) -> No
     ]
 
 
+def test_merge_shards_accepts_empty_shards_when_global_inventory_is_complete(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    build_id = "d" * 64
+    zone_id = "GPS-METATILE-GROUPED"
+    for index, tile_ids in enumerate((["tile-0", "tile-1"], [], ["tile-2"])):
+        _shard(
+            source,
+            index=index,
+            count=3,
+            tile_ids=list(tile_ids),
+            build_id=build_id,
+            zone_id=zone_id,
+            plan_tile_count=3,
+        )
+
+    receipt = merge_shards(
+        source,
+        tmp_path / "merged",
+        expected_build_id=build_id,
+        expected_zone_id=zone_id,
+        expected_shard_count=3,
+    )
+
+    assert receipt["shard_count"] == 3
+    assert receipt["tile_count"] == 3
+    assert receipt["tile_ids"] == ["tile-0", "tile-1", "tile-2"]
+
+
 def test_merge_shards_rejects_duplicate_tile_assignment(tmp_path: Path) -> None:
     source = tmp_path / "source"
     build_id = "c" * 64

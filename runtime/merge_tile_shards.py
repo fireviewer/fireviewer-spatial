@@ -81,7 +81,6 @@ def merge_shards(
         tile_ids = result.get("tile_ids")
         if (
             not isinstance(tile_ids, list)
-            or not tile_ids
             or any(not isinstance(tile_id, str) or not tile_id for tile_id in tile_ids)
             or result.get("tile_count") != len(tile_ids)
         ):
