@@ -62,4 +62,7 @@ infra/**/*.tfstate.*
 infra/**/*.tfvars
 !infra/**/*.tfvars.example
 infra/**/plans/
+# PowerShell can create this literal filename when a Terraform plan variable is
+# quoted incorrectly. It is still a generated binary plan, never source.
+infra/**/$plan
 
