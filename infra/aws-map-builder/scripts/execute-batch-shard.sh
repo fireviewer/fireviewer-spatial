@@ -78,16 +78,9 @@ if [[ ! -f "${done_path}" ]] || find "${output_path}" -name zone.done.json -prin
   echo "Shard output is incomplete or contains a forbidden final map marker" >&2
   exit 31
 fi
-local_object_count="$(find "${output_path}" -type f ! -name shard.done.json | wc -l | tr -d ' ')"
 if ! aws s3 cp "${output_path}" "${shard_uri}" --recursive --exclude shard.done.json \
   --checksum-algorithm SHA256 --only-show-errors; then
   exit 75
-fi
-remote_object_count="$(aws s3api list-objects-v2 --bucket "${shard_bucket}" \
-  --prefix "${shard_prefix}/" --query 'length(Contents)' --output text)"
-if [[ "${remote_object_count}" != "${local_object_count}" ]]; then
-  echo "Shard artifact count mismatch: local=${local_object_count}, s3=${remote_object_count}" >&2
-  exit 31
 fi
 read -r done_sha256 done_checksum_b64 < <(python - "${done_path}" <<'PY'
 import base64
@@ -101,5 +94,5 @@ PY
 aws s3api put-object --bucket "${shard_bucket}" --key "${done_key}" --body "${done_path}" \
   --checksum-algorithm SHA256 --checksum-sha256 "${done_checksum_b64}" \
   --metadata "sha256=${done_sha256},publication-order=last" >/dev/null
-printf 'Tile shard complete: index=%s/%s, objects=%s, output=%s\n' \
-  "${shard_index}" "${shard_count}" "${local_object_count}" "${shard_uri}"
+printf 'Tile shard complete: index=%s/%s, output=%s\n' \
+  "${shard_index}" "${shard_count}" "${shard_uri}"

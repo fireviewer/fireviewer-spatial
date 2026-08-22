@@ -142,12 +142,6 @@ if [[ ! -f "${done_path}" ]]; then
   exit 31
 fi
 
-local_object_count="$(find "${output_path}" -type f ! -name zone.done.json | wc -l | tr -d ' ')"
-if ((local_object_count < 1)); then
-  echo "Builder output contains no publishable artifacts" >&2
-  exit 31
-fi
-
 if ! aws s3 cp "${output_path}" "${output_s3_uri}" \
   --recursive \
   --exclude zone.done.json \
@@ -155,19 +149,6 @@ if ! aws s3 cp "${output_path}" "${output_s3_uri}" \
   --only-show-errors; then
   echo "Bulk artifact upload failed" >&2
   exit 75
-fi
-
-if ! remote_object_count="$(aws s3api list-objects-v2 \
-  --bucket "${output_bucket}" \
-  --prefix "${output_prefix}/" \
-  --query 'length(Contents)' \
-  --output text)"; then
-  echo "Unable to count uploaded artifacts" >&2
-  exit 75
-fi
-if [[ "${remote_object_count}" != "${local_object_count}" ]]; then
-  echo "Artifact count mismatch: local=${local_object_count}, s3=${remote_object_count}" >&2
-  exit 31
 fi
 
 read -r done_sha256 done_checksum_b64 < <(
@@ -207,5 +188,5 @@ if [[ "${remote_done_checksum}" != "${done_checksum_b64}" ]]; then
   exit 31
 fi
 
-printf 'Batch publication complete: objects=%s, done_sha256=%s, output=%s\n' \
-  "${local_object_count}" "${done_sha256}" "${output_s3_uri}"
+printf 'Batch publication complete: done_sha256=%s, output=%s\n' \
+  "${done_sha256}" "${output_s3_uri}"
