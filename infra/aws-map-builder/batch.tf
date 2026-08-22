@@ -1,5 +1,6 @@
 locals {
   batch_activation_requested = var.enable_batch && var.g2_validated
+  batch_canary_requested     = local.batch_activation_requested && var.batch_canary_image_digest != null
 }
 
 resource "aws_launch_template" "batch" {
@@ -300,6 +301,89 @@ resource "aws_batch_job_definition" "map_builder" {
       on_exit_code = "137"
     }
 
+  }
+
+  timeout {
+    attempt_duration_seconds = var.batch_assembler_timeout_seconds
+  }
+}
+
+# A canary definition is deliberately separate from the definition consumed by
+# the admin backend. Registering it cannot change a production submission; an
+# operator must submit this exact ARN explicitly.
+resource "aws_batch_job_definition" "map_builder_canary" {
+  count = local.batch_canary_requested ? 1 : 0
+
+  name                  = "${var.name_prefix}-canary"
+  type                  = "container"
+  platform_capabilities = ["EC2"]
+  propagate_tags        = true
+
+  parameters = {
+    image_digest   = var.batch_canary_image_digest
+    output_s3_uri  = "REQUIRED"
+    request_s3_uri = "REQUIRED"
+    shard_count    = "0"
+    shards_s3_uri  = "disabled"
+  }
+
+  container_properties = jsonencode({
+    image            = "${aws_ecr_repository.map_builder.repository_url}@${var.batch_canary_image_digest}"
+    jobRoleArn       = aws_iam_role.batch_job[0].arn
+    executionRoleArn = aws_iam_role.batch_execution[0].arn
+    command = [
+      "/opt/fireviewer/aws/execute-batch.sh",
+      "--request-s3-uri",
+      "Ref::request_s3_uri",
+      "--output-s3-uri",
+      "Ref::output_s3_uri",
+      "--image-digest",
+      "Ref::image_digest",
+      "--shards-s3-uri",
+      "Ref::shards_s3_uri",
+      "--shard-count",
+      "Ref::shard_count",
+    ]
+    environment = [
+      { name = "AWS_DEFAULT_REGION", value = local.region },
+      { name = "TMPDIR", value = "/scratch/tmp" },
+      { name = "TMP", value = "/scratch/tmp" },
+      { name = "TEMP", value = "/scratch/tmp" },
+      { name = "XDG_CACHE_HOME", value = "/scratch/cache" },
+    ]
+    linuxParameters = {
+      initProcessEnabled = true
+    }
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.batch.name
+        "awslogs-region"        = local.region
+        "awslogs-stream-prefix" = "canary"
+      }
+    }
+    mountPoints = [
+      {
+        sourceVolume  = "scratch"
+        containerPath = "/scratch"
+        readOnly      = false
+      },
+    ]
+    readonlyRootFilesystem = false
+    resourceRequirements = [
+      { type = "VCPU", value = "2" },
+      { type = "MEMORY", value = "7168" },
+    ]
+    volumes = [
+      {
+        name = "scratch"
+        host = { sourcePath = "/scratch/jobs" }
+      },
+    ]
+  })
+
+  retry_strategy {
+    attempts = 1
   }
 
   timeout {

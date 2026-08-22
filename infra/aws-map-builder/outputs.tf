@@ -58,6 +58,11 @@ output "batch_job_definition_arn" {
   description = "Digest-pinned Map Builder job definition; null while Batch is disabled."
 }
 
+output "batch_canary_job_definition_arn" {
+  value       = try(aws_batch_job_definition.map_builder_canary[0].arn, null)
+  description = "Operator-only canary definition; null until an explicit canary digest is configured."
+}
+
 output "batch_tile_shard_job_definition_arn" {
   value       = try(aws_batch_job_definition.map_tile_shard[0].arn, null)
   description = "Digest-pinned array-child definition used for generic parallel tile checkpoint production."

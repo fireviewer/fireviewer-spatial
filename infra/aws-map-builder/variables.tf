@@ -214,6 +214,18 @@ variable "batch_image_digest" {
   }
 }
 
+variable "batch_canary_image_digest" {
+  description = "Optional immutable image digest for an operator-only canary definition. It never changes the admin job definition."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.batch_canary_image_digest == null || can(regex("^sha256:[0-9a-f]{64}$", var.batch_canary_image_digest))
+    error_message = "batch_canary_image_digest must be null or a full sha256 digest."
+  }
+}
+
 variable "hf_export_token_parameter_arn" {
   description = "Existing SSM SecureString ARN containing the Hugging Face token used only by the exporter job."
   type        = string
