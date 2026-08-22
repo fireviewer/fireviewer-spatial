@@ -195,6 +195,9 @@ def _seed_checkpoints(seed_root: Path, job_root: Path) -> None:
         source = seed_root / relative
         if source.is_dir():
             _copy_directory(source, job_root / relative)
+    merge_receipt = seed_root / "shard-merge.json"
+    if merge_receipt.is_file():
+        _copy_file(merge_receipt, job_root / merge_receipt.name)
 
 
 def publish_shard_output(

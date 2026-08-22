@@ -538,15 +538,16 @@ def _restore_tile_checkpoint(
     package_root: Path,
     *,
     tile_id: str,
+    trusted_sealed_seed: bool = False,
 ) -> dict[str, Any]:
-    """Rehash and safely materialize one checkpoint onto the local SSD."""
+    """Safely materialize one checkpoint onto the local SSD."""
 
     archive_path, receipt_path = _tile_checkpoint_paths(job_root, tile_id)
     record = _validate_tile_checkpoint_record(
         archive_path,
         receipt_path,
         tile_id=tile_id,
-        rehash_archive=True,
+        rehash_archive=not trusted_sealed_seed,
     )
     destination = package_root.resolve()
     if destination.exists():
@@ -560,7 +561,7 @@ def _restore_tile_checkpoint(
         seen: set[str] = set()
         total_bytes = 0
         with zipfile.ZipFile(archive_path) as archive:
-            if archive.testzip() is not None:
+            if not trusted_sealed_seed and archive.testzip() is not None:
                 raise SimpleProductionError("CRC du checkpoint de tuile invalide")
             members = archive.infolist()
             for member in members:
@@ -588,7 +589,7 @@ def _restore_tile_checkpoint(
         ):
             raise SimpleProductionError("Inventaire du checkpoint de tuile divergent")
         package_receipt = staging / record["package_receipt"]["file"]
-        if (
+        if not trusted_sealed_seed and (
             not package_receipt.is_file()
             or package_receipt.stat().st_size != record["package_receipt"]["byte_count"]
             or _sha256_file(package_receipt) != record["package_receipt"]["sha256"]
@@ -2984,6 +2985,7 @@ class ProductionEngine:
             return tile.tile_id
 
         pending_tiles: list[tuple[int, TilePlan]] = []
+        trusted_sealed_seed = (job_root / "shard-merge.json").is_file()
         for tile_index, tile in enumerate(plan.tiles):
             package_root = package_storage_root / "packages" / tile.tile_id
             archive_path, checkpoint_receipt_path = _tile_checkpoint_paths(
@@ -2996,8 +2998,10 @@ class ProductionEngine:
                         job_root,
                         package_root,
                         tile_id=tile.tile_id,
+                        trusted_sealed_seed=trusted_sealed_seed,
                     )
-                    validate_published_tile(tile, package_root)
+                    if not trusted_sealed_seed:
+                        validate_published_tile(tile, package_root)
                 except Exception as error:
                     if package_root.exists() and scratch_job is not None:
                         shutil.rmtree(package_root)
@@ -3026,8 +3030,10 @@ class ProductionEngine:
                             job_root,
                             package_root,
                             tile_id=tile.tile_id,
+                            trusted_sealed_seed=trusted_sealed_seed,
                         )
-                        validate_published_tile(tile, package_root)
+                        if not trusted_sealed_seed:
+                            validate_published_tile(tile, package_root)
                     except Exception as error:
                         if package_root.exists():
                             shutil.rmtree(package_root)
@@ -3056,7 +3062,9 @@ class ProductionEngine:
             report(
                 fraction,
                 "tile_reused",
-                f"Reprise — tuile {tile_index + 1}/{total} publiée et revalidée",
+                f"Reprise — tuile {tile_index + 1}/{total} restaurée depuis les shards scellés"
+                if trusted_sealed_seed
+                else f"Reprise — tuile {tile_index + 1}/{total} publiée et revalidée",
                 completed_tiles=completed_count,
                 details={"tile_id": tile.tile_id, "tile_index": tile_index + 1},
             )
