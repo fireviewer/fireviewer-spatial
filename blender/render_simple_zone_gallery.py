@@ -15,6 +15,7 @@ import os
 import struct
 import sys
 import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -26,6 +27,8 @@ RESOLUTION = 512
 GALLERY_DIRECTORY = Path("qa") / "gallery"
 RECEIPT_PATH = Path("qa") / "zone-gallery-receipt.v1.json"
 BLEND_NAME = "zone.blend"
+BLEND_METRICS_NAME = "blender-build-metrics.v1.json"
+BLEND_METRICS_SCHEMA = "fireviewer.blender-build-metrics.v1"
 RENDER_EXPOSURE = 0.0
 SUN_ENERGY = 2.0
 BUILDING_FOCUS_CAPTURE_ID = "03-overview-oblique"
@@ -352,6 +355,8 @@ def _import_usd_scene(bpy: Any, stage: Path) -> None:
 def _validate_measured_instances(bpy: Any) -> dict[str, int]:
     """Reject invalid scales or tilted trees before any visual receipt."""
 
+    import numpy as np
+
     counts = {"trees": 0, "buildings": 0}
     for obj in bpy.context.scene.objects:
         if obj.type != "POINTCLOUD":
@@ -371,25 +376,43 @@ def _validate_measured_instances(bpy: Any) -> dict[str, int]:
         orientation_attribute = obj.data.attributes.get("orientation")
         if scale_attribute is None or orientation_attribute is None:
             raise SimpleZoneGalleryError("Tree instances lack scale or orientation")
-        for index in range(point_count):
-            scale = tuple(float(value) for value in scale_attribute.data[index].vector)
-            if len(scale) != 3 or any(
-                not math.isfinite(value) or value <= 0.0 for value in scale
-            ):
-                raise SimpleZoneGalleryError(
-                    f"Tree instance {index} has invalid measured scaling"
-                )
-            quaternion = tuple(
-                float(value) for value in orientation_attribute.data[index].value
+        scales = np.empty(point_count * 3, dtype=np.float32)
+        orientations = np.empty(point_count * 4, dtype=np.float32)
+        if hasattr(scale_attribute.data, "foreach_get"):
+            scale_attribute.data.foreach_get("vector", scales)
+        else:  # test doubles and older Blender collection wrappers
+            scales[:] = [
+                float(value)
+                for item in scale_attribute.data
+                for value in item.vector
+            ]
+        if hasattr(orientation_attribute.data, "foreach_get"):
+            orientation_attribute.data.foreach_get("value", orientations)
+        else:  # test doubles and older Blender collection wrappers
+            orientations[:] = [
+                float(value)
+                for item in orientation_attribute.data
+                for value in item.value
+            ]
+        scales = scales.reshape(point_count, 3)
+        orientations = orientations.reshape(point_count, 4)
+        invalid_scales = np.flatnonzero(
+            ~np.isfinite(scales).all(axis=1) | (scales <= 0.0).any(axis=1)
+        )
+        if invalid_scales.size:
+            raise SimpleZoneGalleryError(
+                f"Tree instance {int(invalid_scales[0])} has invalid measured scaling"
             )
-            if len(quaternion) != 4:
-                raise SimpleZoneGalleryError("Tree orientation is not a quaternion")
-            w, x, y, z = quaternion
-            local_y_world_z = 2.0 * (y * z + w * x)
-            if local_y_world_z < 0.999:
-                raise SimpleZoneGalleryError(
-                    f"Tree instance {index} is not upright after axis conversion"
-                )
+        w, x, y, z = orientations.T
+        local_y_world_z = 2.0 * (y * z + w * x)
+        invalid_orientations = np.flatnonzero(
+            ~np.isfinite(orientations).all(axis=1) | (local_y_world_z < 0.999)
+        )
+        if invalid_orientations.size:
+            raise SimpleZoneGalleryError(
+                f"Tree instance {int(invalid_orientations[0])} is not upright "
+                "after axis conversion"
+            )
     return counts
 
 
@@ -483,6 +506,7 @@ def render_gallery(
 ) -> Path:
     """Import the unified USD, pack a Blend and optionally render legacy views."""
 
+    total_started = time.perf_counter()
     root = _require_root(job_root)
     stage = root / "zone.usda"
     plan_path = root / "zone-plan.json"
@@ -515,7 +539,10 @@ def render_gallery(
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     _configure_scene(bpy)
+    phase_started = time.perf_counter()
     _import_usd_scene(bpy, stage)
+    import_seconds = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     instance_counts = _validate_measured_instances(bpy)
     if (
         zone_receipt.get("building_count") != instance_counts["buildings"]
@@ -531,6 +558,7 @@ def render_gallery(
         )
     capture_plan = _with_building_focus(capture_plan, building_samples)
     minimum, maximum = _scene_bounds(bpy)
+    scene_validation_seconds = time.perf_counter() - phase_started
     center_z = (minimum[2] + maximum[2]) / 2.0
     radius = max(width_m, height_m, maximum[2] - minimum[2], 1.0)
 
@@ -559,7 +587,9 @@ def render_gallery(
         else Path(blend_output).resolve(strict=False)
     )
     blend_path.parent.mkdir(parents=True, exist_ok=True)
+    phase_started = time.perf_counter()
     _pack_scene_images(bpy, blend_path.parent)
+    texture_pack_seconds = time.perf_counter() - phase_started
     records: list[dict[str, Any]] = []
     if render_captures:
         gallery_root = root / GALLERY_DIRECTORY
@@ -617,7 +647,29 @@ def render_gallery(
         maximum[2] + radius * 0.90,
     )
     _look_at(camera, (width_m / 2.0, height_m / 2.0, center_z))
+    phase_started = time.perf_counter()
     _save_standalone_blend(bpy, blend_path)
+    blend_save_seconds = time.perf_counter() - phase_started
+    _write_json(
+        root / BLEND_METRICS_NAME,
+        {
+            "schema": BLEND_METRICS_SCHEMA,
+            "instance_counts": instance_counts,
+            "phase_times_seconds": {
+                "usd_import": round(import_seconds, 6),
+                "instance_and_bounds_validation": round(
+                    scene_validation_seconds, 6
+                ),
+                "texture_pack": round(texture_pack_seconds, 6),
+                "blend_save": round(blend_save_seconds, 6),
+                "total": round(time.perf_counter() - total_started, 6),
+            },
+            "zone_blend": {
+                "byte_count": blend_path.stat().st_size,
+                "sha256": _sha256_file(blend_path),
+            },
+        },
+    )
 
     if not render_captures:
         return blend_path

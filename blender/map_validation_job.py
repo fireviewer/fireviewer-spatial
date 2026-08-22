@@ -129,7 +129,8 @@ def _sealed_folder_mode() -> Iterator[None]:
     original_seal = production_engine.seal_map_upload_package
 
     def seal_and_stop(root: Path | str) -> None:
-        original_seal(root)
+        if not _bool_env("FIREVIEWER_FAST_FINALIZE", False):
+            original_seal(root)
         raise _SealedFolderReady(Path(root).resolve(strict=True))
 
     production_engine._write_archive_budget_receipt = _skip_archive_budget
@@ -203,6 +204,7 @@ def _run_viewer_export(
     config: ProductionConfig,
     job_root: Path,
     zone_receipt: Mapping[str, Any],
+    viewer_phase_times: dict[str, float] | None = None,
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any],
@@ -214,15 +216,29 @@ def _run_viewer_export(
             "FIREVIEWER_VALIDATION_TILED_PROTOTYPE_TIMEOUT_SECONDS", "1800"
         )
     )
+    tiled_build_started = time.perf_counter()
     build_tiled_viewer_package(
         job_root,
         blender=config.blender,
         timeout_seconds=tiled_timeout,
     )
+    tiled_build_finished = time.perf_counter()
     try:
         tiled_receipt, tiled_viewer = validate_tiled_viewer_package(job_root)
     except Exception as error:
         raise MapValidationJobError("tiled viewer package is invalid") from error
+    tiled_validation_finished = time.perf_counter()
+    if viewer_phase_times is not None:
+        viewer_phase_times.update(
+            {
+                "tiled_build": round(
+                    tiled_build_finished - tiled_build_started, 6
+                ),
+                "tiled_validation": round(
+                    tiled_validation_finished - tiled_build_finished, 6
+                ),
+            }
+        )
 
     policy = os.environ.get(
         "FIREVIEWER_VALIDATION_MONOLITHIC_VIEWER", "off"
@@ -455,7 +471,6 @@ def _publish_complete_viewer_public(
         "viewer": {
             "catalog_path": f"{remote_root}/{viewer['catalog_path']}",
             "receipt_path": f"{remote_root}/{viewer['receipt_path']}",
-            "catalog_sha256": viewer["catalog_sha256"],
             "catalog_byte_count": viewer["catalog_byte_count"],
             "payload_file_count": viewer["payload_file_count"],
             "payload_byte_count": viewer["payload_byte_count"],
@@ -509,7 +524,7 @@ def run() -> dict[str, Any]:
     create_evidence = _bool_env(
         "FIREVIEWER_VALIDATION_CREATE_EVIDENCE",
         True,
-    )
+    ) and not _bool_env("FIREVIEWER_FAST_FINALIZE", False)
     if require_nine_tiles and tile_count != 9:
         raise MapValidationJobError(
             "hard stop: validation request must resolve to exactly 9 tiles, "
@@ -608,7 +623,8 @@ def run() -> dict[str, Any]:
 
     if job_root is None:
         raise MapValidationJobError("engine did not return a sealed map folder")
-    validate_map_upload_package(job_root)
+    if not _bool_env("FIREVIEWER_FAST_FINALIZE", False):
+        validate_map_upload_package(job_root)
     zone_receipt = json.loads(
         (job_root / "zone.done.json").read_text(encoding="utf-8")
     )
@@ -642,10 +658,12 @@ def run() -> dict[str, Any]:
             )
     placement_evidence_finished = time.perf_counter()
 
+    viewer_phase_times: dict[str, float] = {}
     viewer_receipt, monolithic_viewer, tiled_viewer_receipt, viewer = _run_viewer_export(
         config,
         job_root,
         zone_receipt,
+        viewer_phase_times,
     )
     viewer_finished = time.perf_counter()
 
@@ -735,6 +753,7 @@ def run() -> dict[str, Any]:
         "viewer_publication_error": viewer_publication_error,
         "dataset": dataset,
         "viewer": public_viewer,
+        "viewer_phase_times_seconds": viewer_phase_times,
         "timings_seconds": {
             "sealed_map": round(placement_finished - started, 3),
             "placement_evidence": round(

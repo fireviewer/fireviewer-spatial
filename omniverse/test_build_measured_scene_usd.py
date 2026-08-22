@@ -930,18 +930,21 @@ def test_candidate_and_catalog_order_do_not_change_scene(fixture_root) -> None:
     assert first.scene.read_bytes() == second.scene.read_bytes()
 
 
-def test_final_usage_fails_closed_on_dimensions_pivot_and_non_uniform_scale(
+def test_final_usage_replaces_technically_blocked_assets_with_procedural_geometry(
     fixture_root,
 ) -> None:
     root, terrain, prototype = fixture_root
-    with pytest.raises(
-        measured.MeasuredSceneError, match="technical-only normalization"
-    ):
-        _build(root, terrain, prototype, "final-blocked", usage="final_scene")
-    assert not (root / "final-blocked").exists()
+    package = _build(
+        root, terrain, prototype, "final-resilient", usage="final_scene"
+    )
+    receipt = measured.validate_measured_scene_package(package.output_root)
+    assert receipt["status"] == "assembled_final_candidate"
+    assert receipt["procedural_instance_count"] == 3
+    assert receipt["placement_policy"]["procedural_fallback_used"] is True
+    assert receipt["final_blockers"] == []
 
 
-def test_missing_or_escaping_asset_never_becomes_a_primitive(fixture_root) -> None:
+def test_missing_or_escaping_asset_uses_traced_procedural_fallback(fixture_root) -> None:
     root, terrain, prototype = fixture_root
     library = _library(_hash_bytes(prototype.read_bytes()))
     selected_id = _selector()(
@@ -956,17 +959,17 @@ def test_missing_or_escaping_asset_never_becomes_a_primitive(fixture_root) -> No
         asset for asset in library["assets"] if asset["asset_id"] == selected_id
     )
     selected["usd"]["path"] = "../outside.usda"
-    with pytest.raises(measured.MeasuredSceneError, match="confined relative path"):
-        _build(root, terrain, prototype, "escape", library=library)
-    assert not (root / "escape").exists()
+    escaped = _build(root, terrain, prototype, "escape", library=library)
+    escaped_receipt = measured.validate_measured_scene_package(escaped.output_root)
+    assert escaped_receipt["procedural_instance_count"] >= 1
+    assert escaped_receipt["placement_policy"]["procedural_fallback_used"] is True
 
     library = _library(_hash_bytes(prototype.read_bytes()))
     prototype.unlink()
-    with pytest.raises(
-        measured.MeasuredSceneError, match="prototype artifact is missing"
-    ):
-        _build(root, terrain, prototype, "missing", library=library)
-    assert not (root / "missing").exists()
+    missing = _build(root, terrain, prototype, "missing", library=library)
+    missing_receipt = measured.validate_measured_scene_package(missing.output_root)
+    assert missing_receipt["procedural_instance_count"] >= 1
+    assert missing_receipt["placement_policy"]["procedural_fallback_used"] is True
 
 
 def test_overwrite_c_drive_and_receipt_tamper_are_blocked(fixture_root) -> None:

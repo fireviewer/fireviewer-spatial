@@ -22,7 +22,8 @@ RUN apt-get update \
     && rm -rf /tmp/aws /tmp/awscliv2.zip /var/lib/apt/lists/*
 
 COPY runtime/ /opt/fireviewer/runtime/
-COPY blender/build_tiled_viewer_package.py \
+COPY blender/asset_placement_policy.py \
+    blender/build_tiled_viewer_package.py \
     blender/build_reference_usd_asset_library.py \
     blender/build_tiled_viewer_from_sealed.py \
     blender/export_tiled_viewer_prototypes.py \
@@ -30,9 +31,13 @@ COPY blender/build_tiled_viewer_package.py \
     blender/map_validation_job.py \
     blender/mns_mnt_placement_contract.v2.json \
     blender/mns_mnt_placement_inventory_v2.py \
+    blender/produce_simple_measured_tile.py \
     blender/reference_usd_asset_library_contract.v1.json \
+    blender/render_simple_zone_gallery.py \
     blender/simple_production_engine.py \
     /opt/fireviewer/fireviewer-spatial/blender/
+COPY blender/procedural_fallbacks/ \
+    /opt/fireviewer/fireviewer-spatial/blender/procedural_fallbacks/
 COPY omniverse/build_measured_scene_usd.py \
     omniverse/measured_scene_usd_contract.v1.json \
     /opt/fireviewer/fireviewer-spatial/omniverse/
@@ -56,7 +61,10 @@ ENV PYTHONPATH=/opt/fireviewer/runtime:/opt/fireviewer/fireviewer-spatial/blende
     FIREVIEWER_VALIDATION_PUBLISH_VIEWER=0 \
     FIREVIEWER_VALIDATION_REQUIRE_VIEWER_PUBLICATION=0 \
     FIREVIEWER_VALIDATION_MONOLITHIC_VIEWER=off \
-    FIREVIEWER_VALIDATION_REQUIRE_NINE_TILES=0
+    FIREVIEWER_VALIDATION_REQUIRE_NINE_TILES=0 \
+    FIREVIEWER_TILED_PROTOTYPE_CACHE=/scratch/shared-cache/prototypes \
+    FIREVIEWER_TILED_TILE_CACHE=/scratch/shared-cache/tiles \
+    FIREVIEWER_FAST_FINALIZE=1
 
 HEALTHCHECK NONE
 ENTRYPOINT ["/usr/local/bin/aws-map-builder-entrypoint"]

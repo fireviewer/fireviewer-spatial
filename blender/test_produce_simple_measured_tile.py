@@ -568,6 +568,23 @@ def test_selected_embedded_usdz_does_not_require_a_separate_bundled_texture(
         )
 
 
+def test_selected_assets_accept_sealed_procedural_fallback(
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "asset-library.json"
+    _write_json(library, {"assets": []})
+    scene_receipt = {
+        "prototypes": [
+            {
+                "asset_id": "procedural-tree-broadleaf",
+                "availability": "procedural_fallback",
+            }
+        ]
+    }
+
+    simple._validate_selected_assets(scene_receipt, library, {})
+
+
 def test_selected_assets_reuse_the_startup_validated_hash_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

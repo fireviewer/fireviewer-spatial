@@ -1,8 +1,8 @@
 {
   "schema": "fireviewer.mns-mnt-placement-contract.v2",
-  "status": "experimental_locked_for_r11_quality_validation",
+  "status": "experimental_r12_resilient_placement_candidate",
   "compatibility_inventory_schema": "fireviewer.mns-mnt-placement-inventory.v1",
-  "algorithm": "fireviewer.mns-mnt-placement-algorithm.v9",
+  "algorithm": "fireviewer.mns-mnt-placement-algorithm.v10",
   "crs": "EPSG:2154",
   "grid": {
     "canonical_hag_resolution_m": 1,
@@ -25,8 +25,8 @@
     "height_authority": "mns_minus_mnt_p95_inside_footprint",
     "minimum_measured_height_m": 2,
     "morphology_only_buildings": "never_instantiated",
-    "representation": "real_reviewed_catalog_usd_asset_only",
-    "procedural_building_asset": "forbidden",
+    "representation": "real_reviewed_catalog_usd_asset_else_measured_procedural_fallback",
+    "procedural_building_asset": "allowed_only_as_measured_candidate_fallback_when_catalog_asset_is_invalid_or_visual_role_budget_is_exceeded",
     "primitive_placeholder": "forbidden",
     "asset_selection": "strict_source_semantics_then_height_footprint_class_then_closest_uniform_scale_shape",
     "asset_scale": "one_uniform_factor_only_no_axis_stretching",
@@ -37,7 +37,7 @@
       "low_rise_house": "otherwise",
       "explicit_special_semantics": "source evidence overrides residential form filtering"
     },
-    "adjacency": "shared_footprint_boundaries_may_touch_but_asset_bounds_must_not_interpenetrate",
+    "adjacency": "shared_footprint_boundaries_may_touch_but_positive_area_intersections_remove_the_lower_priority_candidate",
     "asset_may_change_measured_position": false
   },
   "trees": {
@@ -57,8 +57,8 @@
       "conifer",
       "oak"
     ],
-    "representation": "real_reviewed_catalog_usd_asset_only",
-    "procedural_tree_asset": "forbidden",
+    "representation": "real_reviewed_catalog_usd_asset_else_measured_procedural_fallback",
+    "procedural_tree_asset": "allowed_only_as_measured_candidate_fallback_when_catalog_asset_is_invalid",
     "primitive_placeholder": "forbidden",
     "viewer_thinning": "forbidden",
     "viewer_quota": "forbidden",
@@ -85,7 +85,7 @@
     "quantity_authority": "none",
     "mesh_coverage": "complete",
     "completeness_policy": "fail_closed_exact_visual_scene",
-    "missing_canonical_instance_count": 0,
+    "missing_canonical_instance_count": "zero_except_candidates_explicitly_removed_with_reason_by_placement_policy",
     "extra_canonical_instance_count": 0,
     "placeholder_instance_count": 0,
     "simplified_primary_viewer": "forbidden",

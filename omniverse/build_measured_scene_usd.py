@@ -1,10 +1,12 @@
 """Assemble measured terrain, buildings and vegetation into portable USDA.
 
-The assembler deliberately performs no detection and no procedural placement.
+The assembler deliberately performs no detection and never invents a placement.
 Every instance is a direct projection of one ``valid`` candidate from the
-canonical MNS/MNT placement inventory.  Ambiguous and rejected candidates are
-kept in the receipt, never silently dropped.  Prototype choice is delegated to
-the immutable 53-asset catalogue API.
+canonical MNS/MNT placement inventory. Ambiguous, rejected, and policy-removed
+candidates are kept in the receipt, never silently dropped. Prototype choice is
+delegated to the immutable catalogue; a broken catalogue prototype may be
+replaced by a small local procedural representation of the same measured
+candidate rather than failing the entire tile.
 
 The module only writes USDA text and JSON, so it does not require Kit or
 ``pxr``.  The terrain remains a relative reference supplied by the accepted
@@ -37,6 +39,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+
+from asset_placement_policy import (
+    SCHEMA as PLACEMENT_RESILIENCE_SCHEMA,
+    asset_repeat_limit,
+    asset_shape_is_compatible,
+    building_form as classify_building_form,
+    procedural_asset_id,
+    procedural_selection_seed,
+    special_building_role,
+    special_role_limit,
+)
 
 _SHARED_PROTOTYPE_LOCKS_GUARD = threading.Lock()
 _SHARED_PROTOTYPE_LOCKS: dict[tuple[str, str], tuple[threading.Lock, int]] = {}
@@ -1109,7 +1122,74 @@ def _plan_prototype_bundle(
     )
 
 
+def _plan_procedural_prototype(
+    *,
+    family: str,
+    asset_id: str,
+    portable_root: Path,
+    bundle_root: Path,
+    output_root: Path,
+) -> _Prototype:
+    """Plan a tiny checked-in fallback without inventing a placement."""
+
+    safe_id = _bundle_asset_id(asset_id)
+    fallback_root = Path(__file__).resolve().parents[1] / "blender" / "procedural_fallbacks"
+    if safe_id.startswith("procedural-building-") and family == "buildings":
+        source = fallback_root / "building.usda"
+    elif safe_id == "procedural-tree-broadleaf" and family == "trees":
+        source = fallback_root / "tree-broadleaf.usda"
+    elif safe_id == "procedural-tree-conifer" and family == "trees":
+        source = fallback_root / "tree-conifer.usda"
+    else:
+        raise MeasuredSceneError(
+            f"unsupported procedural fallback {family}:{safe_id}"
+        )
+    source = source.resolve(strict=True)
+    source_bytes = source.read_bytes()
+    asset_relative = PurePosixPath(safe_id)
+    source_relative = (asset_relative / "source.usda").as_posix()
+    wrapper_relative = (asset_relative / "prototype.usda").as_posix()
+    wrapper_bytes = _render_scoped_source_wrapper(
+        asset_id=safe_id,
+        source_file_name="source.usda",
+        source_up_axis="Y",
+    )
+    return _Prototype(
+        family=family,
+        asset_id=safe_id,
+        reference=_relative_reference(
+            bundle_root.joinpath(*PurePosixPath(wrapper_relative).parts),
+            output_root=output_root,
+            portable_root=portable_root,
+        ),
+        source_path=source,
+        source_relative=source_relative,
+        source_sha256=sha256_bytes(source_bytes),
+        source_byte_count=len(source_bytes),
+        texture_path=None,
+        texture_relative=None,
+        texture_sha256=None,
+        texture_byte_count=None,
+        wrapper_relative=wrapper_relative,
+        wrapper_bytes=wrapper_bytes,
+        material_policy="procedural_fallback",
+        source_up_axis="Y",
+        native_min_y=0.0,
+        native_extents=(1.0, 1.0, 1.0),
+        qualification_blockers=(),
+        availability="procedural_fallback",
+        fallback_resolution=None,
+    )
+
+
 def _prototype_material_receipt(material_policy: str) -> dict[str, str]:
+    if material_policy == "procedural_fallback":
+        return {
+            "implementation": "procedural_fallback",
+            "binding_strength": "authored_in_source",
+            "texture_role": "display_color",
+            "source_color_space": "linear",
+        }
     if material_policy == "source_package_pbr":
         return {
             "implementation": "source_package_pbr",
@@ -1449,12 +1529,9 @@ def _candidate_selection_metadata(
             or float(footprint_area) <= 0.0
         ):
             footprint_area = width * depth
-        if height >= 13.0 or (height >= 10.0 and float(footprint_area) >= 250.0):
-            building_form = "multi_storey_residential"
-        elif height >= 8.0 or float(footprint_area) >= 180.0:
-            building_form = "mid_rise_residential"
-        else:
-            building_form = "low_rise_house"
+        building_form = classify_building_form(
+            height_m=height, footprint_area_m2=float(footprint_area)
+        )
     elif family == "trees":
         context = (
             "measured_low_vegetation"
@@ -1503,6 +1580,29 @@ def _candidate_selection_metadata(
     ):
         metadata["tree_form_policy"] = "conifer_or_oak_only"
     return metadata
+
+
+def _procedural_selection(
+    *,
+    family: str,
+    metadata: Mapping[str, Any],
+    zone_id: str,
+    candidate_id: str,
+) -> tuple[str, int]:
+    asset_id = procedural_asset_id(
+        family=family,
+        building_form_name=(
+            str(metadata.get("building_form")) if family == "buildings" else None
+        ),
+        semantic_tags=(
+            metadata.get("semantic_tags", [])
+            if isinstance(metadata.get("semantic_tags"), list)
+            else ()
+        ),
+    )
+    return asset_id, procedural_selection_seed(
+        zone_id=zone_id, candidate_id=candidate_id, asset_id=asset_id
+    )
 
 
 def _instance_from_candidate(
@@ -1576,16 +1676,21 @@ def _instance_from_candidate(
             uniform_scale = height_m / extents[1]
             scale = (uniform_scale, uniform_scale, uniform_scale)
     elif family == "buildings":
-        native_width = extents[0]
-        native_depth = extents[2]
-        if native_depth > native_width:
-            native_width, native_depth = native_depth, native_width
-            yaw += math.pi / 2.0
-        # One scale factor preserves the prototype and keeps its horizontal
-        # bounds inside the authoritative oriented footprint. Adjacent source
-        # footprints may touch; independently stretched meshes may not overlap.
-        uniform_scale = min(width / native_width, depth / native_depth)
-        scale = (uniform_scale, uniform_scale, uniform_scale)
+        if prototype.availability == "procedural_fallback":
+            # This is authored measured geometry, not a deformed catalogue
+            # asset. Each dimension comes directly from the footprint/MNS.
+            scale = (width, height_m, depth)
+        else:
+            native_width = extents[0]
+            native_depth = extents[2]
+            if native_depth > native_width:
+                native_width, native_depth = native_depth, native_width
+                yaw += math.pi / 2.0
+            # One scale factor preserves the prototype and keeps its horizontal
+            # bounds inside the authoritative oriented footprint. Adjacent source
+            # footprints may touch; independently stretched meshes may not overlap.
+            uniform_scale = min(width / native_width, depth / native_depth)
+            scale = (uniform_scale, uniform_scale, uniform_scale)
     else:
         scale = (1.0, 1.0, 1.0)
     if any(not math.isfinite(value) or value <= 0.0 for value in scale):
@@ -2104,6 +2209,17 @@ def build_measured_scene_usd(
     selected: dict[str, list[tuple[Mapping[str, Any], str, str, int]]] = {
         family: [] for family, _ in FAMILIES
     }
+    removed_valid: dict[str, list[dict[str, Any]]] = {
+        family: [] for family, _ in FAMILIES
+    }
+    fallback_actions: dict[str, dict[str, str]] = {
+        family: {} for family, _ in FAMILIES
+    }
+    building_valid_count = int(
+        _inventory_family(inventory, "buildings").get("valid_count", 0)
+    )
+    special_role_counts: dict[str, int] = {}
+    asset_usage_counts: dict[tuple[str, str], int] = {}
     selected_asset_ids: set[tuple[str, str]] = set()
     for family, _default_category in FAMILIES:
         source_family = _inventory_family(inventory, family)
@@ -2115,24 +2231,83 @@ def build_measured_scene_usd(
             if candidate["status"] != "valid":
                 continue
             candidate_id = str(candidate["candidate_id"])
-            category = _candidate_category(family, candidate, library)
+            try:
+                category = _candidate_category(family, candidate, library)
+                metadata = _candidate_selection_metadata(family, candidate, category)
+            except (MeasuredSceneError, ValueError) as error:
+                removed_valid[family].append(
+                    {
+                        "candidate_id": candidate_id,
+                        "status": "removed_by_placement_policy",
+                        "reason_codes": [f"invalid_candidate:{type(error).__name__}"],
+                    }
+                )
+                continue
             rule_version = rule_versions.get(category)
             if not isinstance(rule_version, str) or not rule_version:
                 raise MeasuredSceneError(
                     f"selection contract lacks rule version for {category}"
                 )
             fixed_asset_id = candidate.get("fixed_asset_id")
-            if fixed_asset_id is None:
-                asset_id, seed = _select(
-                    selector,
-                    library,
-                    category=category,
+            role = (
+                special_building_role(
+                    semantic_tags=metadata.get("semantic_tags", []),
+                    reference_terms=metadata.get("reference_terms", []),
+                )
+                if family == "buildings"
+                else None
+            )
+            role_budget_exceeded = False
+            if role is not None:
+                used = special_role_counts.get(role, 0)
+                role_budget_exceeded = used >= special_role_limit(
+                    role, total_buildings=building_valid_count
+                )
+                if not role_budget_exceeded:
+                    special_role_counts[role] = used + 1
+            if role_budget_exceeded:
+                asset_id, seed = _procedural_selection(
+                    family=family,
+                    metadata=metadata,
                     zone_id=zone_id,
                     candidate_id=candidate_id,
-                    rule_version=rule_version,
-                    usage=usage,
-                    metadata=_candidate_selection_metadata(family, candidate, category),
                 )
+                fallback_actions[family][candidate_id] = (
+                    f"special_role_budget_exceeded:{role}"
+                )
+            elif fixed_asset_id is None:
+                try:
+                    asset_id, seed = _select(
+                        selector,
+                        library,
+                        category=category,
+                        zone_id=zone_id,
+                        candidate_id=candidate_id,
+                        rule_version=rule_version,
+                        usage=usage,
+                        metadata=metadata,
+                    )
+                except MeasuredSceneError as error:
+                    if family not in {"buildings", "trees"}:
+                        removed_valid[family].append(
+                            {
+                                "candidate_id": candidate_id,
+                                "status": "removed_by_placement_policy",
+                                "reason_codes": [
+                                    f"asset_selection_failed:{type(error).__name__}"
+                                ],
+                            }
+                        )
+                        continue
+                    asset_id, seed = _procedural_selection(
+                        family=family,
+                        metadata=metadata,
+                        zone_id=zone_id,
+                        candidate_id=candidate_id,
+                    )
+                    fallback_actions[family][candidate_id] = (
+                        f"asset_selection_failed:{type(error).__name__}"
+                    )
             else:
                 asset_id = _require_nonempty_string(
                     fixed_asset_id, "fixed selected asset id"
@@ -2143,34 +2318,214 @@ def build_measured_scene_usd(
                     asset_id=asset_id,
                     rule_version=rule_version,
                 )
-            if (
+            procedural = asset_id.startswith("procedural-")
+            if not procedural and (
                 asset_id not in indexed_assets
                 or indexed_assets[asset_id].get("category") != category
             ):
-                raise MeasuredSceneError(
-                    f"catalog selected invalid {category} asset {asset_id}"
+                if family in {"buildings", "trees"}:
+                    asset_id, seed = _procedural_selection(
+                        family=family,
+                        metadata=metadata,
+                        zone_id=zone_id,
+                        candidate_id=candidate_id,
+                    )
+                    fallback_actions[family][candidate_id] = "selected_asset_invalid"
+                else:
+                    removed_valid[family].append(
+                        {
+                            "candidate_id": candidate_id,
+                            "status": "removed_by_placement_policy",
+                            "reason_codes": ["selected_asset_invalid"],
+                        }
+                    )
+                    continue
+            if (
+                family in {"buildings", "trees"}
+                and fixed_asset_id is None
+                and not asset_id.startswith("procedural-")
+            ):
+                selection_pool = library["selection_pools"].get(category, [])
+                repeat_limit = asset_repeat_limit(
+                    candidate_count=int(source_family.get("valid_count", 0)),
+                    compatible_asset_count=len(selection_pool),
                 )
+                usage_key = (family, asset_id)
+                if asset_usage_counts.get(usage_key, 0) >= repeat_limit:
+                    replacement: tuple[str, int] | None = None
+                    for variant in range(1, min(len(selection_pool), 8) + 1):
+                        try:
+                            variant_asset_id, variant_seed = _select(
+                                selector,
+                                library,
+                                category=category,
+                                zone_id=zone_id,
+                                candidate_id=f"{candidate_id}:diversity:{variant}",
+                                rule_version=rule_version,
+                                usage=usage,
+                                metadata=metadata,
+                            )
+                        except MeasuredSceneError:
+                            continue
+                        variant_key = (family, variant_asset_id)
+                        if asset_usage_counts.get(variant_key, 0) < repeat_limit:
+                            replacement = (variant_asset_id, variant_seed)
+                            break
+                    if replacement is None and family in {"buildings", "trees"}:
+                        asset_id, seed = _procedural_selection(
+                            family=family,
+                            metadata=metadata,
+                            zone_id=zone_id,
+                            candidate_id=candidate_id,
+                        )
+                        fallback_actions[family][candidate_id] = (
+                            "asset_repeat_limit_exceeded"
+                        )
+                    elif replacement is not None:
+                        asset_id, seed = replacement
+            asset_usage_counts[(family, asset_id)] = (
+                asset_usage_counts.get((family, asset_id), 0) + 1
+            )
             selected[family].append((candidate, category, asset_id, seed))
             selected_asset_ids.add((family, asset_id))
 
     prototypes: dict[tuple[str, str], _Prototype] = {}
     final_blockers: list[str] = []
+    failed_prototypes: dict[tuple[str, str], str] = {}
     for family, asset_id in sorted(selected_asset_ids):
-        asset = indexed_assets[asset_id]
-        extents, native_min_y = _native_bounds(asset)
-        blockers = _qualification_blockers(asset)
-        final_blockers.extend(f"asset:{asset_id}:{blocker}" for blocker in blockers)
-        prototypes[(family, asset_id)] = _plan_prototype_bundle(
-            asset,
-            family=family,
-            asset_roots=roots,
-            portable_root=portable,
-            bundle_root=bundle_root,
-            output_root=destination,
-            native_min_y=native_min_y,
-            native_extents=extents,
-            qualification_blockers=blockers,
-        )
+        if asset_id.startswith("procedural-"):
+            prototypes[(family, asset_id)] = _plan_procedural_prototype(
+                family=family,
+                asset_id=asset_id,
+                portable_root=portable,
+                bundle_root=bundle_root,
+                output_root=destination,
+            )
+            continue
+        try:
+            asset = indexed_assets[asset_id]
+            extents, native_min_y = _native_bounds(asset)
+            blockers = _qualification_blockers(asset)
+            if usage == "final_scene" and blockers:
+                raise MeasuredSceneError(";".join(blockers))
+            final_blockers.extend(f"asset:{asset_id}:{blocker}" for blocker in blockers)
+            prototypes[(family, asset_id)] = _plan_prototype_bundle(
+                asset,
+                family=family,
+                asset_roots=roots,
+                portable_root=portable,
+                bundle_root=bundle_root,
+                output_root=destination,
+                native_min_y=native_min_y,
+                native_extents=extents,
+                qualification_blockers=blockers,
+            )
+        except MeasuredSceneError as error:
+            failed_prototypes[(family, asset_id)] = type(error).__name__
+    if failed_prototypes:
+        repaired: dict[str, list[tuple[Mapping[str, Any], str, str, int]]] = {
+            family: [] for family, _ in FAMILIES
+        }
+        for family, rows in selected.items():
+            for candidate, category, asset_id, seed in rows:
+                failure = failed_prototypes.get((family, asset_id))
+                if failure is None:
+                    repaired[family].append((candidate, category, asset_id, seed))
+                    continue
+                candidate_id = str(candidate["candidate_id"])
+                if family not in {"buildings", "trees"}:
+                    removed_valid[family].append(
+                        {
+                            "candidate_id": candidate_id,
+                            "status": "removed_by_placement_policy",
+                            "reason_codes": [f"prototype_invalid:{failure}"],
+                        }
+                    )
+                    continue
+                metadata = _candidate_selection_metadata(family, candidate, category)
+                fallback_id, fallback_seed = _procedural_selection(
+                    family=family,
+                    metadata=metadata,
+                    zone_id=zone_id,
+                    candidate_id=candidate_id,
+                )
+                fallback_actions[family][candidate_id] = f"prototype_invalid:{failure}"
+                repaired[family].append(
+                    (candidate, category, fallback_id, fallback_seed)
+                )
+        selected = repaired
+        selected_asset_ids = {
+            (family, asset_id)
+            for family, rows in selected.items()
+            for _candidate, _category, asset_id, _seed in rows
+        }
+        prototypes = {
+            key: prototype
+            for key, prototype in prototypes.items()
+            if key in selected_asset_ids
+        }
+        for family, asset_id in sorted(selected_asset_ids):
+            if (family, asset_id) not in prototypes:
+                prototypes[(family, asset_id)] = _plan_procedural_prototype(
+                    family=family,
+                    asset_id=asset_id,
+                    portable_root=portable,
+                    bundle_root=bundle_root,
+                    output_root=destination,
+                )
+    shape_repaired: dict[str, list[tuple[Mapping[str, Any], str, str, int]]] = {
+        family: [] for family, _ in FAMILIES
+    }
+    shape_changed = False
+    for family, rows in selected.items():
+        for candidate, category, asset_id, seed in rows:
+            prototype = prototypes[(family, asset_id)]
+            metadata = _candidate_selection_metadata(family, candidate, category)
+            measured_dimensions = metadata.get("measured_dimensions_m")
+            if (
+                family in {"buildings", "trees"}
+                and prototype.availability != "procedural_fallback"
+                and isinstance(measured_dimensions, list)
+                and not asset_shape_is_compatible(
+                    native_dimensions_m=prototype.native_extents,
+                    measured_dimensions_m=measured_dimensions,
+                )
+            ):
+                candidate_id = str(candidate["candidate_id"])
+                fallback_id, fallback_seed = _procedural_selection(
+                    family=family,
+                    metadata=metadata,
+                    zone_id=zone_id,
+                    candidate_id=candidate_id,
+                )
+                fallback_actions[family][candidate_id] = "asset_shape_incompatible"
+                shape_repaired[family].append(
+                    (candidate, category, fallback_id, fallback_seed)
+                )
+                shape_changed = True
+            else:
+                shape_repaired[family].append((candidate, category, asset_id, seed))
+    if shape_changed:
+        selected = shape_repaired
+        selected_asset_ids = {
+            (family, asset_id)
+            for family, rows in selected.items()
+            for _candidate, _category, asset_id, _seed in rows
+        }
+        prototypes = {
+            key: prototype
+            for key, prototype in prototypes.items()
+            if key in selected_asset_ids
+        }
+        for family, asset_id in sorted(selected_asset_ids):
+            if (family, asset_id) not in prototypes:
+                prototypes[(family, asset_id)] = _plan_procedural_prototype(
+                    family=family,
+                    asset_id=asset_id,
+                    portable_root=portable,
+                    bundle_root=bundle_root,
+                    output_root=destination,
+                )
     final_blockers = sorted(set(final_blockers))
     instances: dict[str, list[_Instance]] = {family: [] for family, _ in FAMILIES}
     for family, rows in selected.items():
@@ -2191,7 +2546,9 @@ def build_measured_scene_usd(
     non_uniform_buildings = sorted(
         instance.candidate_id
         for instance in instances["buildings"]
-        if not (
+        if prototypes[("buildings", instance.asset_id)].availability
+        != "procedural_fallback"
+        and not (
             math.isclose(
                 instance.scale[0], instance.scale[1], rel_tol=0.0, abs_tol=1e-9
             )
@@ -2216,12 +2573,16 @@ def build_measured_scene_usd(
     for family, _category in FAMILIES:
         source = _inventory_family(inventory, family)
         instance_count = len(instances[family])
-        blocked = _blocked_records(source["candidates"])
-        if instance_count != source["valid_count"]:
+        source_blocked = _blocked_records(source["candidates"])
+        policy_removed = sorted(
+            removed_valid[family], key=lambda value: str(value["candidate_id"])
+        )
+        blocked = source_blocked + policy_removed
+        if instance_count + len(policy_removed) != source["valid_count"]:
             raise MeasuredSceneError(
                 f"{family} valid-to-instance reconciliation failed"
             )
-        if len(blocked) != source["ambiguous_count"] + source["rejected_count"]:
+        if len(source_blocked) != source["ambiguous_count"] + source["rejected_count"]:
             raise MeasuredSceneError(f"{family} blocked reconciliation failed")
         if source["source_count"] != instance_count + len(blocked):
             raise MeasuredSceneError(f"{family} source-to-scene reconciliation failed")
@@ -2231,6 +2592,7 @@ def build_measured_scene_usd(
             for instance in instances[family]
             if prototypes[(family, instance.asset_id)].availability == "placeholder_usd"
         ]
+        procedural_candidate_ids = sorted(fallback_actions[family])
         category_counts: dict[str, int] = {}
         for instance in instances[family]:
             category_counts[instance.asset_category] = (
@@ -2242,12 +2604,20 @@ def build_measured_scene_usd(
             "instance_count": instance_count,
             "blocked_count": len(blocked),
             "blocked_candidates": blocked,
+            "policy_removed_valid_count": len(policy_removed),
             "instanced_candidate_ids_sha256": sha256_bytes(
                 canonical_json_bytes(candidate_ids)
             ),
             "placeholder_instance_count": len(placeholder_candidate_ids),
             "placeholder_candidate_ids_sha256": sha256_bytes(
                 canonical_json_bytes(placeholder_candidate_ids)
+            ),
+            "procedural_fallback_count": len(procedural_candidate_ids),
+            "procedural_fallback_candidate_ids_sha256": sha256_bytes(
+                canonical_json_bytes(procedural_candidate_ids)
+            ),
+            "procedural_fallback_reasons": dict(
+                sorted(fallback_actions[family].items())
             ),
             "asset_category_counts": dict(sorted(category_counts.items())),
             "quota_applied": False,
@@ -2307,8 +2677,16 @@ def build_measured_scene_usd(
     placeholder_prototype_count = sum(
         prototype.availability == "placeholder_usd" for prototype in prototypes.values()
     )
+    procedural_prototype_count = sum(
+        prototype.availability == "procedural_fallback"
+        for prototype in prototypes.values()
+    )
     placeholder_instance_count = sum(
         reconciliation[family]["placeholder_instance_count"]
+        for family, _category in FAMILIES
+    )
+    procedural_instance_count = sum(
+        reconciliation[family]["procedural_fallback_count"]
         for family, _category in FAMILIES
     )
     receipt_without_hash: dict[str, Any] = {
@@ -2335,6 +2713,8 @@ def build_measured_scene_usd(
         "prototype_count": len(prototypes),
         "placeholder_prototype_count": placeholder_prototype_count,
         "placeholder_instance_count": placeholder_instance_count,
+        "procedural_prototype_count": procedural_prototype_count,
+        "procedural_instance_count": procedural_instance_count,
         "prototypes": prototype_receipts,
         "prototype_bundle": {
             "root_reference": bundle_root_reference,
@@ -2361,10 +2741,17 @@ def build_measured_scene_usd(
         "reconciliation": reconciliation,
         "final_blockers": final_blockers,
         "placement_policy": {
+            "resilience_schema": PLACEMENT_RESILIENCE_SCHEMA,
             "source": "MNT_MNS_inventory_with_stable_SIG_context_features",
             "quota_applied": False,
             "thinning_applied": False,
-            "fallback_primitive_used": False,
+            "fallback_primitive_used": procedural_instance_count > 0,
+            "procedural_fallback_used": procedural_instance_count > 0,
+            "procedural_fallback_instance_count": procedural_instance_count,
+            "policy_removed_valid_count": sum(
+                len(records) for records in removed_valid.values()
+            ),
+            "special_role_counts": dict(sorted(special_role_counts.items())),
             "catalog_placeholder_usd_used": placeholder_instance_count > 0,
             "tree_scale": inventory.get("trees", {}).get(
                 "geometry_scale_policy", "uniform_from_mns_mnt_height"
@@ -2374,6 +2761,9 @@ def build_measured_scene_usd(
             ),
             "tree_yaw": "deterministic_selection_seed",
             "building_scale": "uniform_fit_inside_measured_footprint_bounds",
+            "procedural_building_geometry": (
+                "authored_from_measured_width_height_depth_not_a_deformed_asset"
+            ),
             "non_uniform_building_scale_candidate_ids": non_uniform_buildings,
             "catalogue_entries_consumed": False,
             "repeated_asset_ids_allowed": True,
@@ -2555,7 +2945,7 @@ def _validate_prototype_bundle(
             _require_nonempty_string(record.get("asset_id"), "prototype asset_id")
         )
         availability = record.get("availability", "real_usd")
-        if availability not in {"real_usd", "placeholder_usd"}:
+        if availability not in {"real_usd", "placeholder_usd", "procedural_fallback"}:
             raise MeasuredSceneError(f"prototype {asset_id} availability is invalid")
         fallback_resolution = record.get("fallback_resolution")
         if fallback_resolution is not None:
@@ -2605,6 +2995,7 @@ def _validate_prototype_bundle(
         material = record.get("material")
         direct_pbr = material == _prototype_material_receipt("source_package_pbr")
         scoped_pbr = material == _prototype_material_receipt("scoped_source_pbr")
+        procedural = material == _prototype_material_receipt("procedural_fallback")
         texture_relative: str | None
         if direct_pbr:
             if (
@@ -2616,6 +3007,17 @@ def _validate_prototype_bundle(
                 )
             texture_relative = None
             expected_wrapper = _render_source_package_wrapper(
+                asset_id=asset_id,
+                source_file_name=source_path.name,
+                source_up_axis=source_up_axis,
+            )
+        elif procedural:
+            if availability != "procedural_fallback" or record.get("texture") is not None:
+                raise MeasuredSceneError(
+                    f"prototype {asset_id} procedural fallback differs"
+                )
+            texture_relative = None
+            expected_wrapper = _render_scoped_source_wrapper(
                 asset_id=asset_id,
                 source_file_name=source_path.name,
                 source_up_axis=source_up_axis,
@@ -2753,6 +3155,13 @@ def validate_measured_scene_package(output_root: Path | str) -> dict[str, Any]:
     )
     if receipt.get("placeholder_prototype_count", 0) != placeholder_prototypes:
         raise MeasuredSceneError("placeholder prototype count differs")
+    procedural_prototypes = sum(
+        isinstance(record, Mapping)
+        and record.get("availability") == "procedural_fallback"
+        for record in prototype_records
+    )
+    if receipt.get("procedural_prototype_count", 0) != procedural_prototypes:
+        raise MeasuredSceneError("procedural prototype count differs")
     placeholder_ids = {
         record["asset_id"]
         for record in prototype_records
@@ -2761,6 +3170,8 @@ def validate_measured_scene_package(output_root: Path | str) -> dict[str, Any]:
     }
     recorded_placeholder_instances = receipt.get("placeholder_instance_count", 0)
     reconciled_placeholder_instances = 0
+    recorded_procedural_instances = receipt.get("procedural_instance_count", 0)
+    reconciled_procedural_instances = 0
     reconciliation_payload = receipt.get("reconciliation", {})
     receipt_families = ["buildings", "trees"]
     if (
@@ -2790,6 +3201,21 @@ def validate_measured_scene_package(output_root: Path | str) -> dict[str, Any]:
                 f"{family} placeholder candidate ids hash is missing"
             )
         reconciled_placeholder_instances += family_count
+        procedural_count = reconciliation.get("procedural_fallback_count", 0)
+        if (
+            not isinstance(procedural_count, int)
+            or procedural_count < 0
+            or procedural_count > reconciliation.get("instance_count", -1)
+        ):
+            raise MeasuredSceneError(f"{family} procedural fallback count is invalid")
+        _require_sha256(
+            reconciliation.get("procedural_fallback_candidate_ids_sha256"),
+            f"{family} procedural fallback candidate ids sha256",
+        )
+        reasons = reconciliation.get("procedural_fallback_reasons")
+        if not isinstance(reasons, Mapping) or len(reasons) != procedural_count:
+            raise MeasuredSceneError(f"{family} procedural fallback reasons differ")
+        reconciled_procedural_instances += procedural_count
     if (
         not isinstance(recorded_placeholder_instances, int)
         or recorded_placeholder_instances < 0
@@ -2797,6 +3223,12 @@ def validate_measured_scene_package(output_root: Path | str) -> dict[str, Any]:
         or (not placeholder_ids and recorded_placeholder_instances != 0)
     ):
         raise MeasuredSceneError("placeholder instance count is invalid")
+    if (
+        not isinstance(recorded_procedural_instances, int)
+        or recorded_procedural_instances < 0
+        or recorded_procedural_instances != reconciled_procedural_instances
+    ):
+        raise MeasuredSceneError("procedural fallback instance count is invalid")
     placement_policy = receipt.get("placement_policy")
     if recorded_placeholder_instances > 0:
         if (
@@ -2809,6 +3241,17 @@ def validate_measured_scene_package(output_root: Path | str) -> dict[str, Any]:
         and placement_policy.get("catalog_placeholder_usd_used", False) is not False
     ):
         raise MeasuredSceneError("placeholder placement policy differs")
+    if not isinstance(placement_policy, Mapping):
+        raise MeasuredSceneError("placement policy is invalid")
+    procedural_used = recorded_procedural_instances > 0
+    if (
+        placement_policy.get("resilience_schema") != PLACEMENT_RESILIENCE_SCHEMA
+        or placement_policy.get("procedural_fallback_used") is not procedural_used
+        or placement_policy.get("fallback_primitive_used") is not procedural_used
+        or placement_policy.get("procedural_fallback_instance_count")
+        != recorded_procedural_instances
+    ):
+        raise MeasuredSceneError("procedural fallback placement policy differs")
     for family in receipt_families:
         reconciliation = reconciliation_payload.get(family)
         if not isinstance(reconciliation, Mapping):
@@ -2819,7 +3262,14 @@ def validate_measured_scene_package(output_root: Path | str) -> dict[str, Any]:
             raise MeasuredSceneError(
                 f"measured scene {family} source reconciliation differs"
             )
-        if reconciliation.get("valid_count") != reconciliation.get("instance_count"):
+        removed_valid_count = reconciliation.get("policy_removed_valid_count", 0)
+        if not isinstance(removed_valid_count, int) or removed_valid_count < 0:
+            raise MeasuredSceneError(
+                f"measured scene {family} removed-valid count is invalid"
+            )
+        if reconciliation.get("valid_count") != (
+            reconciliation.get("instance_count") + removed_valid_count
+        ):
             raise MeasuredSceneError(
                 f"measured scene {family} valid reconciliation differs"
             )

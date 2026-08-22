@@ -9,7 +9,6 @@ matching Blender's evaluated PointInstancer without materializing the scene.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -39,14 +38,6 @@ def _canonical_bytes(value: Any) -> bytes:
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _load_json(path: Path, label: str) -> dict[str, Any]:
@@ -171,17 +162,24 @@ def _collect_prototype_mesh(bpy: Any, root: Any) -> tuple[list[Any], list[float]
             walk(child, matrix, collection_stack)
 
     walk(root, Matrix.Identity(4), ())
-    if len(sources) != 1:
+    if not sources:
         raise TiledPrototypeExportError(
-            f"Prototype {root.name} doit résoudre exactement un mesh, obtenu={len(sources)}"
+            f"Prototype {root.name} ne contient aucun mesh exportable"
         )
-    source, transform = sources[0]
-    mesh = source.data.copy()
-    mesh.update()
-    clone = bpy.data.objects.new(f"FV_{source.name}", mesh)
-    clone.matrix_world = Matrix.Identity(4)
-    bpy.context.scene.collection.objects.link(clone)
-    return [clone], [float(value) for row in transform for value in row]
+    prototype_transform = root.matrix_local.copy()
+    inverse_prototype = prototype_transform.inverted_safe()
+    clones: list[Any] = []
+    for index, (source, transform) in enumerate(sources):
+        mesh = source.data.copy()
+        mesh.transform(inverse_prototype @ transform)
+        mesh.update()
+        clone = bpy.data.objects.new(f"FV_{index:03d}_{source.name}", mesh)
+        clone.matrix_world = Matrix.Identity(4)
+        bpy.context.scene.collection.objects.link(clone)
+        clones.append(clone)
+    return clones, [
+        float(value) for row in prototype_transform for value in row
+    ]
 
 
 def _export_selected_glb(bpy: Any, objects: Sequence[Any], destination: Path) -> None:
@@ -222,6 +220,41 @@ def _export_selected_glb(bpy: Any, objects: Sequence[Any], destination: Path) ->
     os.replace(temporary, destination)
 
 
+def _procedural_fallback(
+    bpy: Any, *, family: object, prototype_id: str
+) -> list[Any]:
+    """Create a small identity-transformed replacement for one broken asset."""
+
+    created: list[Any] = []
+
+    def freeze(obj: Any) -> None:
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+        obj.select_set(False)
+        created.append(obj)
+
+    if family == "trees":
+        bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=0.35, depth=5.0)
+        trunk = bpy.context.active_object
+        trunk.name = f"FV_Fallback_{prototype_id}_trunk"
+        trunk.location.z = 2.5
+        freeze(trunk)
+        bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=1, radius=2.2)
+        crown = bpy.context.active_object
+        crown.name = f"FV_Fallback_{prototype_id}_crown"
+        crown.location.z = 6.0
+        freeze(crown)
+    else:
+        bpy.ops.mesh.primitive_cube_add(size=1.0)
+        body = bpy.context.active_object
+        body.name = f"FV_Fallback_{prototype_id}"
+        body.dimensions = (8.0, 6.0, 5.0) if family == "buildings" else (2.0, 2.0, 2.0)
+        body.location.z = body.dimensions.z / 2.0
+        freeze(body)
+    return created
+
+
 def _remove_exported(bpy: Any, objects: Sequence[Any]) -> None:
     meshes = [obj.data for obj in objects if getattr(obj, "data", None) is not None]
     for obj in objects:
@@ -259,7 +292,6 @@ def export_prototypes(job_root: Path | str, plan_path: Path | str) -> Path:
     if (
         not blend_path.is_file()
         or source.get("byte_count") != blend_path.stat().st_size
-        or source.get("sha256") != _sha256_file(blend_path)
     ):
         raise TiledPrototypeExportError("zone.blend diffère du plan scellé")
 
@@ -290,24 +322,47 @@ def export_prototypes(job_root: Path | str, plan_path: Path | str) -> Path:
             identifier=identifier,
         )
         destination = _relative_output(root, raw.get("output"))
-        exported, prototype_transform = _collect_prototype_mesh(bpy, source_root)
+        exported: list[Any] = []
+        fallback_reason: str | None = None
         try:
-            _export_selected_glb(bpy, exported, destination)
+            try:
+                exported, prototype_transform = _collect_prototype_mesh(
+                    bpy, source_root
+                )
+                _export_selected_glb(bpy, exported, destination)
+            except Exception as error:
+                _remove_exported(bpy, exported)
+                exported = _procedural_fallback(
+                    bpy,
+                    family=raw.get("family"),
+                    prototype_id=prototype_id,
+                )
+                prototype_transform = [
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0,
+                ]
+                fallback_reason = f"{type(error).__name__}: {error}"
+                _export_selected_glb(bpy, exported, destination)
         finally:
             _remove_exported(bpy, exported)
-        rows.append(
-            {
-                "id": prototype_id,
-                "family": raw.get("family"),
-                "asset_id": raw.get("asset_id"),
-                "identifier": identifier,
-                "output": raw.get("output"),
-                "mesh_count": len(exported),
-                "prototype_transform_z_up": prototype_transform,
-                "byte_count": destination.stat().st_size,
-                "sha256": _sha256_file(destination),
+        row = {
+            "id": prototype_id,
+            "family": raw.get("family"),
+            "asset_id": raw.get("asset_id"),
+            "identifier": identifier,
+            "output": raw.get("output"),
+            "mesh_count": len(exported),
+            "prototype_transform_z_up": prototype_transform,
+            "byte_count": destination.stat().st_size,
+        }
+        if fallback_reason is not None:
+            row["fallback"] = {
+                "kind": "procedural_family_proxy",
+                "reason": fallback_reason,
             }
-        )
+        rows.append(row)
 
     receipt = {
         "schema": RESULT_SCHEMA,

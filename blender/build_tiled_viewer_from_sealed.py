@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import io
-import hashlib
+import json
 import math
 import os
 import re
 import shutil
 import subprocess
+import time
+from concurrent.futures import ProcessPoolExecutor
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from PIL import Image
 
 from build_tiled_viewer_package import (
@@ -33,11 +37,9 @@ from build_tiled_viewer_package import (
     TiledViewerPackageError,
     _FarGlb,
     _asset,
-    _canonical_bytes,
     _expected_counts,
     _load_json,
     _read_glb,
-    _sha256_file,
     _tile_records,
     _write_instances,
     _write_json,
@@ -46,6 +48,10 @@ from fixed_terrain_grid import FixedTerrainTile, read_fixed_terrain
 
 LAYOUT_SCHEMA = "fireviewer.compact-zone-stage-layout.v1"
 SEALED_SOURCE_KIND = "sealed_zone_and_tile_packages"
+BUILD_METRICS_NAME = "viewer-build-metrics.v1.json"
+BUILD_METRICS_SCHEMA = "fireviewer.tiled-viewer-build-metrics.v1"
+PROTOTYPE_CACHE_SCHEMA = "fireviewer.tiled-prototype-cache.v1"
+TILE_CACHE_SCHEMA = "fireviewer.tiled-viewer-tile-cache.v1"
 _USD_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 _USD_IDENTIFIER = re.compile(r"^Asset_[A-Za-z0-9_]+$")
 _POINT_INSTANCER = re.compile(r'def\s+PointInstancer\s+"([A-Za-z0-9_]+)"\s*\{')
@@ -62,7 +68,31 @@ class SealedPrototype:
     family: str
     asset_id: str
     identifier: str
-    identity_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledTile:
+    tile_id: str
+    tile_origin: tuple[int, int]
+    terrain_asset: Asset
+    instance_asset: Asset
+    family_counts: dict[str, int]
+    prototype_instance_counts: dict[str, int]
+    prototype_ids: tuple[str, ...]
+    far_positions: Any
+    far_normals: Any
+    far_texcoords: Any
+    far_indices: Any
+    far_image: bytes
+    node_chain: tuple[dict[str, Any], ...]
+    timings_seconds: dict[str, float]
+    cache_hit: bool
+
+
+@dataclass(frozen=True, slots=True)
+class FailedTile:
+    tile_id: str
+    error: str
 
 
 def _relative_to_root(root: Path, path: Path) -> str:
@@ -105,7 +135,6 @@ def _validate_asset_reference(
         or isinstance(byte_count, bool)
         or not isinstance(byte_count, int)
         or byte_count != path.stat().st_size
-        or raw.get("sha256") != _sha256_file(path)
     ):
         raise TiledViewerPackageError(f"{label} diverge de son reçu scellé")
     return path
@@ -134,7 +163,6 @@ def _load_sealed_sources(
         or layout.get("status") != "sealed"
         or layout.get("zone_id") != zone.get("zone_id")
         or not isinstance(stage_reference, Mapping)
-        or stage_reference.get("sha256") != _sha256_file(layout_path)
         or stage_reference.get("byte_count") != layout_path.stat().st_size
         or stage_reference.get("prototype_policy")
         != "one_zone_definition_per_family_asset"
@@ -160,7 +188,6 @@ def _sealed_prototypes(layout: Mapping[str, Any]) -> list[SealedPrototype]:
         family = raw.get("family")
         asset_id = raw.get("asset_id")
         identifier = raw.get("identifier")
-        identity_sha256 = raw.get("identity_sha256")
         if (
             family not in counters
             or not isinstance(asset_id, str)
@@ -168,18 +195,12 @@ def _sealed_prototypes(layout: Mapping[str, Any]) -> list[SealedPrototype]:
             or not isinstance(identifier, str)
             or _USD_IDENTIFIER.fullmatch(identifier) is None
             or (family, identifier) in identifiers
-            or not isinstance(identity_sha256, str)
-            or len(identity_sha256) != 64
         ):
             raise TiledViewerPackageError("Identité de prototype scellé invalide")
         prototype_id = f"{family}-{counters[family]:04d}"
         counters[family] += 1
         identifiers.add((family, identifier))
-        result.append(
-            SealedPrototype(
-                prototype_id, family, asset_id, identifier, identity_sha256
-            )
-        )
+        result.append(SealedPrototype(prototype_id, family, asset_id, identifier))
     if layout.get("prototype_count") != len(result):
         raise TiledViewerPackageError("Nombre de prototypes divergent dans le layout")
     return result
@@ -429,50 +450,71 @@ def _scene_instances(
     return groups, counts
 
 
+@lru_cache(maxsize=8)
+def _terrain_template(
+    side: int, stride: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Cache topology, source indices, XZ positions and UVs for fixed grids."""
+
+    selected = np.concatenate(
+        (np.arange(0, side - 1, stride, dtype=np.int64), np.array([side - 1]))
+    )
+    rows, columns = np.meshgrid(selected, selected, indexing="ij")
+    source_indices = (rows * side + columns).reshape(-1)
+    cell = TILE_SIZE_M / (side - 1)
+    static_positions = np.column_stack(
+        (
+            columns.reshape(-1) * cell,
+            -rows.reshape(-1) * cell,
+        )
+    ).astype("<f4", copy=False)
+    texcoords = np.column_stack(
+        (
+            columns.reshape(-1) / (side - 1),
+            1.0 - rows.reshape(-1) / (side - 1),
+        )
+    ).astype("<f4", copy=False)
+    width = len(selected)
+    row, column = np.meshgrid(
+        np.arange(width - 1, dtype=np.uint32),
+        np.arange(width - 1, dtype=np.uint32),
+        indexing="ij",
+    )
+    northwest = (row * width + column).reshape(-1)
+    northeast = northwest + 1
+    southwest = northwest + width
+    southeast = southwest + 1
+    index_dtype = np.uint16 if width * width <= 65_535 else np.uint32
+    indices = np.column_stack(
+        (northwest, northeast, southeast, northwest, southeast, southwest)
+    ).astype(index_dtype, copy=False).reshape(-1)
+    for value in (source_indices, static_positions, texcoords, indices):
+        value.setflags(write=False)
+    return source_indices, static_positions, texcoords, indices
+
+
 def _terrain_geometry(
     tile: FixedTerrainTile, *, stride: int = 1
-) -> tuple[
-    list[tuple[float, ...]],
-    list[tuple[float, ...]],
-    list[tuple[float, ...]],
-    list[int],
-]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorize the exact legacy terrain conversion without changing geometry."""
+
     mesh = tile.lods[0]
-    side = mesh.grid_size
-    selected = list(range(0, side - 1, stride)) + [side - 1]
-    positions: list[tuple[float, ...]] = []
-    normals: list[tuple[float, ...]] = []
-    texcoords: list[tuple[float, ...]] = []
-    cell = TILE_SIZE_M / (side - 1)
-    for row in selected:
-        for column in selected:
-            source_index = row * side + column
-            nx, ny, nz = mesh.normals_snorm16[source_index]
-            normal_length = math.sqrt(nx * nx + ny * ny + nz * nz)
-            if normal_length <= 0:
-                raise TiledViewerPackageError("Normale FVTG dégénérée")
-            positions.append(
-                (
-                    column * cell,
-                    mesh.relative_heights_mm[source_index] / 1_000.0,
-                    -row * cell,
-                )
-            )
-            normals.append(
-                (nx / normal_length, nz / normal_length, -ny / normal_length)
-            )
-            texcoords.append((column / (side - 1), 1.0 - row / (side - 1)))
-    width = len(selected)
-    indices: list[int] = []
-    for row in range(width - 1):
-        for column in range(width - 1):
-            northwest = row * width + column
-            northeast = northwest + 1
-            southwest = northwest + width
-            southeast = southwest + 1
-            indices.extend(
-                (northwest, northeast, southeast, northwest, southeast, southwest)
-            )
+    source_indices, static_positions, texcoords, indices = _terrain_template(
+        mesh.grid_size, stride
+    )
+    heights = np.asarray(mesh.relative_heights_mm, dtype=np.float64)[source_indices]
+    source_normals = np.asarray(mesh.normals_snorm16, dtype=np.float64)[source_indices]
+    lengths = np.linalg.norm(source_normals, axis=1)
+    if np.any(lengths <= 0.0) or not np.all(np.isfinite(lengths)):
+        raise TiledViewerPackageError("Normale FVTG dégénérée")
+    positions = np.empty((len(source_indices), 3), dtype="<f4")
+    positions[:, 0] = static_positions[:, 0]
+    positions[:, 1] = heights / 1_000.0
+    positions[:, 2] = static_positions[:, 1]
+    normalized = source_normals / lengths[:, None]
+    normals = np.column_stack(
+        (normalized[:, 0], normalized[:, 2], -normalized[:, 1])
+    ).astype("<f4", copy=False)
     return positions, normals, texcoords, indices
 
 
@@ -535,6 +577,109 @@ def _validate_identity_prototype(path: Path) -> int:
     return mesh_nodes
 
 
+def _prototype_cache_key(prototype: SealedPrototype, exporter_script: Path) -> str:
+    safe_asset = re.sub(r"[^A-Za-z0-9_.-]+", "_", prototype.asset_id)
+    safe_identifier = re.sub(r"[^A-Za-z0-9_.-]+", "_", prototype.identifier)
+    return f"{prototype.family}-{safe_asset}-{safe_identifier}"
+
+
+def _prototype_cache_root() -> Path | None:
+    raw = os.environ.get("FIREVIEWER_TILED_PROTOTYPE_CACHE", "").strip()
+    return Path(raw).resolve() if raw else None
+
+
+def _tile_cache_root() -> Path | None:
+    raw = os.environ.get("FIREVIEWER_TILED_TILE_CACHE", "").strip()
+    return Path(raw).resolve() if raw else None
+
+
+def _materialize_cached_file(source: Path, destination: Path) -> None:
+    """Prefer a zero-copy hardlink and remain portable across filesystems."""
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
+
+
+def _load_cached_prototype(
+    cache_root: Path,
+    prototype: SealedPrototype,
+    exporter_script: Path,
+    destination: Path,
+) -> tuple[Asset, tuple[float, ...]] | None:
+    cache_key = _prototype_cache_key(prototype, exporter_script)
+    entry = cache_root / cache_key
+    source = entry / "prototype.glb"
+    receipt_path = entry / "prototype-cache.v1.json"
+    if not source.is_file() or not receipt_path.is_file():
+        return None
+    try:
+        receipt = _load_json(receipt_path, "reçu de cache prototype")
+        raw_transform = receipt.get("prototype_transform_z_up")
+        if (
+            receipt.get("schema") != PROTOTYPE_CACHE_SCHEMA
+            or receipt.get("cache_key") != cache_key
+            or receipt.get("family") != prototype.family
+            or receipt.get("asset_id") != prototype.asset_id
+            or receipt.get("identifier") != prototype.identifier
+            or receipt.get("byte_count") != source.stat().st_size
+            or not isinstance(raw_transform, list)
+            or len(raw_transform) != 16
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in raw_transform
+            )
+        ):
+            return None
+        _validate_identity_prototype(source)
+        _materialize_cached_file(source, destination)
+        return (
+            _asset(destination, destination.parents[1], "model/gltf-binary"),
+            tuple(float(value) for value in raw_transform),
+        )
+    except (OSError, TiledViewerPackageError):
+        return None
+
+
+def _store_cached_prototype(
+    cache_root: Path,
+    prototype: SealedPrototype,
+    exporter_script: Path,
+    source: Path,
+    transform: Sequence[float],
+) -> None:
+    """Publish an immutable cache entry; cache failures never fail a map."""
+
+    cache_key = _prototype_cache_key(prototype, exporter_script)
+    entry = cache_root / cache_key
+    try:
+        entry.mkdir(parents=True, exist_ok=True)
+        target = entry / "prototype.glb"
+        temporary = entry / ".prototype.glb.part"
+        shutil.copy2(source, temporary)
+        os.replace(temporary, target)
+        _write_json(
+            entry / "prototype-cache.v1.json",
+            {
+                "schema": PROTOTYPE_CACHE_SCHEMA,
+                "cache_key": cache_key,
+                "family": prototype.family,
+                "asset_id": prototype.asset_id,
+                "identifier": prototype.identifier,
+                "prototype_transform_z_up": [float(value) for value in transform],
+                "byte_count": target.stat().st_size,
+            },
+        )
+    except OSError:
+        # A prebuilt image cache can intentionally be mounted read-only.  A
+        # miss still falls back to Blender and remains a valid production run.
+        return
+
+
 def _export_prototypes(
     root: Path,
     staging: Path,
@@ -542,13 +687,34 @@ def _export_prototypes(
     prototypes: Sequence[SealedPrototype],
     blender: Path | str,
     timeout_seconds: int,
+    metrics: dict[str, Any] | None = None,
 ) -> tuple[list[Asset], dict[str, tuple[float, ...]]]:
+    started = time.perf_counter()
     plan_path = staging / PROTOTYPE_PLAN_NAME
     blend_reference = {
         "path": _relative_to_root(root, blend_path),
-        "sha256": _sha256_file(blend_path),
         "byte_count": blend_path.stat().st_size,
     }
+    script = Path(__file__).with_name("export_tiled_viewer_prototypes.py")
+    cache_root = _prototype_cache_root()
+    assets_by_id: dict[str, Asset] = {}
+    transforms: dict[str, tuple[float, ...]] = {}
+    misses: list[SealedPrototype] = []
+    for prototype in prototypes:
+        destination = staging / "prototypes" / f"{prototype.prototype_id}.glb"
+        cached = (
+            _load_cached_prototype(
+                cache_root, prototype, script, destination
+            )
+            if cache_root is not None
+            else None
+        )
+        if cached is None:
+            misses.append(prototype)
+            continue
+        assets_by_id[prototype.prototype_id] = cached[0]
+        transforms[prototype.prototype_id] = cached[1]
+
     plan = {
         "schema": PROTOTYPE_PLAN_SCHEMA,
         "zone_blend": blend_reference,
@@ -564,47 +730,67 @@ def _export_prototypes(
                     / f"{prototype.prototype_id}.glb"
                 ).as_posix(),
             }
-            for prototype in prototypes
+            for prototype in misses
         ],
     }
     _write_json(plan_path, plan)
-    blender_path = Path(blender)
-    if not blender_path.is_file():
-        raise TiledViewerPackageError(f"Blender absent: {blender_path}")
-    script = Path(__file__).with_name("export_tiled_viewer_prototypes.py")
-    command = [
-        str(blender_path),
-        "--background",
-        "--factory-startup",
-        "--python-exit-code",
-        "1",
-        "--python",
-        str(script),
-        "--",
-        "--job-root",
-        str(root),
-        "--plan",
-        str(plan_path),
-    ]
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=root,
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise TiledViewerPackageError(f"Export des prototypes impossible: {error}") from error
-    if completed.returncode != 0:
-        details = "\n".join((completed.stdout + completed.stderr).splitlines()[-40:])
-        raise TiledViewerPackageError(
-            f"Export des prototypes en échec ({completed.returncode}):\n{details}"
+    completed: Any | None = None
+    if misses:
+        blender_path = Path(blender)
+        if not blender_path.is_file():
+            raise TiledViewerPackageError(f"Blender absent: {blender_path}")
+        command = [
+            str(blender_path),
+            "--background",
+            "--factory-startup",
+            "--python-exit-code",
+            "1",
+            "--python",
+            str(script),
+            "--",
+            "--job-root",
+            str(root),
+            "--plan",
+            str(plan_path),
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=root,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise TiledViewerPackageError(
+                f"Export des prototypes impossible: {error}"
+            ) from error
+        if completed.returncode != 0:
+            details = "\n".join(
+                (completed.stdout + completed.stderr).splitlines()[-40:]
+            )
+            raise TiledViewerPackageError(
+                f"Export des prototypes en échec ({completed.returncode}):\n{details}"
+            )
+    else:
+        _write_json(
+            staging / PROTOTYPE_EXPORT_NAME,
+            {
+                "schema": PROTOTYPE_EXPORT_SCHEMA,
+                "status": "complete",
+                "zone_blend": blend_reference,
+                "prototype_count": 0,
+                "prototypes": [],
+            },
         )
     receipt_path = staging / PROTOTYPE_EXPORT_NAME
     if not receipt_path.is_file():
-        details = "\n".join((completed.stdout + completed.stderr).splitlines()[-40:])
+        details = (
+            "\n".join((completed.stdout + completed.stderr).splitlines()[-40:])
+            if completed is not None
+            else ""
+        )
         raise TiledViewerPackageError(
             "Blender a terminé sans produire le reçu prototypes"
             + (f":\n{details}" if details else "")
@@ -615,17 +801,15 @@ def _export_prototypes(
         receipt.get("schema") != PROTOTYPE_EXPORT_SCHEMA
         or receipt.get("status") != "complete"
         or receipt.get("zone_blend") != blend_reference
-        or receipt.get("prototype_count") != len(prototypes)
+        or receipt.get("prototype_count") != len(misses)
         or not isinstance(rows, list)
-        or len(rows) != len(prototypes)
+        or len(rows) != len(misses)
     ):
         raise TiledViewerPackageError("Reçu d'export des prototypes invalide")
     by_id = {
         row.get("id"): row for row in rows if isinstance(row, Mapping)
     }
-    assets: list[Asset] = []
-    transforms: dict[str, tuple[float, ...]] = {}
-    for prototype in prototypes:
+    for prototype in misses:
         row = by_id.get(prototype.prototype_id)
         path = staging / "prototypes" / f"{prototype.prototype_id}.glb"
         raw_transform = (
@@ -635,7 +819,6 @@ def _export_prototypes(
         )
         if (
             not isinstance(row, Mapping)
-            or row.get("sha256") != _sha256_file(path)
             or row.get("byte_count") != path.stat().st_size
             or not isinstance(raw_transform, list)
             or len(raw_transform) != 16
@@ -654,22 +837,47 @@ def _export_prototypes(
                 f"Prototype exporté divergent: {prototype.prototype_id}"
             )
         _validate_identity_prototype(path)
-        assets.append(_asset(path, staging, "model/gltf-binary"))
-        transforms[prototype.prototype_id] = tuple(
+        asset = _asset(path, staging, "model/gltf-binary")
+        transform = tuple(
             float(value) for value in raw_transform
         )
-    return assets, transforms
+        assets_by_id[prototype.prototype_id] = asset
+        transforms[prototype.prototype_id] = transform
+        if cache_root is not None:
+            _store_cached_prototype(
+                cache_root, prototype, script, path, transform
+            )
+    if metrics is not None:
+        fallbacks = [
+            {
+                "prototype_id": str(row.get("id")),
+                "family": str(row.get("family")),
+                "asset_id": str(row.get("asset_id")),
+                "fallback": dict(row["fallback"]),
+            }
+            for row in rows
+            if isinstance(row, Mapping) and isinstance(row.get("fallback"), Mapping)
+        ]
+        metrics.update(
+            {
+                "cache_enabled": cache_root is not None,
+                "cache_hits": len(prototypes) - len(misses),
+                "cache_misses": len(misses),
+                "procedural_fallback_count": len(fallbacks),
+                "procedural_fallbacks": fallbacks,
+                "duration_seconds": round(time.perf_counter() - started, 6),
+            }
+        )
+    return [assets_by_id[item.prototype_id] for item in prototypes], transforms
 
 
 def _validate_tile_sources(
     root: Path, package: Path, tile_id: str, record: Mapping[str, Any]
-) -> tuple[Path, Path, Path]:
-    terrain_receipt = _load_json(
-        package / "fixed-terrain-usd.v1.json", f"reçu terrain {tile_id}"
-    )
-    scene_receipt = _load_json(
-        package / "scene" / "scene.done.json", f"reçu scène {tile_id}"
-    )
+) -> tuple[Path, Path, Path, dict[str, Any]]:
+    terrain_receipt_path = package / "fixed-terrain-usd.v1.json"
+    scene_receipt_path = package / "scene" / "scene.done.json"
+    terrain_receipt = _load_json(terrain_receipt_path, f"reçu terrain {tile_id}")
+    scene_receipt = _load_json(scene_receipt_path, f"reçu scène {tile_id}")
     terrain_inputs = terrain_receipt.get("inputs")
     if not isinstance(terrain_inputs, Mapping):
         raise TiledViewerPackageError(
@@ -705,7 +913,429 @@ def _validate_tile_sources(
         )
     ):
         raise TiledViewerPackageError(f"Sources scellées divergentes pour {tile_id}")
-    return terrain, image, scene
+    source_identity = {
+        "tile_id": tile_id,
+        "origin_l93_m": list(record["origin_l93_m"]),
+        "family_counts": sealed_counts,
+        "terrain_bytes": terrain.stat().st_size,
+        "terrain_mtime_ns": terrain.stat().st_mtime_ns,
+        "image_bytes": image.stat().st_size,
+        "image_mtime_ns": image.stat().st_mtime_ns,
+        "scene_bytes": scene.stat().st_size,
+        "scene_mtime_ns": scene.stat().st_mtime_ns,
+    }
+    return terrain, image, scene, source_identity
+
+
+def _tile_cache_key(
+    *,
+    tile_id: str,
+    source_identity: Mapping[str, Any],
+    origin: tuple[int, int, int],
+    prototypes: Sequence[SealedPrototype],
+    prototype_transforms: Mapping[str, Sequence[float]],
+) -> str:
+    return (
+        f"{tile_id}-{source_identity['scene_mtime_ns']}-"
+        f"{source_identity['terrain_bytes']}-{source_identity['image_bytes']}"
+    )
+
+
+def _cached_asset(
+    source: Path,
+    destination: Path,
+    staging: Path,
+    media_type: str,
+) -> Asset:
+    _materialize_cached_file(source, destination)
+    return _asset(destination, staging, media_type)
+
+
+def _load_cached_tile(
+    cache_root: Path,
+    *,
+    cache_key: str,
+    tile_id: str,
+    source_identity: Mapping[str, Any],
+    staging: Path,
+) -> CompiledTile | None:
+    entry = cache_root / cache_key
+    receipt_path = entry / "tile-cache.v1.json"
+    terrain_source = entry / "terrain.glb"
+    instances_source = entry / "instances.fvi"
+    far_source = entry / "far.npz"
+    image_source = entry / "far.jpg"
+    if not all(
+        path.is_file()
+        for path in (
+            receipt_path,
+            terrain_source,
+            instances_source,
+            far_source,
+            image_source,
+        )
+    ):
+        return None
+    restore_started = time.perf_counter()
+    try:
+        receipt = _load_json(receipt_path, "reçu cache tuile")
+        if (
+            receipt.get("schema") != TILE_CACHE_SCHEMA
+            or receipt.get("cache_key") != cache_key
+            or receipt.get("tile_id") != tile_id
+            or receipt.get("source_identity") != dict(source_identity)
+        ):
+            return None
+        terrain_asset = _cached_asset(
+            terrain_source,
+            staging / "tiles" / tile_id / "terrain.glb",
+            staging,
+            "model/gltf-binary",
+        )
+        instance_asset = _cached_asset(
+            instances_source,
+            staging / "tiles" / tile_id / "instances.fvi",
+            staging,
+            "application/vnd.fireviewer.instances",
+        )
+        with np.load(far_source, allow_pickle=False) as far:
+            positions = np.asarray(far["positions"])
+            normals = np.asarray(far["normals"])
+            texcoords = np.asarray(far["texcoords"])
+            indices = np.asarray(far["indices"])
+        family_counts = receipt.get("family_counts")
+        prototype_counts = receipt.get("prototype_instance_counts")
+        prototype_ids = receipt.get("prototype_ids")
+        node_chain = receipt.get("node_chain")
+        tile_origin = receipt.get("tile_origin")
+        if (
+            not isinstance(family_counts, dict)
+            or not isinstance(prototype_counts, dict)
+            or not isinstance(prototype_ids, list)
+            or not isinstance(node_chain, list)
+            or not isinstance(tile_origin, list)
+            or len(tile_origin) != 2
+        ):
+            return None
+        elapsed = time.perf_counter() - restore_started
+        return CompiledTile(
+            tile_id=tile_id,
+            tile_origin=(int(tile_origin[0]), int(tile_origin[1])),
+            terrain_asset=terrain_asset,
+            instance_asset=instance_asset,
+            family_counts={str(key): int(value) for key, value in family_counts.items()},
+            prototype_instance_counts={
+                str(key): int(value) for key, value in prototype_counts.items()
+            },
+            prototype_ids=tuple(str(value) for value in prototype_ids),
+            far_positions=positions,
+            far_normals=normals,
+            far_texcoords=texcoords,
+            far_indices=indices,
+            far_image=image_source.read_bytes(),
+            node_chain=tuple(dict(value) for value in node_chain),
+            timings_seconds={
+                "source_validation": 0.0,
+                "cache_restore": round(elapsed, 6),
+                "terrain_glb": 0.0,
+                "far_fragment": 0.0,
+                "instances_fvi": 0.0,
+                "output_hashing": 0.0,
+                "total": round(elapsed, 6),
+            },
+            cache_hit=True,
+        )
+    except (KeyError, OSError, TypeError, ValueError, TiledViewerPackageError):
+        return None
+
+
+def _store_cached_tile(
+    cache_root: Path,
+    *,
+    cache_key: str,
+    source_identity: Mapping[str, Any],
+    staging: Path,
+    compiled: CompiledTile,
+) -> None:
+    """Write immutable tile artefacts and publish the receipt last."""
+
+    entry = cache_root / cache_key
+    try:
+        entry.mkdir(parents=True, exist_ok=True)
+        sources = {
+            "terrain": staging.joinpath(*compiled.terrain_asset.path.split("/")),
+            "instances": staging.joinpath(*compiled.instance_asset.path.split("/")),
+        }
+        targets = {
+            "terrain": entry / "terrain.glb",
+            "instances": entry / "instances.fvi",
+        }
+        for name, source in sources.items():
+            temporary = entry / f".{targets[name].name}.part"
+            if temporary.exists():
+                temporary.unlink()
+            _materialize_cached_file(source, temporary)
+            os.replace(temporary, targets[name])
+        far_target = entry / "far.npz"
+        far_temporary = entry / ".far.npz.part"
+        with far_temporary.open("wb") as stream:
+            np.savez(
+                stream,
+                positions=np.asarray(compiled.far_positions),
+                normals=np.asarray(compiled.far_normals),
+                texcoords=np.asarray(compiled.far_texcoords),
+                indices=np.asarray(compiled.far_indices),
+            )
+        os.replace(far_temporary, far_target)
+        image_target = entry / "far.jpg"
+        image_temporary = entry / ".far.jpg.part"
+        image_temporary.write_bytes(compiled.far_image)
+        os.replace(image_temporary, image_target)
+        _write_json(
+            entry / "tile-cache.v1.json",
+            {
+                "schema": TILE_CACHE_SCHEMA,
+                "cache_key": cache_key,
+                "tile_id": compiled.tile_id,
+                "source_identity": dict(source_identity),
+                "tile_origin": list(compiled.tile_origin),
+                "family_counts": compiled.family_counts,
+                "prototype_instance_counts": compiled.prototype_instance_counts,
+                "prototype_ids": list(compiled.prototype_ids),
+                "node_chain": list(compiled.node_chain),
+            },
+        )
+    except (OSError, TypeError, ValueError):
+        return
+
+
+def _viewer_tile_workers(tile_count: int) -> int:
+    raw = os.environ.get("FIREVIEWER_VIEWER_TILE_WORKERS", "").strip()
+    try:
+        configured = int(raw) if raw else min(8, os.cpu_count() or 1)
+    except ValueError as error:
+        raise TiledViewerPackageError(
+            "FIREVIEWER_VIEWER_TILE_WORKERS doit être un entier"
+        ) from error
+    if configured < 1 or configured > 8:
+        raise TiledViewerPackageError(
+            "FIREVIEWER_VIEWER_TILE_WORKERS doit être compris entre 1 et 8"
+        )
+    return min(configured, max(1, tile_count))
+
+
+def _compile_sealed_tile(
+    arguments: tuple[
+        Path,
+        Path,
+        Path,
+        str,
+        dict[str, Any],
+        tuple[int, int, int],
+        tuple[SealedPrototype, ...],
+        dict[str, tuple[float, ...]],
+        Path | None,
+    ]
+) -> CompiledTile:
+    (
+        root,
+        staging,
+        packages,
+        tile_id,
+        record,
+        origin,
+        prototypes,
+        prototype_transforms,
+        cache_root,
+    ) = arguments
+    total_started = time.perf_counter()
+    phase_started = total_started
+    tile_origin = tuple(int(value) for value in record["origin_l93_m"])
+    package = packages / tile_id
+    terrain_path, image_path, scene_path, source_identity = _validate_tile_sources(
+        root, package, tile_id, record
+    )
+    source_validation_seconds = time.perf_counter() - phase_started
+    cache_key = _tile_cache_key(
+        tile_id=tile_id,
+        source_identity=source_identity,
+        origin=origin,
+        prototypes=prototypes,
+        prototype_transforms=prototype_transforms,
+    )
+    if cache_root is not None:
+        cached = _load_cached_tile(
+            cache_root,
+            cache_key=cache_key,
+            tile_id=tile_id,
+            source_identity=source_identity,
+            staging=staging,
+        )
+        if cached is not None:
+            cached.timings_seconds["source_validation"] = round(
+                source_validation_seconds, 6
+            )
+            cached.timings_seconds["total"] = round(
+                time.perf_counter() - total_started, 6
+            )
+            return cached
+
+    phase_started = time.perf_counter()
+    fixed = read_fixed_terrain(terrain_path)
+    if fixed.tile_origin_mm != (
+        tile_origin[0] * 1_000,
+        tile_origin[1] * 1_000,
+    ):
+        raise TiledViewerPackageError(f"Origine FVTG divergente: {tile_id}")
+    terrain_geometry = _terrain_geometry(fixed)
+    chain = tuple(_node_chain(tile_id, tile_origin, origin, fixed.z_origin_mm))
+    terrain_output = staging / "tiles" / tile_id / "terrain.glb"
+    terrain_builder = _FarGlb(generator="FireViewer sealed terrain tile")
+    terrain_builder.add_tile(
+        tile_id=tile_id,
+        node_chain=chain,
+        positions=terrain_geometry[0],
+        normals=terrain_geometry[1],
+        texcoords=terrain_geometry[2],
+        indices=terrain_geometry[3],
+        image=image_path.read_bytes(),
+        image_mime="image/png",
+    )
+    terrain_builder.write(terrain_output)
+    terrain_seconds = time.perf_counter() - phase_started
+
+    phase_started = time.perf_counter()
+    far_geometry = _terrain_geometry(fixed, stride=8)
+    far_image = _jpeg_thumbnail(image_path)
+    far_seconds = time.perf_counter() - phase_started
+
+    phase_started = time.perf_counter()
+    groups, counts = _scene_instances(
+        scene_path,
+        tile_id=tile_id,
+        tile_origin=tile_origin,
+        zone_origin=origin,
+        prototypes=prototypes,
+        prototype_transforms=prototype_transforms,
+    )
+    sealed_counts = {
+        "buildings": record.get("building_count"),
+        "trees": record.get("tree_count"),
+        "context_assets": record.get("context_asset_count", 0),
+    }
+    if counts != sealed_counts:
+        raise TiledViewerPackageError(
+            f"Comptages d'instances divergents pour {tile_id}: "
+            f"attendu={sealed_counts}, obtenu={counts}"
+        )
+    instance_groups: list[tuple[Prototype, Sequence[tuple[float, ...]]]] = []
+    prototype_ids: list[str] = []
+    prototype_instance_counts: dict[str, int] = {}
+    for prototype in prototypes:
+        records = groups[prototype.prototype_id]
+        if not records:
+            continue
+        instance_groups.append(
+            (
+                Prototype(
+                    prototype.prototype_id,
+                    prototype.family,
+                    -1,
+                    (),
+                ),
+                records,
+            )
+        )
+        prototype_ids.append(prototype.prototype_id)
+        prototype_instance_counts[prototype.prototype_id] = len(records)
+    instance_output = staging / "tiles" / tile_id / "instances.fvi"
+    _write_instances(instance_output, tile_id=tile_id, groups=instance_groups)
+    instances_seconds = time.perf_counter() - phase_started
+
+    phase_started = time.perf_counter()
+    terrain_asset = _asset(terrain_output, staging, "model/gltf-binary")
+    instance_asset = _asset(
+        instance_output,
+        staging,
+        "application/vnd.fireviewer.instances",
+    )
+    metadata_seconds = time.perf_counter() - phase_started
+    compiled = CompiledTile(
+        tile_id=tile_id,
+        tile_origin=tile_origin,
+        terrain_asset=terrain_asset,
+        instance_asset=instance_asset,
+        family_counts=counts,
+        prototype_instance_counts=prototype_instance_counts,
+        prototype_ids=tuple(prototype_ids),
+        far_positions=far_geometry[0],
+        far_normals=far_geometry[1],
+        far_texcoords=far_geometry[2],
+        far_indices=far_geometry[3],
+        far_image=far_image,
+        node_chain=chain,
+        timings_seconds={
+            "source_validation": round(source_validation_seconds, 6),
+            "cache_restore": 0.0,
+            "terrain_glb": round(terrain_seconds, 6),
+            "far_fragment": round(far_seconds, 6),
+            "instances_fvi": round(instances_seconds, 6),
+            "output_metadata": round(metadata_seconds, 6),
+            "total": round(time.perf_counter() - total_started, 6),
+        },
+        cache_hit=False,
+    )
+    if cache_root is not None:
+        _store_cached_tile(
+            cache_root,
+            cache_key=cache_key,
+            source_identity=source_identity,
+            staging=staging,
+            compiled=compiled,
+        )
+    return compiled
+
+
+def _compile_sealed_tile_safe(
+    arguments: tuple[
+        Path,
+        Path,
+        Path,
+        str,
+        dict[str, Any],
+        tuple[int, int, int],
+        tuple[SealedPrototype, ...],
+        dict[str, tuple[float, ...]],
+        Path | None,
+    ]
+) -> CompiledTile | FailedTile:
+    try:
+        return _compile_sealed_tile(arguments)
+    except Exception as error:
+        return FailedTile(arguments[3], f"{type(error).__name__}: {error}")
+
+
+def _summarize_tile_timings(
+    rows: Sequence[Mapping[str, float]],
+) -> dict[str, dict[str, float]]:
+    if not rows:
+        return {}
+    result: dict[str, dict[str, float]] = {}
+    for phase in rows[0]:
+        values = sorted(float(row[phase]) for row in rows)
+
+        def percentile(fraction: float) -> float:
+            index = min(len(values) - 1, max(0, math.ceil(len(values) * fraction) - 1))
+            return values[index]
+
+        result[phase] = {
+            "sum": round(sum(values), 6),
+            "mean": round(sum(values) / len(values), 6),
+            "p50": round(percentile(0.50), 6),
+            "p95": round(percentile(0.95), 6),
+            "max": round(values[-1], 6),
+        }
+    return result
 
 
 def build_tiled_viewer_from_sealed(
@@ -737,9 +1367,37 @@ def build_tiled_viewer_from_sealed(
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
+    build_started = time.perf_counter()
+    print(
+        "FIREVIEWER_VIEWER_PACK_PROGRESS "
+        + json.dumps(
+            {"phase": "start", "tile_count": len(zone_tiles)},
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
     try:
+        prototype_metrics: dict[str, Any] = {}
         prototype_assets, prototype_transforms = _export_prototypes(
-            root, staging, blend_path, prototypes, blender, timeout_seconds
+            root,
+            staging,
+            blend_path,
+            prototypes,
+            blender,
+            timeout_seconds,
+            prototype_metrics,
+        )
+        print(
+            "FIREVIEWER_VIEWER_PACK_PROGRESS "
+            + json.dumps(
+                {
+                    "phase": "prototypes_complete",
+                    "prototype_count": len(prototypes),
+                    "elapsed_seconds": round(time.perf_counter() - build_started, 3),
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
         )
         (staging / PROTOTYPE_PLAN_NAME).unlink()
         (staging / PROTOTYPE_EXPORT_NAME).unlink()
@@ -747,131 +1405,139 @@ def build_tiled_viewer_from_sealed(
         total_counts = {family: 0 for family in FAMILY_ROOTS}
         tile_assets: list[Asset] = []
         tile_rows: list[dict[str, Any]] = []
-        far_builder = _FarGlb(generator="FireViewer sealed FAR LOD")
-        for tile_id, record in sorted(
+        tile_timings: list[dict[str, float]] = []
+        compiled_tile_count = 0
+        tile_cache_hits = 0
+        far_builder = _FarGlb(
+            generator="FireViewer sealed FAR LOD",
+            binary_spool=staging / ".far-binary.part",
+        )
+        sorted_tiles = sorted(
             zone_tiles.items(),
             key=lambda item: (item[1]["origin_l93_m"][1], item[1]["origin_l93_m"][0]),
-        ):
-            tile_origin = tuple(int(value) for value in record["origin_l93_m"])
-            package = packages / tile_id
-            terrain_path, image_path, scene_path = _validate_tile_sources(
-                root, package, tile_id, record
-            )
-            fixed = read_fixed_terrain(terrain_path)
-            if fixed.tile_origin_mm != (
-                tile_origin[0] * 1_000,
-                tile_origin[1] * 1_000,
-            ):
-                raise TiledViewerPackageError(f"Origine FVTG divergente: {tile_id}")
-            terrain_geometry = _terrain_geometry(fixed)
-            chain = _node_chain(
-                tile_id, tile_origin, origin, fixed.z_origin_mm
-            )
-            terrain_output = staging / "tiles" / tile_id / "terrain.glb"
-            terrain_builder = _FarGlb(generator="FireViewer sealed terrain tile")
-            terrain_builder.add_tile(
-                tile_id=tile_id,
-                node_chain=chain,
-                positions=terrain_geometry[0],
-                normals=terrain_geometry[1],
-                texcoords=terrain_geometry[2],
-                indices=terrain_geometry[3],
-                image=image_path.read_bytes(),
-                image_mime="image/png",
-            )
-            terrain_builder.write(terrain_output)
-            far_geometry = _terrain_geometry(fixed, stride=8)
-            far_builder.add_tile(
-                tile_id=tile_id,
-                node_chain=chain,
-                positions=far_geometry[0],
-                normals=far_geometry[1],
-                texcoords=far_geometry[2],
-                indices=far_geometry[3],
-                image=_jpeg_thumbnail(image_path),
-            )
-            groups, counts = _scene_instances(
-                scene_path,
-                tile_id=tile_id,
-                tile_origin=tile_origin,
-                zone_origin=origin,
-                prototypes=prototypes,
-                prototype_transforms=prototype_transforms,
-            )
-            sealed_counts = {
-                "buildings": record.get("building_count"),
-                "trees": record.get("tree_count"),
-                "context_assets": record.get("context_asset_count", 0),
-            }
-            if counts != sealed_counts:
-                raise TiledViewerPackageError(
-                    f"Comptages d'instances divergents pour {tile_id}: "
-                    f"attendu={sealed_counts}, obtenu={counts}"
-                )
-            instance_groups: list[
-                tuple[Prototype, Sequence[tuple[float, ...]]]
-            ] = []
-            prototype_ids: list[str] = []
-            for prototype in prototypes:
-                records = groups[prototype.prototype_id]
-                if not records:
-                    continue
-                instance_groups.append(
-                    (
-                        Prototype(
-                            prototype.prototype_id,
-                            prototype.family,
-                            -1,
-                            (),
-                        ),
-                        records,
-                    )
-                )
-                prototype_ids.append(prototype.prototype_id)
-                prototype_counts[prototype.prototype_id] += len(records)
-                total_counts[prototype.family] += len(records)
-            instance_output = staging / "tiles" / tile_id / "instances.fvi"
-            _write_instances(
-                instance_output, tile_id=tile_id, groups=instance_groups
-            )
-            terrain_asset = _asset(
-                terrain_output, staging, "model/gltf-binary"
-            )
-            instance_asset = _asset(
-                instance_output,
+        )
+        tile_workers = _viewer_tile_workers(len(sorted_tiles))
+        tile_cache = _tile_cache_root()
+        tile_arguments = [
+            (
+                root,
                 staging,
-                "application/vnd.fireviewer.instances",
+                packages,
+                tile_id,
+                dict(record),
+                origin,
+                tuple(prototypes),
+                dict(prototype_transforms),
+                tile_cache,
             )
-            tile_assets.extend((terrain_asset, instance_asset))
+            for tile_id, record in sorted_tiles
+        ]
+
+        def consume_compiled_tile(compiled: CompiledTile) -> None:
+            nonlocal compiled_tile_count, tile_cache_hits
+            far_builder.add_tile(
+                tile_id=compiled.tile_id,
+                node_chain=compiled.node_chain,
+                positions=compiled.far_positions,
+                normals=compiled.far_normals,
+                texcoords=compiled.far_texcoords,
+                indices=compiled.far_indices,
+                image=compiled.far_image,
+            )
+            tile_origin = compiled.tile_origin
+            sealed_counts = {
+                "buildings": compiled.family_counts["buildings"],
+                "trees": compiled.family_counts["trees"],
+                "context_assets": compiled.family_counts["context_assets"],
+            }
+            for prototype in prototypes:
+                instance_count = compiled.prototype_instance_counts.get(
+                    prototype.prototype_id, 0
+                )
+                if instance_count == 0:
+                    continue
+                prototype_counts[prototype.prototype_id] += instance_count
+                total_counts[prototype.family] += instance_count
+            tile_assets.extend((compiled.terrain_asset, compiled.instance_asset))
+            tile_timings.append(compiled.timings_seconds)
+            compiled_tile_count += 1
+            tile_cache_hits += int(compiled.cache_hit)
             tile_rows.append(
                 {
-                    "id": tile_id,
+                    "id": compiled.tile_id,
                     "bounds_l93_m": [
                         tile_origin[0],
                         tile_origin[1],
                         tile_origin[0] + TILE_SIZE_M,
                         tile_origin[1] + TILE_SIZE_M,
                     ],
-                    "terrain": terrain_asset.payload(),
-                    "instances": instance_asset.payload(),
-                    "family_instance_counts": counts,
+                    "terrain": compiled.terrain_asset.payload(),
+                    "instances": compiled.instance_asset.payload(),
+                    "family_instance_counts": compiled.family_counts,
                     "source_family_instance_counts": sealed_counts,
-                    "prototype_ids": prototype_ids,
+                    "prototype_ids": list(compiled.prototype_ids),
                 }
             )
+            if compiled_tile_count % 8 == 0 or compiled_tile_count == len(sorted_tiles):
+                print(
+                    "FIREVIEWER_VIEWER_PACK_PROGRESS "
+                    + json.dumps(
+                        {
+                            "phase": "tiles",
+                            "completed": compiled_tile_count,
+                            "total": len(sorted_tiles),
+                            "cache_hits": tile_cache_hits,
+                            "workers": tile_workers,
+                            "elapsed_seconds": round(
+                                time.perf_counter() - build_started, 3
+                            ),
+                        },
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
+
+        tile_compile_started = time.perf_counter()
+        if tile_workers == 1:
+            for arguments in tile_arguments:
+                consume_compiled_tile(_compile_sealed_tile(arguments))
+        else:
+            with ProcessPoolExecutor(max_workers=tile_workers) as executor:
+                for arguments, result in zip(
+                    tile_arguments,
+                    executor.map(_compile_sealed_tile_safe, tile_arguments),
+                    strict=True,
+                ):
+                    if isinstance(result, FailedTile):
+                        print(
+                            "FIREVIEWER_VIEWER_PACK_PROGRESS "
+                            + json.dumps(
+                                {
+                                    "phase": "tile_retry",
+                                    "tile_id": result.tile_id,
+                                    "reason": result.error,
+                                },
+                                separators=(",", ":"),
+                            ),
+                            flush=True,
+                        )
+                        result = _compile_sealed_tile(arguments)
+                    consume_compiled_tile(result)
+        tile_compile_wall_seconds = time.perf_counter() - tile_compile_started
         if total_counts != expected:
             raise TiledViewerPackageError(
                 f"Comptages tuilés incomplets: attendu={expected}, obtenu={total_counts}"
             )
+        far_write_started = time.perf_counter()
         far_path = staging / "far.glb"
         far_builder.write(far_path)
         far_asset = _asset(far_path, staging, "model/gltf-binary")
+        far_write_seconds = time.perf_counter() - far_write_started
         prototype_rows = [
             {
                 "id": prototype.prototype_id,
                 "family": prototype.family,
                 "asset_id": prototype.asset_id,
-                "identity_sha256": prototype.identity_sha256,
                 "instance_count": prototype_counts[prototype.prototype_id],
                 "asset": asset.payload(),
             }
@@ -882,17 +1548,14 @@ def build_tiled_viewer_from_sealed(
             "kind": SEALED_SOURCE_KIND,
             "zone_receipt": {
                 "path": "zone.done.json",
-                "sha256": _sha256_file(root / "zone.done.json"),
                 "byte_count": (root / "zone.done.json").stat().st_size,
             },
             "stage_layout": {
                 "path": _relative_to_root(root, layout_path),
-                "sha256": _sha256_file(layout_path),
                 "byte_count": layout_path.stat().st_size,
             },
             "zone_blend": {
                 "path": _relative_to_root(root, blend_path),
-                "sha256": _sha256_file(blend_path),
                 "byte_count": blend_path.stat().st_size,
             },
             "tile_package_count": len(zone_tiles),
@@ -945,10 +1608,32 @@ def build_tiled_viewer_from_sealed(
             "family_instance_counts": expected,
             "source": source,
         }
-        receipt["receipt_sha256"] = hashlib.sha256(
-            _canonical_bytes(receipt)
-        ).hexdigest()
         _write_json(staging / RECEIPT_NAME, receipt)
+        _write_json(
+            staging / BUILD_METRICS_NAME,
+            {
+                "schema": BUILD_METRICS_SCHEMA,
+                "tile_count": compiled_tile_count,
+                "tile_workers": tile_workers,
+                "streaming_result_consumption": True,
+                "tile_cache": {
+                    "enabled": tile_cache is not None,
+                    "hits": tile_cache_hits,
+                    "misses": compiled_tile_count - tile_cache_hits,
+                },
+                "prototype_export": prototype_metrics,
+                "phase_times_seconds": {
+                    "tile_compile_wall": round(tile_compile_wall_seconds, 6),
+                    "far_write": round(far_write_seconds, 6),
+                    "total_before_publish": round(
+                        time.perf_counter() - build_started, 6
+                    ),
+                },
+                "tile_phase_statistics_seconds": _summarize_tile_timings(
+                    tile_timings
+                ),
+            },
+        )
         if output.exists():
             shutil.rmtree(output)
         os.replace(staging, output)

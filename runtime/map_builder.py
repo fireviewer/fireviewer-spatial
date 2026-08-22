@@ -294,7 +294,15 @@ def publish_output(
     if (job_root / "contracts").is_dir():
         _copy_directory(job_root / "contracts", output_root / "manifests" / "contracts")
 
+    fast_finalize = os.environ.get("FIREVIEWER_FAST_FINALIZE", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     manifest_names = (
+        "zone-plan.json",
+        "zone-context.json",
+        "zone-stage-layout.v1.json",
+        "validation-result.json",
+    ) if fast_finalize else (
         "manifest.json",
         "dependency-inventory.json",
         "zone-plan.json",
@@ -326,6 +334,9 @@ def publish_output(
         "builder_contract": JOB_SCHEMA,
         "runtime_seconds": validation_result.get("timings_seconds", {}).get("total"),
         "phase_times": phase_times,
+        "viewer_phase_times_seconds": validation_result.get(
+            "viewer_phase_times_seconds", {}
+        ),
         "phase_time_basis": (
             "The frozen builder exposes sealed-map and viewer-export durations. "
             "Unavailable overlapping sub-phases remain null rather than fabricated."
@@ -335,35 +346,48 @@ def publish_output(
         "tile_count": validation_result.get("tile_count"),
     }
     _write_json(output_root / "metrics" / "build-metrics.json", metrics)
+    blender_metrics = job_root / "blender-build-metrics.v1.json"
+    if blender_metrics.is_file():
+        _copy_file(
+            blender_metrics,
+            output_root / "metrics" / "blender-build-metrics.v1.json",
+        )
+    viewer_metrics = job_root / "viewer-tiled" / "viewer-build-metrics.v1.json"
+    if viewer_metrics.is_file():
+        _copy_file(
+            viewer_metrics,
+            output_root / "metrics" / "viewer-build-metrics.v1.json",
+        )
 
-    artifacts: list[dict[str, Any]] = []
-    for path in sorted(output_root.rglob("*")):
-        if path.is_file() and path.name not in {"hashes.json", "zone.done.json"}:
-            artifacts.append(
-                {
-                    "path": path.relative_to(output_root).as_posix(),
-                    "byte_count": path.stat().st_size,
-                    "sha256": _sha256(path),
-                }
-            )
     zone_receipt = job_root / "zone.done.json"
     if not zone_receipt.is_file():
         raise MapBuilderContractError("zone.done.json is missing from the validated build")
-    artifacts.append(
-        {
-            "path": "zone.done.json",
-            "byte_count": zone_receipt.stat().st_size,
-            "sha256": _sha256(zone_receipt),
-            "publication_order": "last",
+    if not fast_finalize:
+        artifacts: list[dict[str, Any]] = []
+        for path in sorted(output_root.rglob("*")):
+            if path.is_file() and path.name not in {"hashes.json", "zone.done.json"}:
+                artifacts.append(
+                    {
+                        "path": path.relative_to(output_root).as_posix(),
+                        "byte_count": path.stat().st_size,
+                        "sha256": _sha256(path),
+                    }
+                )
+        artifacts.append(
+            {
+                "path": "zone.done.json",
+                "byte_count": zone_receipt.stat().st_size,
+                "sha256": _sha256(zone_receipt),
+                "publication_order": "last",
+            }
+        )
+        hashes = {
+            "schema": HASHES_SCHEMA,
+            "algorithm": "sha256",
+            "build_id": job["build_id"],
+            "artifacts": artifacts,
         }
-    )
-    hashes = {
-        "schema": HASHES_SCHEMA,
-        "algorithm": "sha256",
-        "build_id": job["build_id"],
-        "artifacts": artifacts,
-    }
-    _write_json(output_root / "manifests" / "hashes.json", hashes)
+        _write_json(output_root / "manifests" / "hashes.json", hashes)
 
     # This is the validity marker.  No operation may follow that can leave an
     # apparently complete folder with missing artifacts.

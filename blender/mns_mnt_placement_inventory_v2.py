@@ -40,7 +40,7 @@ from fixed_asset_placement import (
 from fixed_asset_placement import canonical_json_bytes as canonical_fixed_asset_bytes
 
 CONTRACT_SCHEMA = "fireviewer.mns-mnt-placement-contract.v2"
-ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v9"
+ALGORITHM = "fireviewer.mns-mnt-placement-algorithm.v10"
 PLACEMENT_PROFILE = "fireviewer.factual-placement-profile.v2"
 NATIVE_RESOLUTION_M = 0.5
 NATIVE_SOURCE_SIZE = 1040
@@ -52,6 +52,7 @@ TREE_BASE_MAX_CLEARANCE_MM = 150
 TREE_ASSET_SELECTION_POLICY = (
     "current_bdtopo_composition_else_bdforet_v1_then_conifer_or_oak_only"
 )
+BUILDING_INTERIOR_OVERLAP_EPSILON_M2 = 0.01
 
 
 class NativeGridMisalignmentError(v1.PlacementInventoryError):
@@ -382,6 +383,125 @@ def _valid_building_exclusion_mask(
     return v1._rasterize_geometries(geometries, transform=transform)
 
 
+def _reconcile_candidate_statuses(family: dict[str, Any]) -> None:
+    candidates = family.get("candidates")
+    if not isinstance(candidates, list):
+        raise v1.PlacementInventoryError("placement candidate array is invalid")
+    counts = {
+        status: sum(
+            isinstance(candidate, Mapping) and candidate.get("status") == status
+            for candidate in candidates
+        )
+        for status in ("valid", "ambiguous", "rejected")
+    }
+    family["source_count"] = len(candidates)
+    family["valid_count"] = counts["valid"]
+    family["ambiguous_count"] = counts["ambiguous"]
+    family["rejected_count"] = counts["rejected"]
+    family["placement_ready_count"] = counts["valid"]
+    family["placement_blocked_count"] = counts["ambiguous"] + counts["rejected"]
+
+
+def _remove_overlapping_buildings(
+    footprints: list[tuple[str, Any, str, dict[str, Any]]],
+    buildings: dict[str, Any],
+) -> int:
+    """Allow boundary contact, but never retain positive-area intersections."""
+
+    geometry_by_source = {source_id: geometry for source_id, geometry, _digest, _props in footprints}
+    candidates = buildings.get("candidates")
+    if not isinstance(candidates, list):
+        raise v1.PlacementInventoryError("building candidate array is invalid")
+    valid = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("status") == "valid"
+    ]
+    valid.sort(
+        key=lambda candidate: (
+            -int(candidate.get("height_cm") or 0),
+            -float(candidate.get("footprint_area_m2") or 0.0),
+            str(candidate.get("source_id")),
+        )
+    )
+    accepted: list[tuple[Mapping[str, Any], Any]] = []
+    removed = 0
+    for candidate in valid:
+        geometry = geometry_by_source.get(str(candidate.get("source_id")))
+        if geometry is None:
+            candidate["status"] = "rejected"
+            candidate["reason_codes"] = [
+                *candidate.get("reason_codes", []),
+                "building_footprint_geometry_missing_removed",
+            ]
+            removed += 1
+            continue
+        conflict = next(
+            (
+                kept
+                for kept, kept_geometry in accepted
+                if float(geometry.intersection(kept_geometry).area)
+                > BUILDING_INTERIOR_OVERLAP_EPSILON_M2
+            ),
+            None,
+        )
+        if conflict is not None:
+            candidate["status"] = "rejected"
+            candidate["reason_codes"] = [
+                *candidate.get("reason_codes", []),
+                "building_positive_area_overlap_removed",
+            ]
+            candidate["conflicting_candidate_id"] = str(conflict["candidate_id"])
+            removed += 1
+            continue
+        accepted.append((candidate, geometry))
+    _reconcile_candidate_statuses(buildings)
+    return removed
+
+
+def _remove_trees_inside_buildings(
+    trees: dict[str, Any],
+    footprints: list[tuple[str, Any, str, dict[str, Any]]],
+    buildings: Mapping[str, Any],
+) -> int:
+    valid_sources = {
+        str(candidate.get("source_id"))
+        for candidate in buildings.get("candidates", [])
+        if isinstance(candidate, Mapping) and candidate.get("status") == "valid"
+    }
+    geometries = [
+        geometry
+        for source_id, geometry, _digest, _props in footprints
+        if source_id in valid_sources
+    ]
+    candidates = trees.get("candidates")
+    if not isinstance(candidates, list):
+        raise v1.PlacementInventoryError("tree candidate array is invalid")
+    removed = 0
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or candidate.get("status") != "valid":
+            continue
+        position = candidate.get("position_l93_m")
+        if not isinstance(position, list) or len(position) != 2:
+            candidate["status"] = "rejected"
+            candidate["reason_codes"] = [
+                *candidate.get("reason_codes", []),
+                "tree_position_invalid_removed",
+            ]
+            removed += 1
+            continue
+        point = Point(float(position[0]), float(position[1]))
+        if any(geometry.covers(point) for geometry in geometries):
+            candidate["status"] = "rejected"
+            candidate["reason_codes"] = [
+                *candidate.get("reason_codes", []),
+                "tree_inside_building_footprint_removed",
+            ]
+            removed += 1
+    _reconcile_candidate_statuses(trees)
+    return removed
+
+
 def _fixed_only_context_assets(
     *,
     mnt_mm: np.ndarray,
@@ -488,6 +608,19 @@ def build_placement_inventory_v2(
     buildings["detection_mode"] = "bdtopo_footprint_geometry_with_mns_mnt_height_v2"
     buildings["xy_geometry_authority"] = "bdtopo_footprint"
     buildings["morphology_only_instantiation"] = "forbidden"
+    buildings["interior_overlap_policy"] = (
+        "allow_boundary_contact_remove_lower_priority_positive_area_overlap"
+    )
+    buildings["interior_overlap_epsilon_m2"] = BUILDING_INTERIOR_OVERLAP_EPSILON_M2
+    buildings["overlap_removed_count"] = _remove_overlapping_buildings(
+        footprints, buildings
+    )
+    buildings["form_classification_policy"] = (
+        "strict_measured_height_and_footprint_area_v1"
+    )
+    buildings["asset_failure_policy"] = (
+        "measured_procedural_fallback_else_remove_with_reason"
+    )
 
     vegetation_prior = (
         masks["vegetation"]
@@ -505,6 +638,15 @@ def build_placement_inventory_v2(
         exclusion_mask=exclusion,
         west=west,
         south=south,
+    )
+    trees["inside_building_removed_count"] = _remove_trees_inside_buildings(
+        trees, footprints, buildings
+    )
+    trees["building_exclusion_policy"] = (
+        "raster_exclusion_plus_exact_footprint_cover_removal"
+    )
+    trees["asset_failure_policy"] = (
+        "measured_procedural_fallback_else_remove_with_reason"
     )
     trees["count_semantics"] = "estimated_individual_crowns_not_certified_tree_stems"
     trees["native_refinement_may_change_candidate_count"] = False
@@ -672,6 +814,14 @@ def validate_inventory_v2(inventory: Mapping[str, Any]) -> None:
     if (
         buildings.get("xy_geometry_authority") != "bdtopo_footprint"
         or buildings.get("morphology_only_instantiation") != "forbidden"
+        or buildings.get("interior_overlap_policy")
+        != "allow_boundary_contact_remove_lower_priority_positive_area_overlap"
+        or buildings.get("interior_overlap_epsilon_m2")
+        != BUILDING_INTERIOR_OVERLAP_EPSILON_M2
+        or buildings.get("form_classification_policy")
+        != "strict_measured_height_and_footprint_area_v1"
+        or buildings.get("asset_failure_policy")
+        != "measured_procedural_fallback_else_remove_with_reason"
         or trees.get("native_refinement_may_change_candidate_count") is not False
         or trees.get("count_semantics")
         != "estimated_individual_crowns_not_certified_tree_stems"
@@ -680,9 +830,20 @@ def validate_inventory_v2(inventory: Mapping[str, Any]) -> None:
         or trees.get("base_elevation_policy")
         != "highest_native_mnt_inside_peak_cell_bounded_to_15cm_clearance"
         or trees.get("asset_selection_policy") != TREE_ASSET_SELECTION_POLICY
+        or trees.get("building_exclusion_policy")
+        != "raster_exclusion_plus_exact_footprint_cover_removal"
+        or trees.get("asset_failure_policy")
+        != "measured_procedural_fallback_else_remove_with_reason"
         or context_assets.get("automatic_feature_assets_disabled") is not True
     ):
         raise v1.PlacementInventoryError("v2 factual placement policy changed")
+    for family, key in (
+        (buildings, "overlap_removed_count"),
+        (trees, "inside_building_removed_count"),
+    ):
+        value = family.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise v1.PlacementInventoryError(f"v2 {key} is invalid")
     for candidate in context_assets.get("candidates", []):
         if not isinstance(candidate, Mapping) or candidate.get("fixed_placement_id") is None:
             raise v1.PlacementInventoryError(

@@ -2,6 +2,7 @@
 !runtime/
 !runtime/**
 !blender/
+!blender/asset_placement_policy.py
 !blender/build_reference_usd_asset_library.py
 !blender/build_tiled_viewer_package.py
 !blender/build_tiled_viewer_from_sealed.py
@@ -10,7 +11,11 @@
 !blender/map_validation_job.py
 !blender/mns_mnt_placement_contract.v2.json
 !blender/mns_mnt_placement_inventory_v2.py
+!blender/procedural_fallbacks/
+!blender/procedural_fallbacks/**
+!blender/produce_simple_measured_tile.py
 !blender/reference_usd_asset_library_contract.v1.json
+!blender/render_simple_zone_gallery.py
 !blender/simple_production_engine.py
 !omniverse/
 !omniverse/build_measured_scene_usd.py

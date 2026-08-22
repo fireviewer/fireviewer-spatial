@@ -1006,6 +1006,14 @@ def _validate_selected_assets(
 
     for prototype in prototypes:
         asset_id = prototype.get("asset_id") if isinstance(prototype, Mapping) else None
+        if (
+            isinstance(prototype, Mapping)
+            and prototype.get("availability") == "procedural_fallback"
+        ):
+            # validate_measured_scene_package() has already validated the sealed
+            # procedural bundle. It is intentionally absent from the external
+            # asset catalogue, so catalogue validation does not apply here.
+            continue
         asset = indexed.get(str(asset_id))
         if not isinstance(prototype, Mapping) or not isinstance(asset, Mapping):
             raise SimpleMeasuredTileError(

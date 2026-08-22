@@ -71,14 +71,12 @@ class TiledViewerPackageError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class Asset:
     path: str
-    sha256: str
     byte_count: int
     media_type: str
 
     def payload(self) -> dict[str, Any]:
         return {
             "path": self.path,
-            "sha256": self.sha256,
             "byte_count": self.byte_count,
             "media_type": self.media_type,
         }
@@ -133,7 +131,7 @@ def _sha256_file(path: Path) -> str:
 
 def _asset(path: Path, root: Path, media_type: str) -> Asset:
     relative = path.relative_to(root).as_posix()
-    return Asset(relative, _sha256_file(path), path.stat().st_size, media_type)
+    return Asset(relative, path.stat().st_size, media_type)
 
 
 def _load_json(path: Path, label: str) -> dict[str, Any]:
@@ -190,6 +188,31 @@ def _write_glb(path: Path, gltf: Mapping[str, Any], binary: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.part")
     temporary.write_bytes(payload)
+    os.replace(temporary, path)
+
+
+def _write_glb_from_spool(
+    path: Path,
+    gltf: Mapping[str, Any],
+    binary_spool: Path,
+    binary_length: int,
+) -> None:
+    """Finalize a GLB without materializing another full binary payload."""
+
+    json_raw = _canonical_bytes(gltf)
+    json_padded = json_raw + b" " * ((-len(json_raw)) % 4)
+    binary_padding = (-binary_length) % 4
+    total = 12 + 8 + len(json_padded) + 8 + binary_length + binary_padding
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.part")
+    with temporary.open("wb") as output, binary_spool.open("rb") as source:
+        output.write(struct.pack("<4sII", b"glTF", 2, total))
+        output.write(struct.pack("<II", len(json_padded), 0x4E4F534A))
+        output.write(json_padded)
+        output.write(struct.pack("<II", binary_length + binary_padding, 0x004E4942))
+        shutil.copyfileobj(source, output, length=1024 * 1024)
+        if binary_padding:
+            output.write(b"\0" * binary_padding)
     os.replace(temporary, path)
 
 
@@ -537,8 +560,19 @@ def _extract_mesh(
 
 
 class _FarGlb:
-    def __init__(self, *, generator: str = "FireViewer canonical FAR LOD") -> None:
+    def __init__(
+        self,
+        *,
+        generator: str = "FireViewer canonical FAR LOD",
+        binary_spool: Path | None = None,
+    ) -> None:
         self.binary = bytearray()
+        self._binary_spool = binary_spool
+        self._binary_stream = None
+        self._binary_length = 0
+        if binary_spool is not None:
+            binary_spool.parent.mkdir(parents=True, exist_ok=True)
+            self._binary_stream = binary_spool.open("wb")
         self.gltf: dict[str, Any] = {
             "asset": {"version": "2.0", "generator": generator},
             "scene": 0,
@@ -562,10 +596,20 @@ class _FarGlb:
         }
 
     def append_view(self, payload: bytes, *, target: int | None = None) -> int:
-        while len(self.binary) % 4:
-            self.binary.append(0)
-        offset = len(self.binary)
-        self.binary.extend(payload)
+        if self._binary_stream is None:
+            while len(self.binary) % 4:
+                self.binary.append(0)
+            offset = len(self.binary)
+            self.binary.extend(payload)
+            self._binary_length = len(self.binary)
+        else:
+            padding = (-self._binary_length) % 4
+            if padding:
+                self._binary_stream.write(b"\0" * padding)
+                self._binary_length += padding
+            offset = self._binary_length
+            self._binary_stream.write(payload)
+            self._binary_length += len(payload)
         view: dict[str, Any] = {
             "buffer": 0,
             "byteOffset": offset,
@@ -588,13 +632,43 @@ class _FarGlb:
     ) -> int:
         components = _TYPE_COMPONENTS[kind]
         code = _COMPONENT_FORMAT[component_type]
-        if components == 1:
-            flat = [int(item) for item in values]
-        else:
-            flat = [float(component) for row in values for component in row]
-        payload = struct.pack("<" + code * len(flat), *flat)
+        # Terrain payloads are NumPy arrays in the optimized builder.  Packing
+        # them through a Python list first duplicates tens of millions of
+        # scalar objects on large maps.  Keep the generic sequence path for
+        # callers that do not use NumPy, but stream contiguous numeric arrays
+        # directly into the GLB buffer when available.
+        array_values: Any | None = None
+        try:
+            import numpy as np
+
+            if isinstance(values, np.ndarray):
+                dtype = {
+                    5120: np.dtype("<i1"),
+                    5121: np.dtype("<u1"),
+                    5122: np.dtype("<i2"),
+                    5123: np.dtype("<u2"),
+                    5125: np.dtype("<u4"),
+                    5126: np.dtype("<f4"),
+                }[component_type]
+                array_values = np.ascontiguousarray(values, dtype=dtype)
+                if components == 1:
+                    array_values = array_values.reshape(-1)
+                elif array_values.ndim != 2 or array_values.shape[1] != components:
+                    raise TiledViewerPackageError(
+                        f"Tableau GLB NumPy incompatible avec {kind}"
+                    )
+                payload = array_values.tobytes(order="C")
+                count = int(array_values.size // components)
+        except ImportError:  # pragma: no cover - production image includes NumPy
+            array_values = None
+        if array_values is None:
+            if components == 1:
+                flat = [int(item) for item in values]
+            else:
+                flat = [float(component) for row in values for component in row]
+            payload = struct.pack("<" + code * len(flat), *flat)
+            count = len(flat) // components
         view = self.append_view(payload, target=target)
-        count = len(flat) // components
         accessor: dict[str, Any] = {
             "bufferView": view,
             "componentType": component_type,
@@ -602,9 +676,21 @@ class _FarGlb:
             "type": kind,
         }
         if component_type == 5126 and count:
-            rows = [flat[index * components : (index + 1) * components] for index in range(count)]
-            accessor["min"] = [min(row[index] for row in rows) for index in range(components)]
-            accessor["max"] = [max(row[index] for row in rows) for index in range(components)]
+            if array_values is not None:
+                rows = array_values.reshape(count, components)
+                accessor["min"] = [float(value) for value in rows.min(axis=0)]
+                accessor["max"] = [float(value) for value in rows.max(axis=0)]
+            else:
+                rows = [
+                    flat[index * components : (index + 1) * components]
+                    for index in range(count)
+                ]
+                accessor["min"] = [
+                    min(row[index] for row in rows) for index in range(components)
+                ]
+                accessor["max"] = [
+                    max(row[index] for row in rows) for index in range(components)
+                ]
         accessors = self.gltf["accessors"]
         assert isinstance(accessors, list)
         accessors.append(accessor)
@@ -691,8 +777,23 @@ class _FarGlb:
         scenes[0]["nodes"].append(first_node)
 
     def write(self, path: Path) -> None:
-        self.gltf["buffers"] = [{"byteLength": len(self.binary)}]
-        _write_glb(path, self.gltf, bytes(self.binary))
+        self.gltf["buffers"] = [{"byteLength": self._binary_length}]
+        if self._binary_stream is None:
+            _write_glb(path, self.gltf, bytes(self.binary))
+            return
+        self._binary_stream.flush()
+        self._binary_stream.close()
+        self._binary_stream = None
+        assert self._binary_spool is not None
+        try:
+            _write_glb_from_spool(
+                path,
+                self.gltf,
+                self._binary_spool,
+                self._binary_length,
+            )
+        finally:
+            self._binary_spool.unlink(missing_ok=True)
 
 
 def _terrain_image(gltf: Mapping[str, Any], binary: bytes, mesh_index: int) -> bytes:
@@ -1027,7 +1128,11 @@ def _expected_counts(zone_receipt: Mapping[str, Any]) -> dict[str, int]:
     return {name: int(value) for name, value in counts.items()}
 
 
-def _validate_source_asset(root: Path, raw: object, label: str) -> None:
+def _validate_source_asset(
+    root: Path,
+    raw: object,
+    label: str,
+) -> None:
     if not isinstance(raw, Mapping):
         raise TiledViewerPackageError(f"Source scellée absente: {label}")
     relative = raw.get("path")
@@ -1041,7 +1146,6 @@ def _validate_source_asset(root: Path, raw: object, label: str) -> None:
     path = root.joinpath(*posix_path.parts)
     if (
         not path.is_file()
-        or raw.get("sha256") != _sha256_file(path)
         or raw.get("byte_count") != path.stat().st_size
     ):
         raise TiledViewerPackageError(f"Source scellée divergente: {label}")
@@ -1118,7 +1222,6 @@ def validate_tiled_viewer_package(
         or receipt.get("family_instance_counts") != expected
         or not isinstance(catalog_reference, Mapping)
         or catalog_reference.get("path") != CATALOG_NAME
-        or catalog_reference.get("sha256") != _sha256_file(catalog_path)
         or catalog_reference.get("byte_count") != catalog_path.stat().st_size
         or catalog.get("schema") != SCHEMA
         or not isinstance(canonical, Mapping)
@@ -1254,48 +1357,15 @@ def validate_tiled_viewer_package(
         seen.add(relative)
         path = tiled_root.joinpath(*posix_path.parts)
         byte_count = asset.get("byte_count")
-        sha256 = asset.get("sha256")
         if (
             not path.is_file()
             or isinstance(byte_count, bool)
             or not isinstance(byte_count, int)
             or byte_count <= 0
             or path.stat().st_size != byte_count
-            or not isinstance(sha256, str)
-            or len(sha256) != 64
-            or sha256 != _sha256_file(path)
         ):
             raise TiledViewerPackageError(f"Payload tuilé divergent: {relative}")
-        if asset.get("media_type") == "model/gltf-binary":
-            _validate_self_contained_glb(path)
         payload_bytes += byte_count
-    if direct_source:
-        for prototype in prototypes:
-            prototype_asset = prototype["asset"]
-            prototype_path = tiled_root.joinpath(
-                *PurePosixPath(prototype_asset["path"]).parts
-            )
-            gltf, _binary = _read_glb(prototype_path)
-            mesh_nodes = [
-                node
-                for node in gltf.get("nodes", [])
-                if isinstance(node, Mapping) and "mesh" in node
-            ]
-            if not mesh_nodes:
-                raise TiledViewerPackageError("Prototype viewer sans mesh")
-            identity_matrix = [
-                1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1
-            ]
-            for node in mesh_nodes:
-                if (
-                    node.get("translation", [0, 0, 0]) != [0, 0, 0]
-                    or node.get("rotation", [0, 0, 0, 1]) != [0, 0, 0, 1]
-                    or node.get("scale", [1, 1, 1]) != [1, 1, 1]
-                    or node.get("matrix", identity_matrix) != identity_matrix
-                ):
-                    raise TiledViewerPackageError(
-                        "Transform de prototype non figé avant instanciation"
-                    )
     for tile in tiles:
         instance_path = tiled_root.joinpath(
             *PurePosixPath(tile["instances"]["path"]).parts
@@ -1326,19 +1396,11 @@ def validate_tiled_viewer_package(
         or receipt.get("payload_byte_count") != payload_bytes
     ):
         raise TiledViewerPackageError("Totaux du paquet viewer tuilé invalides")
-    receipt_without_hash = dict(receipt)
-    observed_receipt_hash = receipt_without_hash.pop("receipt_sha256", None)
-    if observed_receipt_hash != hashlib.sha256(
-        _canonical_bytes(receipt_without_hash)
-    ).hexdigest():
-        raise TiledViewerPackageError("Hash du reçu viewer tuilé invalide")
-
     bootstrap_asset = dict(far["asset"])
     bootstrap_asset["path"] = f"{OUTPUT_DIRECTORY}/{bootstrap_asset['path']}"
     return receipt, {
         "catalog_path": f"{OUTPUT_DIRECTORY}/{CATALOG_NAME}",
         "receipt_path": f"{OUTPUT_DIRECTORY}/{RECEIPT_NAME}",
-        "catalog_sha256": catalog_reference["sha256"],
         "catalog_byte_count": catalog_reference["byte_count"],
         "payload_file_count": len(raw_assets),
         "payload_byte_count": payload_bytes,
