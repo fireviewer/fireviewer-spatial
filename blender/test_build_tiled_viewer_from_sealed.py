@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+import build_tiled_viewer_from_sealed as sealed_viewer
 
 from build_tiled_viewer_from_sealed import (
     SealedPrototype,
@@ -175,3 +178,34 @@ def test_duplicate_identifier_in_same_family_is_rejected() -> None:
         TiledViewerPackageError, match="Identité de prototype scellé invalide"
     ):
         _sealed_prototypes(layout)
+
+
+def test_export_prototypes_propagates_blender_python_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    blend = tmp_path / "zone.blend"
+    blend.write_bytes(b"blend")
+    blender = tmp_path / "blender"
+    blender.write_bytes(b"binary")
+    staging = tmp_path / ".viewer-tiled.part"
+    staging.mkdir()
+    observed: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        observed["command"] = command
+        return SimpleNamespace(returncode=0, stdout="hidden traceback", stderr="")
+
+    monkeypatch.setattr(sealed_viewer.subprocess, "run", fake_run)
+    prototype = SealedPrototype(
+        "trees-0000", "trees", "tree", "Asset_tree", "a" * 64
+    )
+    with pytest.raises(
+        TiledViewerPackageError, match="sans produire le reçu prototypes"
+    ) as error:
+        sealed_viewer._export_prototypes(
+            tmp_path, staging, blend, [prototype], blender, 30
+        )
+    assert "hidden traceback" in str(error.value)
+    command = observed["command"]
+    assert isinstance(command, list)
+    assert command[command.index("--python-exit-code") + 1] == "1"

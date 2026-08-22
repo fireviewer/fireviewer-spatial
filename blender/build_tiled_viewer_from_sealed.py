@@ -576,6 +576,8 @@ def _export_prototypes(
         str(blender_path),
         "--background",
         "--factory-startup",
+        "--python-exit-code",
+        "1",
         "--python",
         str(script),
         "--",
@@ -600,7 +602,14 @@ def _export_prototypes(
         raise TiledViewerPackageError(
             f"Export des prototypes en échec ({completed.returncode}):\n{details}"
         )
-    receipt = _load_json(staging / PROTOTYPE_EXPORT_NAME, "reçu prototypes")
+    receipt_path = staging / PROTOTYPE_EXPORT_NAME
+    if not receipt_path.is_file():
+        details = "\n".join((completed.stdout + completed.stderr).splitlines()[-40:])
+        raise TiledViewerPackageError(
+            "Blender a terminé sans produire le reçu prototypes"
+            + (f":\n{details}" if details else "")
+        )
+    receipt = _load_json(receipt_path, "reçu prototypes")
     rows = receipt.get("prototypes")
     if (
         receipt.get("schema") != PROTOTYPE_EXPORT_SCHEMA

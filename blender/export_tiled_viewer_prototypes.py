@@ -20,6 +20,11 @@ from typing import Any
 PLAN_SCHEMA = "fireviewer.tiled-prototype-export-plan.v1"
 RESULT_SCHEMA = "fireviewer.tiled-prototype-export.v1"
 RESULT_NAME = "prototype-export.v1.json"
+FAMILY_SCOPE_NAMES = {
+    "buildings": "Buildings",
+    "trees": "Trees",
+    "context_assets": "ContextAssets",
+}
 
 
 class TiledPrototypeExportError(RuntimeError):
@@ -76,6 +81,70 @@ def _relative_output(root: Path, value: object) -> Path:
     if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
         raise TiledPrototypeExportError("Chemin de prototype non confiné")
     return _inside(root, root.joinpath(*relative.parts), "prototype")
+
+
+def _has_ancestor_named(obj: Any, name: str) -> bool:
+    parent = getattr(obj, "parent", None)
+    while parent is not None:
+        if getattr(parent, "name", None) == name:
+            return True
+        parent = getattr(parent, "parent", None)
+    return False
+
+
+def _matches_imported_name(name: object, identifier: str) -> bool:
+    if not isinstance(name, str):
+        return False
+    if name == identifier or identifier.startswith(name):
+        return True
+    base, separator, suffix = name.rpartition(".")
+    return (
+        separator == "."
+        and len(suffix) == 3
+        and suffix.isdigit()
+        and identifier.startswith(base)
+    )
+
+
+def _root_for_asset_metadata(obj: Any, identifier: str) -> Any | None:
+    current = obj
+    while current is not None:
+        if _matches_imported_name(getattr(current, "name", None), identifier):
+            return current
+        current = getattr(current, "parent", None)
+    return None
+
+
+def _resolve_prototype_root(
+    bpy: Any, *, family: object, asset_id: object, identifier: str
+) -> Any:
+    scope_name = FAMILY_SCOPE_NAMES.get(family)
+    if scope_name is None or not isinstance(asset_id, str) or not asset_id:
+        raise TiledPrototypeExportError("Identité de prototype invalide")
+    candidates_by_identity: dict[int, Any] = {}
+    for obj in bpy.data.objects:
+        if obj.get("fireviewer:asset_id") != asset_id:
+            continue
+        root = _root_for_asset_metadata(obj, identifier)
+        if root is not None:
+            candidates_by_identity[id(root)] = root
+    candidates = list(candidates_by_identity.values())
+    scoped = [root for root in candidates if _has_ancestor_named(root, scope_name)]
+    if len(scoped) == 1:
+        return scoped[0]
+    if len(scoped) > 1 or not candidates:
+        raise TiledPrototypeExportError(
+            "Prototype absent ou ambigu dans zone.blend: "
+            f"family={family}, asset_id={asset_id}, identifier={identifier}, "
+            f"obtenu={len(scoped) if scoped else len(candidates)}"
+        )
+    return min(
+        candidates,
+        key=lambda root: (
+            getattr(root, "name", None) != identifier,
+            str(getattr(root, "name", "")),
+        ),
+    )
 
 
 def _collect_prototype_mesh(bpy: Any, root: Any) -> tuple[list[Any], list[float]]:
@@ -214,9 +283,12 @@ def export_prototypes(job_root: Path | str, plan_path: Path | str) -> Path:
         ):
             raise TiledPrototypeExportError("Identité de prototype invalide")
         observed_ids.add(prototype_id)
-        source_root = bpy.data.objects.get(identifier)
-        if source_root is None:
-            raise TiledPrototypeExportError(f"Prototype absent de zone.blend: {identifier}")
+        source_root = _resolve_prototype_root(
+            bpy,
+            family=raw.get("family"),
+            asset_id=raw.get("asset_id"),
+            identifier=identifier,
+        )
         destination = _relative_output(root, raw.get("output"))
         exported, prototype_transform = _collect_prototype_mesh(bpy, source_root)
         try:
